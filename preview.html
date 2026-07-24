@@ -1,0 +1,2639 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MY电商 ERP · 免安装预览</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script>window.react = window.React;</script>
+<script src="https://unpkg.com/prop-types@15/prop-types.min.js" crossorigin></script>
+<script src="https://unpkg.com/recharts@2.13.3/umd/Recharts.js" crossorigin></script>
+<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js" crossorigin></script>
+<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin></script>
+<script src="https://unpkg.com/lucide-react@0.469.0/dist/umd/lucide-react.js" crossorigin></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/plain" id="app-source">
+const { useState, useMemo, useEffect } = React;
+const {
+  LayoutDashboard, ShoppingCart, Warehouse, DollarSign, Bot, ShieldCheck,
+  Search, X, ChevronRight, AlertTriangle, CheckCircle2, Truck, TrendingUp,
+  Send, Circle, CheckCircle, Boxes, Users, Sparkles, Printer, RefreshCw,
+  Megaphone, Clock, ArrowRightLeft, Store, Plus, Link2,
+  Upload, Zap, FileSpreadsheet, Info, LogIn, LogOut,
+} = LucideReact;
+const Papa = window.Papa;
+const XLSX = window.XLSX;
+const {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend,
+} = Recharts;
+const { createClient } = window.supabase;
+
+
+/* ============================== Supabase connection ============================== */
+
+// The anon key is safe to ship to the browser - it has no access on its own,
+// every table is locked down with Row Level Security (RLS) requiring a
+// logged-in user. See src/erp-mvp-demo.jsx's LoginScreen for the sign-in flow.
+const SUPABASE_URL = "https://dtttdgdkhayzchmfptjt.supabase.co";
+const SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR0dHRkZ2RraGF5emNobWZwdGp0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3NzIxNTEsImV4cCI6MjA5OTM0ODE1MX0.9B7bVr79kee9QbrsbpVbyiBwlla_2QlCO_3d2u4g0kY";
+const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Maps between our real database's vocabulary and this UI's original demo
+// vocabulary, so every existing screen (status colors, warehouse tables,
+// platform tabs) keeps working unchanged while showing real data.
+const DB_TO_DEMO_PLATFORM = { shopee: "Shopee", tiktok: "TikTok Shop", telegram: "Telegram" };
+const DB_TO_DEMO_STATUS = {
+  pending: "待处理",
+  processing: "拣货",
+  shipped: "出货",
+  returned: "退款中",
+  cancelled: "已取消",
+};
+const DEMO_TO_DB_STATUS = { 已签收: "shipped", 退款中: "returned" };
+
+function mapDbStore(account) {
+  return {
+    id: account.id,
+    platform: DB_TO_DEMO_PLATFORM[account.platform] || account.platform,
+    name: account.account_name,
+    connectedAt: (account.created_at || "").slice(0, 10),
+    status: "已连接",
+    syncMode: account.token_expires_at ? "api" : "manual",
+  };
+}
+
+function mapDbProduct(p, listedShopId) {
+  return {
+    sku: p.sku,
+    name: p.name,
+    warehouseA: p.stock_qty || 0,
+    warehouseB: 0,
+    reorderPoint: 20,
+    shopeeLinked: true,
+    tiktokLinked: true,
+    listedShop: listedShopId,
+  };
+}
+
+function mapDbOrder(order, items) {
+  const first = items[0] || {};
+  return {
+    id: order.order_no,
+    platformOrderId: order.order_no,
+    platform: DB_TO_DEMO_PLATFORM[order.platform] || order.platform,
+    customer: order.buyer_name || "—",
+    phone: order.buyer_phone || "—",
+    address: order.shipping_address || "—",
+    sku: first.sku || "",
+    skuStatus: first.sku ? "ok" : "missing",
+    product: first.product_name || "—",
+    qty: first.qty || 1,
+    unitPrice: Number(first.unit_price || 0),
+    shippingFee: Number(order.shipping_fee || 0),
+    platformFee: 0,
+    commission: 0,
+    cost: 0,
+    tracking: order.tracking_no || "—",
+    warehouse: "吉隆坡仓",
+    status: DB_TO_DEMO_STATUS[order.order_status] || "待处理",
+    date: (order.order_date || "").slice(0, 10),
+  };
+}
+
+/* ============================== Mock data ============================== */
+
+const STATUS_STEPS = ["待处理", "拣货", "包装", "出货", "物流中", "已签收"];
+const EXTRA_STATUS = ["已取消", "退款中"];
+const ACTIONABLE_STATUS = ["出货", "物流中"];
+
+const PRODUCTS = [
+  { sku: "TSH-BLK-M", name: "纯棉圆领T恤 黑色 M码", cost: 18 },
+  { sku: "TSH-BLK-L", name: "纯棉圆领T恤 黑色 L码", cost: 18 },
+  { sku: "MASK-N95-50", name: "N95口罩 50片装", cost: 22 },
+  { sku: "BOTL-STL-750", name: "不锈钢保温瓶 750ml", cost: 26 },
+  { sku: "BAG-CANV-01", name: "帆布手提袋", cost: 9 },
+  { sku: "PHON-CASE-13", name: "手机壳 iPhone 13", cost: 6 },
+  { sku: "SNK-DUR-01", name: "榴莲干 200g", cost: 14 },
+];
+
+const CUSTOMERS = ["陈美玲", "李伟强", "Nurul Ain", "Tan Wei Jie", "Farah Aziz", "Kevin Ooi", "Siti Aminah", "Wong Kah Yan"];
+const ADDRESSES = [
+  "No. 12, Jalan Bunga Raya 3, Taman Sri Rampai, 53300 Kuala Lumpur",
+  "88, Jalan Molek 2/4, Taman Molek, 81100 Johor Bahru, Johor",
+  "23A, Persiaran Klang, 41200 Klang, Selangor",
+  "56, Jalan Sutera Tanjung 8/2, Taman Sutera Utama, 81300 Skudai, Johor",
+  "17, Jalan Ampang Utama 1/1, 68000 Ampang, Selangor",
+];
+const PHONES = ["012-3456789", "011-22334455", "016-7889012", "019-5432100", "013-8765432"];
+
+const INITIAL_STORES = [
+  { id: "shopee-main", platform: "Shopee", name: "Shopee 官方旗舰店", connectedAt: "2025-03-12", status: "已连接", syncMode: "manual" },
+  { id: "shopee-old", platform: "Shopee", name: "Shopee 旧店铺（待淘汰）", connectedAt: "2023-08-01", status: "已连接", syncMode: "manual" },
+  { id: "tiktok-main", platform: "TikTok Shop", name: "TikTok Shop 主账号", connectedAt: "2025-11-20", status: "已连接", syncMode: "manual" },
+];
+
+function buildOrders() {
+  const platforms = ["Shopee", "TikTok Shop"];
+  const warehouses = ["吉隆坡仓", "柔佛仓"];
+  const statuses = [...STATUS_STEPS, ...EXTRA_STATUS];
+  const rows = [];
+  for (let i = 0; i < 26; i++) {
+    const product = PRODUCTS[i % PRODUCTS.length];
+    const platform = platforms[i % 2];
+    const shopsForPlatform = INITIAL_STORES.filter((s) => s.platform === platform);
+    const shop = shopsForPlatform[i % shopsForPlatform.length];
+    const qty = 1 + (i % 3);
+    const unitPrice = 19.9 + (i % 5) * 8.3;
+    const shippingFee = 4.5 + (i % 4);
+    const platformFee = +(unitPrice * qty * 0.02).toFixed(2);
+    const commission = +(unitPrice * qty * (platform === "Shopee" ? 0.06 : 0.05)).toFixed(2);
+    const status = statuses[i % statuses.length];
+    const day = 15 - (i % 14);
+    rows.push({
+      id: `${platform === "Shopee" ? "SP" : "TT"}-202607${String(10 + (i % 5)).padStart(2, "0")}-${String(900 + i)}`,
+      platform,
+      customer: CUSTOMERS[i % CUSTOMERS.length],
+      phone: PHONES[i % PHONES.length],
+      address: ADDRESSES[i % ADDRESSES.length],
+      sku: product.sku,
+      product: product.name,
+      qty,
+      unitPrice: +unitPrice.toFixed(2),
+      shippingFee: +shippingFee.toFixed(2),
+      platformFee,
+      commission,
+      cost: product.cost,
+      tracking: `MY${1000000000 + i * 7654321}`,
+      warehouse: warehouses[i % 2],
+      status,
+      date: `2026-07-${String(day).padStart(2, "0")}`,
+    });
+  }
+  return rows;
+}
+const ORDERS_SEED = buildOrders();
+
+function buildInventory() {
+  const shopMap = buildInventoryStoreAssignment();
+  return PRODUCTS.map((p, i) => {
+    const a = [42, 12, 8, 55, 30, 5, 60][i % 7];
+    const b = [15, 6, 4, 20, 10, 3, 18][i % 7];
+    return {
+      sku: p.sku, name: p.name, warehouseA: a, warehouseB: b, reorderPoint: 35,
+      shopeeLinked: true, tiktokLinked: i % 4 !== 0, listedShop: shopMap[p.sku],
+    };
+  });
+}
+
+const SALES_TREND = Array.from({ length: 14 }).map((_, i) => {
+  const day = i + 1;
+  const base = 1800 + Math.sin(i / 2) * 400 + (i > 9 ? 500 : 0);
+  return { day: `7/${day}`, Shopee: Math.round(base * 0.55), "TikTok Shop": Math.round(base * 0.45) };
+});
+
+const ROLES = [
+  { role: "管理员", users: 2, perms: { 订单: true, 库存: true, 财务: true, AI: true, 权限: true } },
+  { role: "运营专员", users: 5, perms: { 订单: true, 库存: true, 财务: false, AI: true, 权限: false } },
+  { role: "仓管", users: 3, perms: { 订单: true, 库存: true, 财务: false, AI: false, 权限: false } },
+  { role: "财务", users: 1, perms: { 订单: false, 库存: false, 财务: true, AI: false, 权限: false } },
+  { role: "客服", users: 4, perms: { 订单: true, 库存: false, 财务: false, AI: true, 权限: false } },
+];
+
+const AD_CAMPAIGNS = [
+  { id: "AD-001", platform: "Shopee", name: "Shopee 搜索广告 - T恤黑色", sku: "TSH-BLK-M", spend: 320, clicks: 1180, orders: 42, revenue: 1680 },
+  { id: "AD-002", platform: "Shopee", name: "Shopee 商品推荐 - 保温瓶", sku: "BOTL-STL-750", spend: 450, clicks: 900, orders: 18, revenue: 900 },
+  { id: "AD-003", platform: "Shopee", name: "Shopee 店铺推广 - 全店", sku: "—", spend: 600, clicks: 2100, orders: 30, revenue: 1350 },
+  { id: "AD-004", platform: "Shopee", name: "Shopee 搜索广告 - N95口罩", sku: "MASK-N95-50", spend: 180, clicks: 640, orders: 26, revenue: 1170 },
+  { id: "AD-005", platform: "TikTok Shop", name: "TikTok 直播间引流", sku: "TSH-BLK-L", spend: 520, clicks: 3400, orders: 55, revenue: 2310 },
+  { id: "AD-006", platform: "TikTok Shop", name: "TikTok 短视频广告 - 榴莲干", sku: "SNK-DUR-01", spend: 260, clicks: 1900, orders: 48, revenue: 2016 },
+  { id: "AD-007", platform: "TikTok Shop", name: "TikTok 商品卡广告 - 手机壳", sku: "PHON-CASE-13", spend: 210, clicks: 1500, orders: 9, revenue: 189 },
+  { id: "AD-008", platform: "TikTok Shop", name: "TikTok GMV Max - 帆布袋", sku: "BAG-CANV-01", spend: 150, clicks: 800, orders: 12, revenue: 300 },
+];
+const AD_ROAS_THRESHOLD = 3;
+
+function buildInventoryStoreAssignment() {
+  // 每个 SKU 默认挂在旧店铺，方便演示"把商品从旧店铺搬去新店铺"
+  const map = {};
+  PRODUCTS.forEach((p, i) => {
+    map[p.sku] = i % 2 === 0 ? "shopee-old" : "shopee-main";
+  });
+  return map;
+}
+
+/* ============================== Helpers ============================== */
+
+function profit(o) {
+  return +(o.unitPrice * o.qty - o.shippingFee - o.platformFee - o.commission - o.cost * o.qty).toFixed(2);
+}
+function fmt(n) {
+  return n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function statusColor(status) {
+  const map = {
+    待处理: "bg-amber-100 text-amber-700 border-amber-200",
+    拣货: "bg-sky-100 text-sky-700 border-sky-200",
+    包装: "bg-indigo-100 text-indigo-700 border-indigo-200",
+    出货: "bg-blue-100 text-blue-700 border-blue-200",
+    物流中: "bg-cyan-100 text-cyan-700 border-cyan-200",
+    已签收: "bg-emerald-100 text-emerald-700 border-emerald-200",
+    已取消: "bg-slate-200 text-slate-600 border-slate-300",
+    退款中: "bg-rose-100 text-rose-700 border-rose-200",
+  };
+  return map[status] || "bg-slate-100 text-slate-600 border-slate-200";
+}
+
+const STATUS_EN = {
+  待处理: "Pending",
+  拣货: "Picking",
+  包装: "Packing",
+  出货: "Shipped Out",
+  物流中: "In Transit",
+  已签收: "Delivered",
+  已取消: "Cancelled",
+  退款中: "Refunding",
+};
+function statusLabel(status, lang) {
+  return lang === "en" ? STATUS_EN[status] || status : status;
+}
+
+const WAREHOUSE_EN = { 吉隆坡仓: "KL Warehouse", 柔佛仓: "Johor Warehouse" };
+function warehouseLabel(name, lang) {
+  return lang === "en" ? WAREHOUSE_EN[name] || name : name;
+}
+
+const PLATFORM_THEME = {
+  Shopee: {
+    dot: "bg-orange-500", text: "text-orange-600", bgWash: "bg-orange-50/60",
+    border: "border-orange-200", headerBg: "bg-orange-500", chipActive: "bg-orange-500 text-white border-orange-500",
+    ring: "focus:border-orange-400",
+  },
+  "TikTok Shop": {
+    dot: "bg-rose-600", text: "text-rose-600", bgWash: "bg-rose-50/60",
+    border: "border-rose-200", headerBg: "bg-rose-600", chipActive: "bg-rose-600 text-white border-rose-600",
+    ring: "focus:border-rose-400",
+  },
+};
+
+/* ============================== Nav ============================== */
+
+const NAV = [
+  { key: "overview", zh: "总览", en: "Overview", icon: LayoutDashboard },
+  { key: "orders", zh: "订单管理中心", en: "Order Management", icon: ShoppingCart },
+  { key: "manualimport", zh: "手动导入订单", en: "Manual Order Import", icon: Upload },
+  { key: "inventory", zh: "库存管理", en: "Inventory", icon: Warehouse },
+  { key: "productmove", zh: "产品搬仓 / 搬店", en: "Stock Transfer / Shop Move", icon: ArrowRightLeft },
+  { key: "stores", zh: "店铺管理", en: "Store Management", icon: Store },
+  { key: "finance", zh: "财务与利润", en: "Finance & Profit", icon: DollarSign },
+  { key: "ads", zh: "广告费用", en: "Ad Spend", icon: Megaphone },
+  { key: "ai", zh: "AI智能功能", en: "AI Features", icon: Bot },
+  { key: "roles", zh: "权限管理", en: "Roles & Permissions", icon: ShieldCheck },
+];
+
+/* ============================== App ============================== */
+
+function App() {
+  const [session, setSession] = useState(undefined); // undefined = checking, null = logged out
+  const [dataLoading, setDataLoading] = useState(true);
+  const [orders, setOrders] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [transferLogs, setTransferLogs] = useState([]);
+  const [stores, setStores] = useState([]);
+  const [tab, setTab] = useState("overview");
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [printOrders, setPrintOrders] = useState(null);
+  const [lang, setLang] = useState("zh"); // "zh" | "en"
+  const t = (zh, en) => (lang === "en" ? en : zh);
+
+  useEffect(() => {
+    supabaseClient.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabaseClient.auth.onAuthStateChange((_event, sess) => setSession(sess));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  async function loadRealData() {
+    setDataLoading(true);
+    const [accountsRes, productsRes, ordersRes, itemsRes] = await Promise.all([
+      supabaseClient.from("platform_accounts").select("id, platform, account_name, created_at, token_expires_at"),
+      supabaseClient.from("products").select("sku, name, stock_qty"),
+      supabaseClient.from("orders").select("id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, order_status, shipping_fee, order_date"),
+      supabaseClient.from("order_items").select("order_id, sku, product_name, qty, unit_price"),
+    ]);
+    const itemsByOrder = {};
+    (itemsRes.data || []).forEach((it) => {
+      (itemsByOrder[it.order_id] ||= []).push(it);
+    });
+    const mappedStores = (accountsRes.data || []).map(mapDbStore);
+    const firstShopeeStore = mappedStores.find((s) => s.platform === "Shopee")?.id;
+    setStores(mappedStores);
+    setInventory((productsRes.data || []).map((p) => mapDbProduct(p, firstShopeeStore)));
+    setOrders((ordersRes.data || []).map((o) => mapDbOrder(o, itemsByOrder[o.id] || [])));
+    setDataLoading(false);
+  }
+
+  useEffect(() => {
+    if (session) loadRealData();
+  }, [session]);
+
+  function transferStock(sku, fromWarehouse, toWarehouse, qty) {
+    setInventory((prev) =>
+      prev.map((item) => {
+        if (item.sku !== sku) return item;
+        const fromKey = fromWarehouse === "吉隆坡仓" ? "warehouseA" : "warehouseB";
+        const toKey = toWarehouse === "吉隆坡仓" ? "warehouseA" : "warehouseB";
+        return { ...item, [fromKey]: item[fromKey] - qty, [toKey]: item[toKey] + qty };
+      })
+    );
+    setTransferLogs((prev) => [
+      { id: `TR-${Date.now()}`, type: "warehouse", sku, from: fromWarehouse, to: toWarehouse, qty, date: new Date().toISOString() },
+      ...prev,
+    ]);
+  }
+
+  function moveProductToShop(sku, fromShopId, toShopId) {
+    setInventory((prev) => prev.map((item) => (item.sku === sku ? { ...item, listedShop: toShopId } : item)));
+    const fromName = stores.find((s) => s.id === fromShopId)?.name || fromShopId;
+    const toName = stores.find((s) => s.id === toShopId)?.name || toShopId;
+    setTransferLogs((prev) => [
+      { id: `SM-${Date.now()}`, type: "shop", sku, from: fromName, to: toName, qty: null, date: new Date().toISOString() },
+      ...prev,
+    ]);
+  }
+
+  function connectStore(name, platform, syncMode = "manual") {
+    setStores((prev) => [
+      ...prev,
+      { id: `store-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, platform, name, connectedAt: new Date().toISOString().slice(0, 10), status: "已连接", syncMode },
+    ]);
+  }
+
+  function setStoreSyncMode(storeId, mode) {
+    setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, syncMode: mode } : s)));
+  }
+
+  function importOrders(newOrders) {
+    setOrders((prev) => [...newOrders, ...prev]);
+  }
+
+  function updateOrderStatus(orderId, newStatus) {
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: newStatus } : o)));
+    setSelectedOrder((prev) => (prev && prev.id === orderId ? { ...prev, status: newStatus } : prev));
+    const dbStatus = DEMO_TO_DB_STATUS[newStatus];
+    if (dbStatus) {
+      supabaseClient.from("orders").update({ order_status: dbStatus }).eq("order_no", orderId);
+    }
+  }
+
+  if (session === undefined) {
+    return (
+      <div className="min-h-screen w-full bg-slate-50 flex items-center justify-center text-slate-400 text-sm">
+        {t("正在检查登录状态…", "Checking login status…")}
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <LoginScreen t={t} />;
+  }
+
+  if (dataLoading) {
+    return (
+      <div className="min-h-screen w-full bg-slate-50 flex items-center justify-center text-slate-400 text-sm">
+        {t("正在读取数据…", "Loading data…")}
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen w-full bg-slate-50 text-slate-900 flex">
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          .print-slip, .print-slip * { visibility: visible; }
+          .print-slip { position: fixed; inset: 0; width: 100%; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+
+      {/* Sidebar */}
+      <aside className="w-56 shrink-0 bg-violet-900 text-violet-100 flex flex-col">
+        <div className="px-5 py-5 border-b border-violet-800">
+          <div className="flex items-center gap-2">
+            <div className="h-8 w-8 rounded-md bg-teal-500 flex items-center justify-center">
+              <Boxes size={18} className="text-violet-900" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-white leading-tight">MY电商 ERP</div>
+              <div className="text-[11px] text-violet-300 leading-tight">{t("AI 智能管理系统", "AI Management System")}</div>
+            </div>
+          </div>
+        </div>
+        <nav className="flex-1 py-3">
+          {NAV.map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.key;
+            return (
+              <button
+                key={item.key}
+                onClick={() => setTab(item.key)}
+                className={`w-full flex items-center gap-3 px-5 py-2.5 text-sm transition-colors ${
+                  active ? "bg-violet-800 text-white border-r-2 border-teal-400" : "text-violet-300 hover:text-white hover:bg-violet-800/60"
+                }`}
+              >
+                <Icon size={16} />
+                {lang === "en" ? item.en : item.zh}
+              </button>
+            );
+          })}
+        </nav>
+        <div className="px-5 py-4 border-t border-violet-800 text-[11px] text-violet-400">
+          {t("MVP 演示版 · 模拟数据", "MVP Demo · Mock Data")}
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main className="flex-1 min-w-0">
+        <header className="h-14 border-b border-slate-200 bg-white flex items-center px-6 justify-between">
+          <div className="text-sm text-slate-500">
+            {(() => {
+              const current = NAV.find((n) => n.key === tab);
+              return current ? (lang === "en" ? current.en : current.zh) : "";
+            })()}
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="text-xs text-slate-400">{session.user.email}</div>
+            <button
+              onClick={loadRealData}
+              className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
+              title={t("重新读取数据", "Reload data")}
+            >
+              <RefreshCw size={13} />
+              {t("刷新", "Refresh")}
+            </button>
+            <button
+              onClick={() => setLang((prev) => (prev === "zh" ? "en" : "zh"))}
+              className="text-xs px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
+              title={t("切换语言", "Switch language")}
+            >
+              {lang === "zh" ? "中 / EN" : "EN / 中"}
+            </button>
+            <button
+              onClick={() => supabaseClient.auth.signOut()}
+              className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
+              title={t("登出", "Log out")}
+            >
+              <LogOut size={13} />
+              {t("登出", "Log out")}
+            </button>
+          </div>
+        </header>
+
+        <div className="p-6">
+          {tab === "overview" && <Overview t={t} orders={orders} inventory={inventory} stores={stores} onOpenOrder={setSelectedOrder} goTo={setTab} />}
+          {tab === "orders" && (
+            <Orders t={t} orders={orders} stores={stores} onOpenOrder={setSelectedOrder} onPrint={setPrintOrders} onUpdateStatus={updateOrderStatus} goTo={setTab} />
+          )}
+          {tab === "manualimport" && <ManualImport t={t} stores={stores} inventory={inventory} onImport={importOrders} />}
+          {tab === "inventory" && <Inventory t={t} inventory={inventory} stores={stores} />}
+          {tab === "productmove" && (
+            <ProductMove
+              t={t}
+              inventory={inventory}
+              logs={transferLogs}
+              stores={stores}
+              onTransfer={transferStock}
+              onMoveShop={moveProductToShop}
+            />
+          )}
+          {tab === "stores" && <StoreManagement t={t} stores={stores} onConnect={connectStore} onSetSyncMode={setStoreSyncMode} />}
+          {tab === "finance" && <Finance t={t} orders={orders} />}
+          {tab === "ads" && <AdsSpend t={t} />}
+          {tab === "ai" && <AIPanel t={t} orders={orders} inventory={inventory} />}
+          {tab === "roles" && <Roles t={t} />}
+        </div>
+      </main>
+
+      {selectedOrder && (
+        <OrderDrawer t={t} order={selectedOrder} onClose={() => setSelectedOrder(null)} onPrint={(o) => setPrintOrders([o])} onUpdateStatus={updateOrderStatus} />
+      )}
+      {printOrders && printOrders.length > 0 && (
+        <PrintSlip t={t} orders={printOrders} onClose={() => setPrintOrders(null)} />
+      )}
+    </div>
+  );
+}
+
+/* ============================== Login ============================== */
+
+function LoginScreen({ t }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    const { error: authError } = await supabaseClient.auth.signInWithPassword({ email, password });
+    setBusy(false);
+    if (authError) setError(authError.message);
+  }
+
+  return (
+    <div className="min-h-screen w-full bg-slate-50 flex items-center justify-center p-4">
+      <form onSubmit={handleSubmit} className="w-full max-w-sm bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="h-8 w-8 rounded-md bg-teal-500 flex items-center justify-center">
+            <Boxes size={18} className="text-white" />
+          </div>
+          <div>
+            <div className="text-sm font-semibold leading-tight">MY电商 ERP</div>
+            <div className="text-[11px] text-slate-400 leading-tight">{t("AI 智能管理系统", "AI Management System")}</div>
+          </div>
+        </div>
+
+        <div>
+          <label className="text-xs text-slate-500 mb-1 block">{t("邮箱", "Email")}</label>
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-slate-500 mb-1 block">{t("密码", "Password")}</label>
+          <input
+            type="password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+          />
+        </div>
+
+        {error && (
+          <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg border bg-rose-50 text-rose-600 border-rose-200">
+            <AlertTriangle size={13} /> {error}
+          </div>
+        )}
+
+        <button
+          type="submit"
+          disabled={busy}
+          className={`w-full flex items-center justify-center gap-1.5 text-sm py-2 rounded-lg text-white ${busy ? "bg-slate-300 cursor-not-allowed" : "bg-slate-900 hover:bg-slate-800"}`}
+        >
+          <LogIn size={15} /> {busy ? t("登录中…", "Signing in…") : t("登录", "Log in")}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+/* ============================== Overview ============================== */
+
+function KPICard({ label, value, sub, icon: Icon, tone }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4 flex items-start justify-between">
+      <div>
+        <div className="text-xs text-slate-500 mb-1">{label}</div>
+        <div className="text-2xl font-semibold tabular-nums">{value}</div>
+        {sub && <div className="text-xs text-slate-400 mt-1">{sub}</div>}
+      </div>
+      <div className={`h-9 w-9 rounded-lg flex items-center justify-center ${tone}`}>
+        <Icon size={16} className="text-white" />
+      </div>
+    </div>
+  );
+}
+
+function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
+  const pending = orders.filter((o) => o.status === "待处理").length;
+  const totalProfit = orders.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
+  const lowStock = inventory.filter((i) => i.warehouseA + i.warehouseB < i.reorderPoint);
+  const recent = orders.slice(0, 6);
+  const manualStores = stores.filter((s) => s.syncMode === "manual");
+  const lang = t("zh", "en");
+
+  return (
+    <div className="space-y-6">
+      {manualStores.length > 0 && (
+        <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+          <Info size={16} className="text-amber-600 shrink-0" />
+          <div className="text-xs text-amber-800 flex-1">
+            <span className="font-medium">
+              {t(`${manualStores.length} 个店铺尚未连接平台API`, `${manualStores.length} store(s) not yet connected to platform API`)}
+            </span>
+            {t(
+              `（${manualStores.map((s) => s.name).join("、")}），订单/库存需要手动导入更新，暂时无法自动同步。`,
+              ` (${manualStores.map((s) => s.name).join(", ")}). Orders/inventory need manual import for now — auto-sync unavailable.`,
+            )}
+          </div>
+          <button onClick={() => goTo("manualimport")} className="text-xs px-3 py-1.5 rounded-lg bg-amber-600 text-white hover:bg-amber-700 shrink-0">
+            {t("去手动导入", "Go to Manual Import")}
+          </button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-4 gap-4">
+        <KPICard label={t("订单总数", "Total Orders")} value={orders.length} sub="Shopee + TikTok Shop" icon={ShoppingCart} tone="bg-teal-500" />
+        <KPICard label={t("待处理订单", "Pending Orders")} value={pending} sub={t("需要拣货/发货", "Needs picking/shipping")} icon={AlertTriangle} tone="bg-amber-500" />
+        <KPICard label={t("库存预警 SKU", "Low Stock SKUs")} value={lowStock.length} sub={t("低于安全库存", "Below safety stock")} icon={Warehouse} tone="bg-rose-500" />
+        <KPICard label={t("净利润 (RM)", "Net Profit (RM)")} value={fmt(totalProfit)} sub={t("已扣除平台费/佣金", "After platform fees/commission")} icon={DollarSign} tone="bg-indigo-500" />
+      </div>
+
+      <div className="grid grid-cols-3 gap-4">
+        <div className="col-span-2 bg-white border border-slate-200 rounded-xl p-4">
+          <div className="text-sm font-medium mb-3">{t("近14天销售趋势（按平台）", "Last 14 Days Sales Trend (by Platform)")}</div>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={SALES_TREND}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                <XAxis dataKey="day" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey="Shopee" stroke="#f97316" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="TikTok Shop" stroke="#e11d48" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-4">
+          <div className="text-sm font-medium mb-3">{t("库存预警", "Stock Alerts")}</div>
+          <div className="space-y-2">
+            {lowStock.slice(0, 5).map((item) => (
+              <div key={item.sku} className="flex items-center justify-between text-sm border-b border-slate-100 pb-2 last:border-0">
+                <div>
+                  <div className="font-medium">{item.name}</div>
+                  <div className="text-xs text-slate-400">{item.sku}</div>
+                </div>
+                <span className="text-xs font-semibold text-rose-600 tabular-nums">{t(`${item.warehouseA + item.warehouseB} 件`, `${item.warehouseA + item.warehouseB} pcs`)}</span>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => goTo("inventory")} className="mt-3 text-xs text-teal-600 flex items-center gap-1 hover:underline">
+            {t("查看全部库存", "View all inventory")} <ChevronRight size={12} />
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-sm font-medium">{t("最新订单（两平台混合）", "Latest Orders (Both Platforms)")}</div>
+          <button onClick={() => goTo("orders")} className="text-xs text-teal-600 flex items-center gap-1 hover:underline">
+            {t("前往订单管理中心", "Go to Order Management")} <ChevronRight size={12} />
+          </button>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+              <th className="py-2 pr-3 font-medium">{t("订单编号", "Order No.")}</th>
+              <th className="py-2 pr-3 font-medium">{t("平台", "Platform")}</th>
+              <th className="py-2 pr-3 font-medium">{t("客户", "Customer")}</th>
+              <th className="py-2 pr-3 font-medium">{t("状态", "Status")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("操作", "Action")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recent.map((o) => (
+              <tr key={o.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                <td className="py-2.5 pr-3 font-medium">{o.id}</td>
+                <td className="py-2.5 pr-3">
+                  <span className="inline-flex items-center gap-1.5 text-xs">
+                    <span className={`h-2 w-2 rounded-full ${PLATFORM_THEME[o.platform].dot}`} />
+                    {o.platform}
+                  </span>
+                </td>
+                <td className="py-2.5 pr-3">{o.customer}</td>
+                <td className="py-2.5 pr-3">
+                  <span className={`text-xs px-2 py-0.5 rounded-full border ${statusColor(o.status)}`}>{statusLabel(o.status, lang)}</span>
+                </td>
+                <td className="py-2.5 pr-3 text-right">
+                  <button onClick={() => onOpenOrder(o)} className="text-xs text-teal-600 hover:underline">{t("查看详情", "View")}</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Orders (订单管理中心) ============================== */
+
+function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus, goTo }) {
+  const [activePlatform, setActivePlatform] = useState("Shopee");
+  const [statusFilter, setStatusFilter] = useState("全部");
+  const [q, setQ] = useState("");
+  const [dateFilter, setDateFilter] = useState("");
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const theme = PLATFORM_THEME[activePlatform];
+  const lang = t("zh", "en");
+  const chipLabel = (s) => (s === "全部" ? t("全部", "All") : statusLabel(s, lang));
+
+  const platformStores = stores.filter((s) => s.platform === activePlatform);
+  const allManual = platformStores.length > 0 && platformStores.every((s) => s.syncMode === "manual");
+
+  const all = useMemo(() => orders.filter((o) => o.platform === activePlatform), [orders, activePlatform]);
+  const revenue = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + o.unitPrice * o.qty, 0);
+  const netProfit = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
+  const pending = all.filter((o) => o.status === "待处理").length;
+  const delivered = all.filter((o) => o.status === "已签收").length;
+
+  const filtered = useMemo(() => {
+    return all.filter((o) => {
+      if (statusFilter !== "全部" && o.status !== statusFilter) return false;
+      if (dateFilter && o.date !== dateFilter) return false;
+      if (q && !(o.id.toLowerCase().includes(q.toLowerCase()) || o.customer.includes(q) || (o.sku || "").toLowerCase().includes(q.toLowerCase()))) return false;
+      return true;
+    });
+  }, [all, statusFilter, dateFilter, q]);
+
+  const statusChips = ["全部", ...STATUS_STEPS, ...EXTRA_STATUS];
+  const allChecked = filtered.length > 0 && filtered.every((o) => selectedIds.has(o.id));
+  const selectedOrders = filtered.filter((o) => selectedIds.has(o.id));
+
+  function toggleOne(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function toggleAll() {
+    setSelectedIds((prev) => {
+      if (allChecked) {
+        const next = new Set(prev);
+        filtered.forEach((o) => next.delete(o.id));
+        return next;
+      }
+      const next = new Set(prev);
+      filtered.forEach((o) => next.add(o.id));
+      return next;
+    });
+  }
+
+  return (
+    <div className="space-y-4">
+      {allManual && (
+        <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
+          <Info size={15} className="text-amber-600 shrink-0" />
+          <div className="text-xs text-amber-800 flex-1">
+            {t(
+              `${activePlatform} 目前还没有连接平台API，订单数据需要手动导入，不会自动更新。`,
+              `${activePlatform} is not connected to the platform API yet — order data must be imported manually and won't auto-update.`,
+            )}
+          </div>
+          <button onClick={() => goTo("manualimport")} className="text-xs px-3 py-1.5 rounded-lg bg-amber-600 text-white hover:bg-amber-700 shrink-0">
+            {t("去手动导入", "Go to Manual Import")}
+          </button>
+        </div>
+      )}
+
+      {/* 平台切换：一次只看一个平台，完全分开 */}
+      <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 gap-1">
+        {["Shopee", "TikTok Shop"].map((pf) => {
+          const pfTheme = PLATFORM_THEME[pf];
+          const active = activePlatform === pf;
+          return (
+            <button
+              key={pf}
+              onClick={() => { setActivePlatform(pf); setStatusFilter("全部"); setSelectedIds(new Set()); }}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                active ? `${pfTheme.headerBg} text-white` : "text-slate-500 hover:bg-slate-50"
+              }`}
+            >
+              <span className={`h-2 w-2 rounded-full ${active ? "bg-white/80" : pfTheme.dot}`} />
+              {pf}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className={`rounded-xl border ${theme.border} overflow-hidden bg-white`}>
+        <div className={`${theme.headerBg} text-white px-5 py-4 flex items-center justify-between`}>
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-white/80" />
+            <span className="font-semibold text-base">{activePlatform}</span>
+            <span className="text-[11px] bg-white/20 px-2 py-0.5 rounded-full">{t(`${all.length} 笔订单`, `${all.length} orders`)}</span>
+          </div>
+          <div className="text-xs text-white/90 tabular-nums">{t("营收", "Revenue")} RM {fmt(revenue)} · {t("净利润", "Net Profit")} RM {fmt(netProfit)}</div>
+        </div>
+
+        <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-4 gap-3 text-xs`}>
+          <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
+            <div className="text-slate-400">{t("待处理", "Pending")}</div>
+            <div className="text-base font-semibold text-amber-600 tabular-nums">{pending}</div>
+          </div>
+          <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
+            <div className="text-slate-400">{t("已签收", "Delivered")}</div>
+            <div className="text-base font-semibold text-emerald-600 tabular-nums">{delivered}</div>
+          </div>
+          <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
+            <div className="text-slate-400">{t("总订单", "Total Orders")}</div>
+            <div className="text-base font-semibold text-slate-700 tabular-nums">{all.length}</div>
+          </div>
+          <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
+            <div className="text-slate-400">{t("净利润 (RM)", "Net Profit (RM)")}</div>
+            <div className="text-base font-semibold text-indigo-600 tabular-nums">{fmt(netProfit)}</div>
+          </div>
+        </div>
+
+        <div className="px-5 pt-3">
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search size={13} className="absolute left-2.5 top-2.5 text-slate-400" />
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={t(`在 ${activePlatform} 内搜索订单编号 / 客户 / SKU`, `Search order no. / customer / SKU in ${activePlatform}`)}
+                className={`w-full pl-8 pr-2 py-2 text-xs border border-slate-200 rounded-lg outline-none ${theme.ring}`}
+              />
+            </div>
+            <div className="flex items-center gap-1.5 border border-slate-200 rounded-lg px-2.5">
+              <Clock size={13} className="text-slate-400 shrink-0" />
+              <input
+                type="date"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                className="text-xs outline-none text-slate-600 py-2"
+              />
+              {dateFilter && (
+                <button onClick={() => setDateFilter("")} className="text-slate-400 hover:text-slate-600 shrink-0">
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1.5 mt-2 pb-3">
+            {statusChips.map((s) => {
+              const active = statusFilter === s;
+              return (
+                <button
+                  key={s}
+                  onClick={() => setStatusFilter(s)}
+                  className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${active ? theme.chipActive : "bg-white text-slate-500 border-slate-200"}`}
+                >
+                  {chipLabel(s)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="px-5 py-2.5 border-t border-slate-100 bg-slate-50 flex items-center gap-3">
+          <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
+            <input type="checkbox" checked={allChecked} onChange={toggleAll} className="h-3.5 w-3.5 rounded border-slate-300" />
+            {t(`全选本页（${filtered.length} 笔）`, `Select all on this page (${filtered.length})`)}
+          </label>
+          <span className="text-xs text-slate-400">{t(`已选 ${selectedOrders.length} 笔`, `${selectedOrders.length} selected`)}</span>
+          <button
+            onClick={() => selectedOrders.length > 0 && onPrint(selectedOrders)}
+            disabled={selectedOrders.length === 0}
+            className={`ml-auto flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
+              selectedOrders.length > 0 ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+            }`}
+          >
+            <Printer size={13} /> {t(`批量打印发货单（${selectedOrders.length}）`, `Batch print shipping labels (${selectedOrders.length})`)}
+          </button>
+        </div>
+
+        <div className="border-t border-slate-100 divide-y divide-slate-100">
+          {filtered.length === 0 && <div className="px-5 py-6 text-xs text-slate-400 text-center">{t("没有符合条件的订单", "No orders match the current filters")}</div>}
+          {filtered.map((o) => (
+            <div key={o.id} className="w-full px-5 py-3 hover:bg-slate-50 flex items-start gap-3">
+              <input
+                type="checkbox"
+                checked={selectedIds.has(o.id)}
+                onChange={() => toggleOne(o.id)}
+                className="h-3.5 w-3.5 mt-1.5 rounded border-slate-300 shrink-0"
+              />
+              {/* 左侧：操作按钮全部纵向排列 */}
+              <div className="flex flex-col items-stretch gap-1 w-20 shrink-0">
+                <span className={`text-[10px] px-2 py-0.5 rounded-full border text-center ${statusColor(o.status)}`}>{statusLabel(o.status, lang)}</span>
+                {ACTIONABLE_STATUS.includes(o.status) && (
+                  <>
+                    <button
+                      onClick={() => onUpdateStatus(o.id, "已签收")}
+                      title={t("标记为已签收", "Mark as delivered")}
+                      className="text-[10px] px-2 py-1 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    >
+                      {t("接收", "Receive")}
+                    </button>
+                    <button
+                      onClick={() => onUpdateStatus(o.id, "退款中")}
+                      title={t("登记退货/退款", "Log return/refund")}
+                      className="text-[10px] px-2 py-1 rounded-full border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                    >
+                      {t("退货", "Return")}
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={() => onPrint([o])}
+                  title={t("打印发货单", "Print shipping label")}
+                  className="flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-full border border-slate-200 text-slate-500 hover:bg-slate-100"
+                >
+                  <Printer size={11} /> {t("打印", "Print")}
+                </button>
+              </div>
+
+              {/* 右侧：订单信息 */}
+              <button onClick={() => onOpenOrder(o)} className="min-w-0 flex-1 text-left">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-medium truncate">{o.id}</div>
+                  <div className="text-xs text-slate-400 tabular-nums shrink-0 ml-2">{o.date}</div>
+                </div>
+                <div className="text-xs text-slate-400 truncate mt-0.5 flex items-center gap-1">
+                  <span className="truncate">{o.customer} · {o.sku || t("（无SKU）", "(no SKU)")} × {o.qty} · {t("追踪号", "Tracking")} {o.tracking}</span>
+                  {o.skuStatus === "missing" && (
+                    <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-600 border border-rose-200">
+                      <AlertTriangle size={9} /> {t("缺SKU", "Missing SKU")}
+                    </span>
+                  )}
+                  {o.skuStatus === "unlinked" && (
+                    <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                      <AlertTriangle size={9} /> {t("系统未登记", "Not registered")}
+                    </span>
+                  )}
+                </div>
+              </button>
+              <ChevronRight size={14} className="text-slate-300 mt-1 shrink-0" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Order drawer (shared) ============================== */
+
+function OrderDrawer({ t, order, onClose, onPrint, onUpdateStatus }) {
+  const isCancelled = order.status === "已取消" || order.status === "退款中";
+  const stepIdx = STATUS_STEPS.indexOf(order.status);
+  const p = profit(order);
+  const theme = PLATFORM_THEME[order.platform];
+  const actionable = ACTIONABLE_STATUS.includes(order.status);
+  const lang = t("zh", "en");
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-slate-900/30" onClick={onClose} />
+      <div className="relative w-[420px] bg-white h-full shadow-xl overflow-y-auto">
+        <div className={`flex items-center justify-between px-5 py-4 border-b border-slate-200 ${theme.bgWash}`}>
+          <div>
+            <div className="text-sm font-semibold flex items-center gap-2">
+              <span className={`h-2 w-2 rounded-full ${theme.dot}`} />
+              {order.id}
+            </div>
+            <div className="text-xs text-slate-400">
+              {order.platform} · {order.date}
+              {order.platformOrderId && order.platformOrderId !== order.id && (
+                <> · {t("平台订单号", "Platform order no.")} {order.platformOrderId}</>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onPrint(order)}
+              className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+            >
+              <Printer size={13} /> {t("打印发货单", "Print Shipping Label")}
+            </button>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-5">
+          <div className="flex items-center gap-2">
+            <span className={`text-xs px-2 py-0.5 rounded-full border ${statusColor(order.status)}`}>{statusLabel(order.status, lang)}</span>
+          </div>
+
+          {!isCancelled && (
+            <div>
+              <div className="text-xs text-slate-400 mb-2">{t("订单流程追踪", "Order Progress")}</div>
+              <div className="flex items-center">
+                {STATUS_STEPS.map((s, i) => (
+                  <React.Fragment key={s}>
+                    <div className="flex flex-col items-center gap-1 w-12">
+                      {i <= stepIdx ? (
+                        <CheckCircle size={18} className="text-teal-500" />
+                      ) : (
+                        <Circle size={18} className="text-slate-300" />
+                      )}
+                      <span className={`text-[10px] text-center ${i <= stepIdx ? "text-slate-700" : "text-slate-300"}`}>{statusLabel(s, lang)}</span>
+                    </div>
+                    {i < STATUS_STEPS.length - 1 && (
+                      <div className={`flex-1 h-0.5 -mt-4 ${i < stepIdx ? "bg-teal-400" : "bg-slate-200"}`} />
+                    )}
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
+          )}
+          {isCancelled && (
+            <div className="flex items-center gap-2 text-rose-600 text-sm bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">
+              <AlertTriangle size={15} /> {t(`此订单已${order.status}`, `This order is already ${statusLabel(order.status, lang)}`)}
+            </div>
+          )}
+
+          {actionable && (
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+              <div className="text-xs text-slate-500">{t("客户已收货，或需登记退货？", "Has the customer received it, or need to log a return?")}</div>
+              <div className="flex flex-col items-start gap-2">
+                <button
+                  onClick={() => onUpdateStatus(order.id, "已签收")}
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+                >
+                  <CheckCircle2 size={13} /> {t("确认接收", "Confirm Received")}
+                </button>
+                <button
+                  onClick={() => onUpdateStatus(order.id, "退款中")}
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700"
+                >
+                  <AlertTriangle size={13} /> {t("登记退货", "Log Return")}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="border-t border-slate-100 pt-4 space-y-2 text-sm">
+            <div className="text-xs text-slate-400 mb-1">{t("商品信息", "Product Info")}</div>
+            <div className="flex justify-between"><span className="text-slate-500">{t("商品", "Product")}</span><span className="font-medium text-right">{order.product}</span></div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">SKU</span>
+              <span className={order.skuStatus === "missing" ? "text-rose-600 font-medium" : order.skuStatus === "unlinked" ? "text-amber-700 font-medium" : ""}>
+                {order.sku || t("（无SKU）", "(no SKU)")}
+                {order.skuStatus === "missing" && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-600 border border-rose-200 align-middle">{t("⚠ CSV未填，请补充", "⚠ Missing in CSV, please fill in")}</span>}
+                {order.skuStatus === "unlinked" && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 align-middle">{t("⚠ 系统未登记此SKU", "⚠ SKU not registered in system")}</span>}
+              </span>
+            </div>
+            <div className="flex justify-between"><span className="text-slate-500">{t("数量", "Qty")}</span><span className="tabular-nums">{order.qty}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">{t("客户", "Customer")}</span><span>{order.customer}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">{t("出货仓库", "Ship-from Warehouse")}</span><span>{warehouseLabel(order.warehouse, lang)}</span></div>
+          </div>
+
+          <div className="border-t border-slate-100 pt-4 space-y-2 text-sm">
+            <div className="text-xs text-slate-400 mb-1 flex items-center gap-1"><Truck size={12}/> {t("物流信息", "Logistics Info")}</div>
+            <div className="flex justify-between"><span className="text-slate-500">{t("追踪号码", "Tracking No.")}</span><span className="tabular-nums">{order.tracking}</span></div>
+          </div>
+
+          <div className="border-t border-slate-100 pt-4 space-y-2 text-sm">
+            <div className="text-xs text-slate-400 mb-1">{t("费用与利润", "Fees & Profit")}</div>
+            <div className="flex justify-between"><span className="text-slate-500">{t("商品金额", "Product Amount")}</span><span className="tabular-nums">RM {fmt(order.unitPrice * order.qty)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">{t("运费", "Shipping Fee")}</span><span className="tabular-nums">RM {fmt(order.shippingFee)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">{t("平台费用", "Platform Fee")}</span><span className="tabular-nums">- RM {fmt(order.platformFee)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">{t("佣金", "Commission")}</span><span className="tabular-nums">- RM {fmt(order.commission)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">{t("成本", "Cost")}</span><span className="tabular-nums">- RM {fmt(order.cost * order.qty)}</span></div>
+            <div className="flex justify-between font-semibold pt-2 border-t border-slate-100">
+              <span>{t("净利润", "Net Profit")}</span>
+              <span className={`tabular-nums ${p >= 0 ? "text-emerald-600" : "text-rose-600"}`}>RM {fmt(p)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Inventory ============================== */
+
+function Inventory({ t, inventory, stores }) {
+  const [wh, setWh] = useState("全部");
+  const lang = t("zh", "en");
+  function shopName(id) {
+    return stores.find((s) => s.id === id)?.name || "—";
+  }
+  const whLabel = (w) => (w === "全部" ? t("全部", "All") : warehouseLabel(w, lang));
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        {["全部", "吉隆坡仓", "柔佛仓"].map((w) => (
+          <button
+            key={w}
+            onClick={() => setWh(w)}
+            className={`px-3 py-1.5 text-xs rounded-full border ${wh === w ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+          >
+            {whLabel(w)}
+          </button>
+        ))}
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+              <th className="py-2 pr-3 font-medium">SKU</th>
+              <th className="py-2 pr-3 font-medium">{t("商品名称", "Product Name")}</th>
+              <th className="py-2 pr-3 font-medium">{t("吉隆坡仓", "KL Warehouse")}</th>
+              <th className="py-2 pr-3 font-medium">{t("柔佛仓", "Johor Warehouse")}</th>
+              <th className="py-2 pr-3 font-medium">{t("总库存", "Total Stock")}</th>
+              <th className="py-2 pr-3 font-medium">{t("平台链接", "Platform Link")}</th>
+              <th className="py-2 pr-3 font-medium">{t("所属店铺", "Store")}</th>
+              <th className="py-2 pr-3 font-medium">{t("状态", "Status")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {inventory.map((item) => {
+              const total = item.warehouseA + item.warehouseB;
+              const low = total < item.reorderPoint;
+              return (
+                <tr key={item.sku} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                  <td className="py-2.5 pr-3 font-medium">{item.sku}</td>
+                  <td className="py-2.5 pr-3">{item.name}</td>
+                  <td className="py-2.5 pr-3 tabular-nums">{wh === "柔佛仓" ? "—" : item.warehouseA}</td>
+                  <td className="py-2.5 pr-3 tabular-nums">{wh === "吉隆坡仓" ? "—" : item.warehouseB}</td>
+                  <td className="py-2.5 pr-3 tabular-nums font-medium">{total}</td>
+                  <td className="py-2.5 pr-3">
+                    <div className="flex gap-1">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border ${item.shopeeLinked ? "bg-orange-50 text-orange-600 border-orange-200" : "bg-slate-50 text-slate-300 border-slate-200"}`}>Shopee</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border ${item.tiktokLinked ? "bg-rose-50 text-rose-600 border-rose-200" : "bg-slate-50 text-slate-300 border-slate-200"}`}>TikTok</span>
+                    </div>
+                  </td>
+                  <td className="py-2.5 pr-3 text-xs text-slate-500">{shopName(item.listedShop)}</td>
+                  <td className="py-2.5 pr-3">
+                    {low ? (
+                      <span className="text-xs px-2 py-0.5 rounded-full border bg-rose-100 text-rose-700 border-rose-200 inline-flex items-center gap-1"><AlertTriangle size={11} /> {t("低库存", "Low Stock")}</span>
+                    ) : (
+                      <span className="text-xs px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-200 inline-flex items-center gap-1"><CheckCircle2 size={11} /> {t("充足", "Sufficient")}</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Product move (产品搬仓 / 搬店) ============================== */
+
+const WAREHOUSES = ["吉隆坡仓", "柔佛仓"];
+
+function ProductMove({ t, inventory, logs, stores, onTransfer, onMoveShop }) {
+  const [mode, setMode] = useState("warehouse"); // "warehouse" | "shop"
+
+  return (
+    <div className="space-y-4">
+      <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 gap-1">
+        <button
+          onClick={() => setMode("warehouse")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            mode === "warehouse" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"
+          }`}
+        >
+          <Warehouse size={14} /> {t("仓库搬仓", "Warehouse Transfer")}
+        </button>
+        <button
+          onClick={() => setMode("shop")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            mode === "shop" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"
+          }`}
+        >
+          <Store size={14} /> {t("店铺搬家（旧店铺 → 新店铺）", "Shop Move (Old Shop → New Shop)")}
+        </button>
+      </div>
+
+      {mode === "warehouse" && <WarehouseMoveForm t={t} inventory={inventory} onTransfer={onTransfer} />}
+      {mode === "shop" && <ShopMoveForm t={t} inventory={inventory} stores={stores} onMoveShop={onMoveShop} />}
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="text-sm font-medium mb-3">{t("搬仓 / 搬店记录", "Transfer / Move Log")}</div>
+        {logs.length === 0 && <div className="text-xs text-slate-400 text-center py-6">{t("暂无记录", "No records yet")}</div>}
+        {logs.length > 0 && (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+                <th className="py-2 pr-3 font-medium">{t("类型", "Type")}</th>
+                <th className="py-2 pr-3 font-medium">SKU</th>
+                <th className="py-2 pr-3 font-medium">{t("从", "From")}</th>
+                <th className="py-2 pr-3 font-medium">{t("到", "To")}</th>
+                <th className="py-2 pr-3 font-medium text-right">{t("数量", "Qty")}</th>
+                <th className="py-2 pr-3 font-medium">{t("时间", "Time")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((l) => (
+                <tr key={l.id} className="border-b border-slate-100 last:border-0">
+                  <td className="py-2 pr-3">
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                      l.type === "shop" ? "bg-indigo-100 text-indigo-700 border-indigo-200" : "bg-slate-100 text-slate-600 border-slate-200"
+                    }`}>
+                      {l.type === "shop" ? t("店铺搬家", "Shop Move") : t("仓库搬仓", "Warehouse Transfer")}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 font-medium">{l.sku}</td>
+                  <td className="py-2 pr-3">{l.from}</td>
+                  <td className="py-2 pr-3">{l.to}</td>
+                  <td className="py-2 pr-3 text-right tabular-nums">{l.qty ?? "—"}</td>
+                  <td className="py-2 pr-3 text-slate-400 tabular-nums">{new Date(l.date).toLocaleString("en-MY").slice(0, 17)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WarehouseMoveForm({ t, inventory, onTransfer }) {
+  const [sku, setSku] = useState(inventory[0]?.sku || "");
+  const [from, setFrom] = useState("吉隆坡仓");
+  const [to, setTo] = useState("柔佛仓");
+  const [qty, setQty] = useState(1);
+  const [message, setMessage] = useState(null);
+  const lang = t("zh", "en");
+
+  const item = inventory.find((i) => i.sku === sku);
+  const fromStock = item ? (from === "吉隆坡仓" ? item.warehouseA : item.warehouseB) : 0;
+
+  function handleTransfer() {
+    if (!item) return;
+    if (from === to) {
+      setMessage({ type: "error", text: t("出发仓库与目标仓库不能相同", "Source and destination warehouse cannot be the same") });
+      return;
+    }
+    const n = Number(qty);
+    if (!n || n <= 0) {
+      setMessage({ type: "error", text: t("请输入有效的搬仓数量", "Please enter a valid quantity") });
+      return;
+    }
+    if (n > fromStock) {
+      setMessage({ type: "error", text: t(`${from} 库存不足，目前只有 ${fromStock} 件`, `Not enough stock in ${warehouseLabel(from, lang)} — only ${fromStock} left`) });
+      return;
+    }
+    onTransfer(sku, from, to, n);
+    setMessage({ type: "success", text: t(`已将 ${n} 件 ${item.name} 从 ${from} 搬到 ${to}`, `Moved ${n} × ${item.name} from ${warehouseLabel(from, lang)} to ${warehouseLabel(to, lang)}`) });
+    setQty(1);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="text-sm font-medium mb-3 flex items-center gap-1.5">
+          <ArrowRightLeft size={14} className="text-teal-500" /> {t("仓库间调拨（同一商品，换个仓库存放）", "Transfer between warehouses (same product, different location)")}
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block">{t("选择商品 SKU", "Select Product SKU")}</label>
+            <select
+              value={sku}
+              onChange={(e) => setSku(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+            >
+              {inventory.map((i) => (
+                <option key={i.sku} value={i.sku}>{i.sku} · {i.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block">{t("搬仓数量", "Quantity")}</label>
+            <input
+              type="number"
+              min={1}
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block">{t("从（出发仓库）", "From (Source)")}</label>
+            <select
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+            >
+              {WAREHOUSES.map((w) => (<option key={w} value={w}>{warehouseLabel(w, lang)}</option>))}
+            </select>
+            {item && <div className="text-[11px] text-slate-400 mt-1">{t(`当前库存：${fromStock} 件`, `Current stock: ${fromStock}`)}</div>}
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block">{t("到（目标仓库）", "To (Destination)")}</label>
+            <select
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+            >
+              {WAREHOUSES.map((w) => (<option key={w} value={w}>{warehouseLabel(w, lang)}</option>))}
+            </select>
+          </div>
+        </div>
+
+        {message && (
+          <div className={`mt-3 flex items-center gap-2 text-xs px-3 py-2 rounded-lg border ${
+            message.type === "error" ? "bg-rose-50 text-rose-600 border-rose-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"
+          }`}>
+            {message.type === "error" ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} />}
+            {message.text}
+          </div>
+        )}
+
+        <button
+          onClick={handleTransfer}
+          className="mt-3 flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
+        >
+          <ArrowRightLeft size={14} /> {t("确认搬仓", "Confirm Transfer")}
+        </button>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="text-sm font-medium mb-3">{t("当前各仓库库存一览", "Current Stock by Warehouse")}</div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+              <th className="py-2 pr-3 font-medium">SKU</th>
+              <th className="py-2 pr-3 font-medium">{t("商品名称", "Product Name")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("吉隆坡仓", "KL Warehouse")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("柔佛仓", "Johor Warehouse")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("总库存", "Total Stock")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {inventory.map((i) => (
+              <tr key={i.sku} className="border-b border-slate-100 last:border-0">
+                <td className="py-2 pr-3 font-medium">{i.sku}</td>
+                <td className="py-2 pr-3">{i.name}</td>
+                <td className="py-2 pr-3 text-right tabular-nums">{i.warehouseA}</td>
+                <td className="py-2 pr-3 text-right tabular-nums">{i.warehouseB}</td>
+                <td className="py-2 pr-3 text-right tabular-nums font-medium">{i.warehouseA + i.warehouseB}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ShopMoveForm({ t, inventory, stores, onMoveShop }) {
+  const [sku, setSku] = useState(inventory[0]?.sku || "");
+  const [toShop, setToShop] = useState("");
+  const [message, setMessage] = useState(null);
+
+  const item = inventory.find((i) => i.sku === sku);
+  const fromShop = stores.find((s) => s.id === item?.listedShop);
+  const targetOptions = stores.filter((s) => s.id !== item?.listedShop);
+
+  function handleMove() {
+    if (!item) return;
+    if (!toShop) {
+      setMessage({ type: "error", text: t("请选择要搬去的新店铺", "Please select a destination store") });
+      return;
+    }
+    const toStore = stores.find((s) => s.id === toShop);
+    onMoveShop(sku, item.listedShop, toShop);
+    setMessage({ type: "success", text: t(`已把「${item.name}」从「${fromShop?.name}」搬到「${toStore?.name}」`, `Moved "${item.name}" from "${fromShop?.name}" to "${toStore?.name}"`) });
+    setToShop("");
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="text-sm font-medium mb-3 flex items-center gap-1.5">
+        <Store size={14} className="text-indigo-500" /> {t("把商品从旧店铺搬去新店铺", "Move a product from an old store to a new store")}
+      </div>
+      <div className="text-xs text-slate-400 mb-4">
+        {t(
+          "适用场景：旧店铺要收掉 / 换新店铺经营，把商品的库存归属、上架资料转移到新店铺，不影响仓库实际库存数量。",
+          "Use case: closing an old store / moving to a new one — transfers listing ownership to the new store without affecting actual warehouse stock.",
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs text-slate-500 mb-1 block">{t("选择商品 SKU", "Select Product SKU")}</label>
+          <select
+            value={sku}
+            onChange={(e) => { setSku(e.target.value); setToShop(""); }}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-indigo-400"
+          >
+            {inventory.map((i) => (
+              <option key={i.sku} value={i.sku}>{i.sku} · {i.name}</option>
+            ))}
+          </select>
+          {fromShop && (
+            <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
+              {t("目前所属：", "Currently under:")}
+              <span className="inline-flex items-center gap-1 font-medium text-slate-600">
+                <span className={`h-1.5 w-1.5 rounded-full ${PLATFORM_THEME[fromShop.platform].dot}`} />
+                {fromShop.name}
+              </span>
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="text-xs text-slate-500 mb-1 block">{t("搬去新店铺", "Move to New Store")}</label>
+          <select
+            value={toShop}
+            onChange={(e) => setToShop(e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-indigo-400"
+          >
+            <option value="">{t("请选择目标店铺", "Select a destination store")}</option>
+            {targetOptions.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}（{s.platform}）</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`mt-3 flex items-center gap-2 text-xs px-3 py-2 rounded-lg border ${
+          message.type === "error" ? "bg-rose-50 text-rose-600 border-rose-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"
+        }`}>
+          {message.type === "error" ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} />}
+          {message.text}
+        </div>
+      )}
+
+      <button
+        onClick={handleMove}
+        className="mt-3 flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
+      >
+        <Store size={14} /> {t("确认搬店", "Confirm Move")}
+      </button>
+    </div>
+  );
+}
+
+/* ============================== Store management (店铺管理) ============================== */
+
+function StoreManagement({ t, stores, onConnect, onSetSyncMode }) {
+  const [name, setName] = useState("");
+  const [platform, setPlatform] = useState("Shopee");
+  const [oauthPlatform, setOauthPlatform] = useState(null); // null | "Shopee" | "TikTok Shop"
+
+  function handleConnect() {
+    if (!name.trim()) return;
+    onConnect(name.trim(), platform);
+    setName("");
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="text-sm font-medium mb-3 flex items-center gap-1.5">
+          <LogIn size={14} className="text-teal-500" /> {t("使用平台账号登录连接（预览效果）", "Connect via Platform Login (Preview)")}
+        </div>
+        <div className="text-xs text-slate-400 mb-3">
+          {t(
+            "以后拿到 Shopee / TikTok Shop 的官方 API 之后，正式版会是这个体验：点一下按钮，跳转去平台登录、授权，完成后自动开始实时同步。下面可以先点一下看看这个流程大概长什么样——",
+            "Once official Shopee / TikTok Shop API access is granted, the real version will work like this: click the button, log in and authorize on the platform, then it auto-syncs in real time. You can preview roughly what that flow looks like below — ",
+          )}
+          <span className="text-amber-600 font-medium">{t("这是UI预览，不会真的连到你的账号", "this is a UI preview and won't actually connect to your account")}</span>
+          {t("，因为还没有正式 API Key 和后端支持。", ", since production API keys and backend support aren't set up yet.")}
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setOauthPlatform("Shopee")}
+            className="flex-1 flex items-center justify-center gap-2 text-sm px-4 py-2.5 rounded-lg border border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100"
+          >
+            <LogIn size={15} /> {t("使用 Shopee 登录连接", "Connect with Shopee Login")}
+          </button>
+          <button
+            onClick={() => setOauthPlatform("TikTok Shop")}
+            className="flex-1 flex items-center justify-center gap-2 text-sm px-4 py-2.5 rounded-lg border border-slate-400 bg-slate-50 text-slate-700 hover:bg-slate-100"
+          >
+            <LogIn size={15} /> {t("使用 TikTok Shop 登录连接", "Connect with TikTok Shop Login")}
+          </button>
+        </div>
+      </div>
+
+      {oauthPlatform && (
+        <OAuthConnectModal
+          t={t}
+          platform={oauthPlatform}
+          onClose={() => setOauthPlatform(null)}
+          onConnected={(shopNames) => {
+            shopNames.forEach((n) => onConnect(n, oauthPlatform, "api"));
+            setOauthPlatform(null);
+          }}
+        />
+      )}
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="text-sm font-medium mb-3 flex items-center gap-1.5">
+          <Link2 size={14} className="text-teal-500" /> {t("手动连接新店铺（现阶段实际使用的方式）", "Manually Connect a New Store (current real workflow)")}
+        </div>
+        <div className="text-xs text-slate-400 mb-3">
+          {t(
+            "支持连接多个商家 / 多个店铺账号（同一平台可连多个店铺），连接后即可在订单、库存等模块中管理该店铺的数据。",
+            "Supports connecting multiple merchants / store accounts (multiple stores per platform). Once connected, you can manage that store's data in Orders, Inventory, etc.",
+          )}
+        </div>
+        <div className="flex gap-2">
+          <select
+            value={platform}
+            onChange={(e) => setPlatform(e.target.value)}
+            className="px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+          >
+            <option>Shopee</option>
+            <option>TikTok Shop</option>
+          </select>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t("输入店铺名称，例如：Shopee 分店2", "Enter store name, e.g. Shopee Branch 2")}
+            className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+          />
+          <button
+            onClick={handleConnect}
+            className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
+          >
+            <Plus size={14} /> {t("连接", "Connect")}
+          </button>
+        </div>
+        <div className="mt-3 text-[11px] text-slate-400">
+          {t(
+            "新连接的店铺默认是\"手动导入模式\"，等申请到平台 API 之后，可以在下面把该店铺切换成\"API自动同步\"，或者用上面的登录连接。",
+            "Newly connected stores default to \"manual import mode\". Once you get platform API access, switch it to \"API auto-sync\" below, or use the login connect above.",
+          )}
+        </div>
+      </div>
+
+      {["Shopee", "TikTok Shop"].map((pf) => {
+        const theme = PLATFORM_THEME[pf];
+        const list = stores.filter((s) => s.platform === pf);
+        return (
+          <div key={pf} className={`rounded-xl border ${theme.border} overflow-hidden bg-white`}>
+            <div className={`${theme.headerBg} text-white px-5 py-3 flex items-center justify-between`}>
+              <span className="text-sm font-medium flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-white/80" /> {pf}
+              </span>
+              <span className="text-[11px] bg-white/20 px-2 py-0.5 rounded-full">{t(`${list.length} 个已连接店铺`, `${list.length} store(s) connected`)}</span>
+            </div>
+            {list.length === 0 && <div className="text-xs text-slate-400 text-center py-6">{t(`尚未连接任何 ${pf} 店铺`, `No ${pf} stores connected yet`)}</div>}
+            {list.length > 0 && (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+                    <th className="py-2 pr-3 pl-5 font-medium">{t("店铺名称", "Store Name")}</th>
+                    <th className="py-2 pr-3 font-medium">{t("连接时间", "Connected At")}</th>
+                    <th className="py-2 pr-3 font-medium">{t("数据同步方式", "Sync Method")}</th>
+                    <th className="py-2 pr-3 pr-5 font-medium">{t("状态", "Status")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {list.map((s) => (
+                    <tr key={s.id} className="border-b border-slate-100 last:border-0">
+                      <td className="py-2.5 pr-3 pl-5 font-medium">{s.name}</td>
+                      <td className="py-2.5 pr-3 text-slate-500 tabular-nums">{s.connectedAt}</td>
+                      <td className="py-2.5 pr-3">
+                        {s.syncMode === "api" ? (
+                          <span className="text-xs px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-200 inline-flex items-center gap-1">
+                            <Zap size={11} /> {t("API自动同步", "API Auto-Sync")}
+                          </span>
+                        ) : (
+                          <span className="text-xs px-2 py-0.5 rounded-full border bg-amber-100 text-amber-700 border-amber-200 inline-flex items-center gap-1">
+                            <FileSpreadsheet size={11} /> {t("手动导入模式", "Manual Import Mode")}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 pr-3 pr-5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-200 inline-flex items-center gap-1">
+                            <CheckCircle2 size={11} /> {t(s.status, "Connected")}
+                          </span>
+                          {s.syncMode === "manual" ? (
+                            <button
+                              onClick={() => onSetSyncMode(s.id, "api")}
+                              className="text-[11px] px-2 py-1 rounded-full border border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100"
+                              title={t("已经申请到平台API了？点这里切换", "Already got platform API access? Click to switch")}
+                            >
+                              {t("标记为已获得API", "Mark as API Connected")}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => onSetSyncMode(s.id, "manual")}
+                              className="text-[11px] px-2 py-1 rounded-full border border-slate-200 text-slate-500 hover:bg-slate-100"
+                            >
+                              {t("改回手动导入", "Switch Back to Manual")}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---- 模拟"使用Shopee/TikTok登录连接"的授权流程（UI预览，非真实OAuth） ----
+   真实版本需要：1）平台批准的API Key/Secret  2）后端处理授权回调、保存/刷新token。
+   这里只是把最终体验的样子做出来，方便讨论/展示，点击流程不会连到真实账号。 */
+function OAuthConnectModal({ t, platform, onClose, onConnected }) {
+  const [step, setStep] = useState("login"); // login -> authorize -> connecting -> success
+  const [account, setAccount] = useState("");
+  const [selectedShops, setSelectedShops] = useState(() => new Set());
+  const theme = PLATFORM_THEME[platform];
+  const mockShops = platform === "Shopee"
+    ? ["Shopee 官方旗舰店", "Shopee 分店 2"]
+    : ["TikTok Shop 主账号"];
+
+  function toggleShop(name) {
+    setSelectedShops((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }
+
+  function handleLogin() {
+    if (!account.trim()) return;
+    setStep("authorize");
+  }
+
+  function handleAuthorize() {
+    setStep("connecting");
+    setTimeout(() => setStep("success"), 1200); // 模拟连接耗时
+  }
+
+  function handleFinish() {
+    onConnected(Array.from(selectedShops));
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
+      <div className="relative w-[380px] bg-white rounded-xl shadow-xl overflow-hidden">
+        <div className={`${theme.headerBg} text-white px-5 py-3 flex items-center justify-between`}>
+          <span className="text-sm font-medium">{t(`${platform} 授权登录（预览模拟）`, `${platform} Authorization Login (Preview)`)}</span>
+          <button onClick={onClose} className="text-white/80 hover:text-white"><X size={16} /></button>
+        </div>
+
+        <div className="p-5">
+          <div className="mb-3 flex items-center gap-2 text-[11px] px-2.5 py-1.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-200">
+            <Info size={12} className="shrink-0" /> {t(`这是模拟画面，不会真的连到你的 ${platform} 账号`, `This is a simulated screen and won't actually connect to your ${platform} account`)}
+          </div>
+
+          {step === "login" && (
+            <>
+              <div className="text-sm font-medium mb-3">{t(`登录你的 ${platform} 卖家账号`, `Log in to your ${platform} seller account`)}</div>
+              <input
+                value={account}
+                onChange={(e) => setAccount(e.target.value)}
+                placeholder={t("手机号 / 邮箱（模拟输入）", "Phone / Email (simulated input)")}
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400 mb-2"
+              />
+              <input
+                type="password"
+                placeholder={t("密码（模拟输入，不会被记录）", "Password (simulated input, not recorded)")}
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400 mb-4"
+              />
+              <button
+                onClick={handleLogin}
+                disabled={!account.trim()}
+                className={`w-full text-sm py-2 rounded-lg text-white ${account.trim() ? "bg-slate-900 hover:bg-slate-800" : "bg-slate-300 cursor-not-allowed"}`}
+              >
+                {t("登录", "Log in")}
+              </button>
+            </>
+          )}
+
+          {step === "authorize" && (
+            <>
+              <div className="text-sm font-medium mb-2">{t("我们的ERP系统请求以下权限", "Our ERP system is requesting the following permissions")}</div>
+              <div className="text-xs text-slate-500 mb-3">{t("账号：", "Account: ")}{account}</div>
+              <ul className="text-xs text-slate-600 space-y-1.5 mb-4">
+                <li className="flex items-center gap-2"><CheckCircle2 size={13} className="text-teal-500" /> {t("读取 / 更新订单信息", "Read / update order info")}</li>
+                <li className="flex items-center gap-2"><CheckCircle2 size={13} className="text-teal-500" /> {t("读取 / 更新库存信息", "Read / update inventory info")}</li>
+                <li className="flex items-center gap-2"><CheckCircle2 size={13} className="text-teal-500" /> {t("读取物流 / 追踪信息", "Read shipping / tracking info")}</li>
+                <li className="flex items-center gap-2"><CheckCircle2 size={13} className="text-teal-500" /> {t("读取店铺基本信息", "Read basic store info")}</li>
+              </ul>
+              <div className="flex gap-2">
+                <button onClick={onClose} className="flex-1 text-sm py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+                  {t("取消", "Cancel")}
+                </button>
+                <button onClick={handleAuthorize} className="flex-1 text-sm py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800">
+                  {t("同意并连接", "Agree & Connect")}
+                </button>
+              </div>
+            </>
+          )}
+
+          {step === "connecting" && (
+            <div className="flex flex-col items-center justify-center py-8 gap-3">
+              <RefreshCw size={24} className="text-teal-500 animate-spin" />
+              <div className="text-sm text-slate-500">{t("正在建立连接...", "Connecting...")}</div>
+            </div>
+          )}
+
+          {step === "success" && (
+            <>
+              <div className="flex items-center gap-2 mb-3 text-emerald-600">
+                <CheckCircle2 size={16} /> <span className="text-sm font-medium">{t("已连接，选择要加入系统的店铺", "Connected — select stores to add")}</span>
+              </div>
+              <div className="space-y-2 mb-4">
+                {mockShops.map((s) => (
+                  <label key={s} className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50">
+                    <input type="checkbox" checked={selectedShops.has(s)} onChange={() => toggleShop(s)} className="h-3.5 w-3.5 rounded border-slate-300" />
+                    {s}
+                  </label>
+                ))}
+              </div>
+              <button
+                onClick={handleFinish}
+                disabled={selectedShops.size === 0}
+                className={`w-full text-sm py-2 rounded-lg text-white ${selectedShops.size > 0 ? "bg-slate-900 hover:bg-slate-800" : "bg-slate-300 cursor-not-allowed"}`}
+              >
+                {t(`完成连接（${selectedShops.size}）`, `Finish Connecting (${selectedShops.size})`)}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Manual import (手动导入订单，暂无API时使用) ============================== */
+
+const CSV_TEMPLATE_HEADERS = ["order_id", "customer", "phone", "address", "sku", "product", "qty", "unit_price", "shipping_fee", "tracking", "date"];
+const CSV_TEMPLATE_EXAMPLE = ["SP-20260717-001", "陈美玲", "012-3456789", "No.1 Jalan Contoh, KL", "TSH-BLK-M", "纯棉圆领T恤 黑色 M码", "2", "39.90", "6.50", "MY1234567890", "2026-07-17"];
+
+function downloadCsvTemplate() {
+  const csv = [CSV_TEMPLATE_HEADERS.join(","), CSV_TEMPLATE_EXAMPLE.join(",")].join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "订单导入模板.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function skuStatus(sku, inventory) {
+  if (!sku || !sku.trim()) return "missing"; // CSV 根本没填 SKU
+  const found = inventory.some((i) => i.sku.toLowerCase() === sku.trim().toLowerCase());
+  return found ? "ok" : "unlinked"; // 填了，但系统库存里找不到这个 SKU（平台没跟系统对上）
+}
+
+/* ---- 识别并转换 Shopee 官方后台导出的订单文件（"Order_toship_xxx.xlsx" 这类文件） ----
+   Shopee 导出栏位跟我们自己的通用模板完全不一样，这里做自动识别 + 自动转换，
+   用户可以直接把 Shopee 后台导出的原始文件丢进来，不用自己改格式。 */
+function isShopeeExportRow(raw) {
+  return raw && "Order ID" in raw && "SKU Reference No." in raw;
+}
+
+function normalizeShopeeRow(raw, orderIdCounter) {
+  const rawOrderId = String(raw["Order ID"] || "").trim();
+  const seen = orderIdCounter.get(rawOrderId) || 0;
+  orderIdCounter.set(rawOrderId, seen + 1);
+  // 同一个 Shopee 订单号里如果有多个商品（多行），拆成多笔子订单方便逐件拣货打印，
+  // 但保留原始平台订单号，方便看出这几笔本来是同一个包裹
+  const id = seen === 0 ? rawOrderId : `${rawOrderId}-${seen + 1}`;
+
+  const qty = Number(raw["Quantity"]) || 1;
+  const unitPrice = Number(raw["Deal Price"]) || Number(raw["Original Price"]) || 0;
+  const commissionFee = Number(raw["Commission Fee"]) || 0;
+  const transactionFee = Number(raw["Transaction Fee"]) || 0;
+  const serviceFee = Number(raw["Service Fee"]) || 0;
+  const estShippingFee = Number(raw["Estimated Shipping Fee"]) || 0;
+  const variation = String(raw["Variation Name"] || "").trim();
+  const productName = String(raw["Product Name"] || "").trim();
+  const orderDate = String(raw["Order Paid Time"] || raw["Order Creation Date"] || "").slice(0, 10);
+
+  return {
+    order_id: id,
+    platform_order_id: rawOrderId,
+    customer: String(raw["Receiver Name"] || raw["Username (Buyer)"] || "—").trim() || "—",
+    phone: String(raw["Phone Number"] || "—").trim() || "—",
+    address: String(raw["Delivery Address"] || "—").trim() || "—",
+    sku: String(raw["SKU Reference No."] || "").trim(),
+    product: variation ? `${productName} - ${variation}` : productName,
+    qty,
+    unit_price: unitPrice,
+    shipping_fee: estShippingFee,
+    tracking: String(raw["Tracking Number*"] || "").trim() || "—",
+    date: orderDate || new Date().toISOString().slice(0, 10),
+    // 这三项是 Shopee 后台给的实际数据，比我们通用模板的估算百分比更准确：
+    commission_fee: commissionFee,
+    platform_fee: +(transactionFee + serviceFee).toFixed(2),
+    platform_status: String(raw["Order Status"] || "").trim(),
+  };
+}
+
+/* ---- 识别并转换 TikTok Shop 官方后台导出的订单文件（"To_Ship_order-xxx.csv" 这类文件） ----
+   TikTok Shop 的栏位名称跟 Shopee 完全不同（例如 SKU 叫 "Seller SKU"，客户叫 "Recipient"）。
+   这份"待发货"导出没有单独列出佣金/平台手续费，所以那两项留空，
+   导入时会自动用系统的百分比估算（跟通用CSV模板一样的兜底逻辑）。 */
+function isTiktokExportRow(raw) {
+  return raw && "Seller SKU" in raw && "SKU ID" in raw && "Recipient" in raw;
+}
+
+function parseDmyDateTime(v) {
+  const s = String(v || "").trim();
+  if (!s) return null;
+  const datePart = s.split(" ")[0];
+  const parts = datePart.split("/");
+  if (parts.length !== 3) return null;
+  const [d, m, y] = parts;
+  if (!d || !m || !y) return null;
+  return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+}
+
+function normalizeTiktokRow(raw, orderIdCounter) {
+  const rawOrderId = String(raw["Order ID"] || "").trim();
+  const seen = orderIdCounter.get(rawOrderId) || 0;
+  orderIdCounter.set(rawOrderId, seen + 1);
+  const id = seen === 0 ? rawOrderId : `${rawOrderId}-${seen + 1}`;
+
+  const qty = Number(raw["Quantity"]) || 1;
+  const subtotalAfterDiscount = Number(raw["SKU Subtotal After Discount"]) || 0;
+  const unitPrice = qty > 0 ? +(subtotalAfterDiscount / qty).toFixed(2) : subtotalAfterDiscount;
+  const shippingFee = Number(raw["Original Shipping Fee"]) || 0;
+  const variation = String(raw["Variation"] || "").trim();
+  const productName = String(raw["Product Name"] || "").trim();
+  const date = parseDmyDateTime(raw["Paid Time"]) || parseDmyDateTime(raw["Created Time"]) || new Date().toISOString().slice(0, 10);
+
+  return {
+    order_id: id,
+    platform_order_id: rawOrderId,
+    customer: String(raw["Recipient"] || raw["Buyer Username"] || "—").trim() || "—",
+    phone: String(raw["Phone #"] || "—").trim() || "—",
+    address: String(raw["Detail Address"] || "—").trim() || "—",
+    sku: String(raw["Seller SKU"] || "").trim(),
+    product: variation ? `${productName} - ${variation}` : productName,
+    qty,
+    unit_price: unitPrice,
+    shipping_fee: shippingFee,
+    tracking: String(raw["Tracking ID"] || "").trim() || "—",
+    date,
+    platform_status: String(raw["Order Status"] || "").trim(),
+    // 这份导出没有佣金/平台手续费栏位，commission_fee / platform_fee 不设值，
+    // 导入时会自动 fallback 用百分比估算
+  };
+}
+
+function ManualImport({ t, stores, inventory, onImport }) {
+  const [storeId, setStoreId] = useState(stores[0]?.id || "");
+  const [fileName, setFileName] = useState("");
+  const [rows, setRows] = useState([]);
+  const [error, setError] = useState("");
+  const [imported, setImported] = useState(0);
+  const [sourceType, setSourceType] = useState(""); // "template" | "shopee"
+
+  const store = stores.find((s) => s.id === storeId);
+  const rowsWithStatus = rows.map((r) => ({ ...r, __status: skuStatus(r.sku, inventory) }));
+  const missingSkuRows = rowsWithStatus.filter((r) => r.__status === "missing");
+  const unlinkedSkuRows = rowsWithStatus.filter((r) => r.__status === "unlinked");
+
+  function processRawRows(raw) {
+    if (!raw || raw.length === 0) {
+      setError(t("文件里没有解析到任何数据行，请确认文件内容", "No data rows found in the file — please check the file content"));
+      setRows([]);
+      return;
+    }
+    if (isShopeeExportRow(raw[0])) {
+      const counter = new Map();
+      setSourceType("shopee");
+      setRows(raw.map((r) => normalizeShopeeRow(r, counter)));
+      return;
+    }
+    if (isTiktokExportRow(raw[0])) {
+      const counter = new Map();
+      setSourceType("tiktok");
+      setRows(raw.map((r) => normalizeTiktokRow(r, counter)));
+      return;
+    }
+    const fields = Object.keys(raw[0]);
+    const missing = CSV_TEMPLATE_HEADERS.filter((h) => !fields.includes(h));
+    if (missing.length > 0) {
+      setError(
+        t(
+          `识别不出这个文件的格式：既不是 Shopee/TikTok Shop 官方导出，也缺少通用模板的必要栏位（${missing.join("、")}）。可以直接上传平台后台导出的原始文件，或对照"下载CSV模板"来填。`,
+          `Couldn't recognize this file format: it's neither a Shopee/TikTok Shop official export nor does it have the required template columns (${missing.join(", ")}). Upload the platform's original export file, or fill in the "Download CSV Template".`,
+        ),
+      );
+      setRows([]);
+      return;
+    }
+    setSourceType("template");
+    setRows(raw);
+  }
+
+  function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setError("");
+    setImported(0);
+    setSourceType("");
+
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (ext === "xlsx" || ext === "xls") {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const wb = XLSX.read(evt.target.result, { type: "array" });
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const raw = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
+          processRawRows(raw);
+        } catch (err) {
+          setError(t(`Excel 文件解析失败：${err.message}`, `Failed to parse Excel file: ${err.message}`));
+        }
+      };
+      reader.onerror = () => setError(t("文件读取失败，请重试", "Failed to read file, please try again"));
+      reader.readAsArrayBuffer(file);
+    } else {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => processRawRows(results.data),
+        error: (err) => setError(t(`文件解析失败：${err.message}`, `Failed to parse file: ${err.message}`)),
+      });
+    }
+  }
+
+  function handleImport() {
+    if (!store || rows.length === 0) return;
+    const now = new Date();
+    const mapped = rows.map((r, i) => {
+      const qty = Number(r.qty) || 1;
+      const unitPrice = Number(r.unit_price) || 0;
+      const shippingFee = Number(r.shipping_fee) || 0;
+      const sku = (r.sku || "").trim();
+      const status = skuStatus(sku, inventory); // "missing" | "unlinked" | "ok"
+      const hasRealFees = r.commission_fee !== undefined && r.platform_fee !== undefined;
+      return {
+        id: r.order_id || `MANUAL-${now.getTime()}-${i}`,
+        platformOrderId: r.platform_order_id || undefined,
+        platformStatus: r.platform_status || undefined,
+        platform: store.platform,
+        shop: store.id,
+        customer: r.customer || "—",
+        phone: r.phone || "—",
+        address: r.address || "—",
+        sku,
+        skuStatus: status,
+        skuMissing: status !== "ok", // 兼容旧字段：只要不是完全对上系统SKU，都算需要关注
+        product: r.product || sku || t("未命名商品", "Unnamed Product"),
+        qty,
+        unitPrice,
+        shippingFee,
+        platformFee: hasRealFees ? +Number(r.platform_fee).toFixed(2) : +(unitPrice * qty * 0.02).toFixed(2),
+        commission: hasRealFees ? +Number(r.commission_fee).toFixed(2) : +(unitPrice * qty * (store.platform === "Shopee" ? 0.06 : 0.05)).toFixed(2),
+        cost: 0,
+        tracking: r.tracking || "—",
+        warehouse: "吉隆坡仓",
+        status: "待处理",
+        date: r.date || now.toISOString().slice(0, 10),
+      };
+    });
+    onImport(mapped);
+    setImported(mapped.length);
+    setRows([]);
+    setFileName("");
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 bg-sky-50 border border-sky-200 rounded-xl px-4 py-3">
+        <Info size={16} className="text-sky-600 shrink-0" />
+        <div className="text-xs text-sky-800">
+          {t(
+            "在还没申请到 Shopee / TikTok Shop 官方 API 之前，先用这里导入订单数据——可以直接上传",
+            "Before getting official Shopee / TikTok Shop API access, use this to import order data — you can directly upload the ",
+          )}
+          <strong>{t("平台后台导出的原始文件", "platform's original export file")}</strong>
+          {t(
+            "（Shopee 的\"Order_toship_xxx.xlsx\"、TikTok Shop 的\"To_Ship_order-xxx.csv\"都支持），系统会自动识别栏位并转换；也可以用我们自己的CSV模板。等以后拿到 API，去\"店铺管理\"把对应店铺切换成\"API自动同步\"即可，这个手动导入功能到时候就不需要再用了，系统架构不用改。",
+            " (Shopee's \"Order_toship_xxx.xlsx\", TikTok Shop's \"To_Ship_order-xxx.csv\" both supported) — the system auto-detects the columns and converts them; or use our own CSV template. Once you get API access later, switch that store to \"API Auto-Sync\" in Store Management — this manual import feature simply won't be needed anymore, no architecture changes required.",
+          )}
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
+        <div className="text-sm font-medium flex items-center gap-1.5">
+          <Upload size={14} className="text-teal-500" /> {t("上传订单文件", "Upload Order File")}
+        </div>
+
+        <div>
+          <label className="text-xs text-slate-500 mb-1 block">{t("导入到哪个店铺", "Import to which store")}</label>
+          <select
+            value={storeId}
+            onChange={(e) => setStoreId(e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+          >
+            {stores.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}（{s.platform}）{s.syncMode === "api" ? t(" · 已有API，通常不需要手动导入", " · Has API, manual import usually not needed") : ""}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-3 flex-wrap">
+          <label className="flex items-center gap-2 text-sm px-4 py-2 rounded-lg border border-slate-300 cursor-pointer hover:bg-slate-50">
+            <Upload size={14} />
+            {t("选择文件（.xlsx / .csv）", "Choose File (.xlsx / .csv)")}
+            <input type="file" accept=".csv,.xlsx,.xls" onChange={handleFile} className="hidden" />
+          </label>
+          <button
+            onClick={downloadCsvTemplate}
+            className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+          >
+            <FileSpreadsheet size={14} /> {t("下载CSV模板", "Download CSV Template")}
+          </button>
+          {fileName && <span className="text-xs text-slate-400">{t("已选择：", "Selected: ")}{fileName}</span>}
+          {sourceType === "shopee" && (
+            <span className="text-[11px] px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200 inline-flex items-center gap-1">
+              <CheckCircle2 size={11} /> {t("已识别为 Shopee 官方导出格式，自动带入真实佣金/手续费/运费", "Recognized as Shopee official export format — real commission/fees/shipping auto-filled")}
+            </span>
+          )}
+          {sourceType === "tiktok" && (
+            <span className="text-[11px] px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200 inline-flex items-center gap-1">
+              <CheckCircle2 size={11} /> {t("已识别为 TikTok Shop 官方导出格式（佣金/手续费该文件未提供，暂用估算）", "Recognized as TikTok Shop official export format (commission/fees not provided, estimated for now)")}
+            </span>
+          )}
+          {sourceType === "template" && (
+            <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200 inline-flex items-center gap-1">
+              <FileSpreadsheet size={11} /> {t("通用CSV模板格式", "Generic CSV Template Format")}
+            </span>
+          )}
+        </div>
+
+        {error && (
+          <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg border bg-rose-50 text-rose-600 border-rose-200">
+            <AlertTriangle size={13} /> {error}
+          </div>
+        )}
+
+        {imported > 0 && (
+          <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg border bg-emerald-50 text-emerald-700 border-emerald-200">
+            <CheckCircle2 size={13} /> {t(`已成功导入 ${imported} 笔订单到「${store?.name}」`, `Successfully imported ${imported} order(s) to "${store?.name}"`)}
+          </div>
+        )}
+
+        {rows.length > 0 && (
+          <div>
+            <div className="text-xs text-slate-500 mb-2">{t(`预览（共 ${rows.length} 笔，导入到「${store?.name}」）`, `Preview (${rows.length} total, importing to "${store?.name}")`)}</div>
+
+            {missingSkuRows.length > 0 && (
+              <div className="flex items-center gap-2 text-xs px-3 py-2 mb-2 rounded-lg border bg-rose-50 text-rose-600 border-rose-200">
+                <AlertTriangle size={13} className="shrink-0" />
+                {t(
+                  `有 ${missingSkuRows.length} 笔记录 CSV 里根本没填 SKU（下方红色标出），导入后会标注"缺SKU"。`,
+                  `${missingSkuRows.length} row(s) have no SKU filled in the CSV at all (marked red below) — will be flagged "Missing SKU" after import.`,
+                )}
+              </div>
+            )}
+            {unlinkedSkuRows.length > 0 && (
+              <div className="flex items-center gap-2 text-xs px-3 py-2 mb-2 rounded-lg border bg-amber-50 text-amber-700 border-amber-200">
+                <AlertTriangle size={13} className="shrink-0" />
+                {t(
+                  `有 ${unlinkedSkuRows.length} 笔记录填了 SKU，但我们系统库存里没有登记这个 SKU（下方橙色标出）——多半是平台那边的商品还没跟系统对应上，导入后会标注"系统未登记"，库存也不会自动扣减，需要先去库存里补建这个 SKU 或修正对应关系。`,
+                  `${unlinkedSkuRows.length} row(s) have an SKU filled in but it's not registered in our inventory (marked amber below) — usually because the platform's product isn't mapped to the system yet. Will be flagged "Not Registered" after import and stock won't auto-deduct; add this SKU to Inventory first or fix the mapping.`,
+                )}
+              </div>
+            )}
+
+            <div className="border border-slate-200 rounded-lg overflow-hidden max-h-64 overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr className="text-left text-slate-400">
+                    {CSV_TEMPLATE_HEADERS.map((h) => (<th key={h} className="py-2 px-2 font-medium">{h}</th>))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rowsWithStatus.slice(0, 20).map((r, i) => {
+                    const rowBg = r.__status === "missing" ? "bg-rose-50" : r.__status === "unlinked" ? "bg-amber-50" : "";
+                    const skuCellClass = r.__status === "missing" ? "text-rose-600 font-medium" : r.__status === "unlinked" ? "text-amber-700 font-medium" : "text-slate-600";
+                    return (
+                      <tr key={i} className={`border-t border-slate-100 ${rowBg}`}>
+                        {CSV_TEMPLATE_HEADERS.map((h) => (
+                          <td key={h} className={`py-1.5 px-2 ${h === "sku" ? skuCellClass : "text-slate-600"}`}>
+                            {h === "sku" ? (r.__status === "missing" ? t("⚠ 缺失", "⚠ Missing") : r.__status === "unlinked" ? t(`⚠ ${r.sku}（系统未登记）`, `⚠ ${r.sku} (not registered)`) : r.sku) : r[h]}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <button
+              onClick={handleImport}
+              className="mt-3 flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
+            >
+              <Upload size={14} /> {t(`确认导入 ${rows.length} 笔订单`, `Confirm Import (${rows.length})`)}
+              {(missingSkuRows.length > 0 || unlinkedSkuRows.length > 0) &&
+                t(`（缺SKU ${missingSkuRows.length} 笔，系统未登记 ${unlinkedSkuRows.length} 笔）`, ` (Missing SKU: ${missingSkuRows.length}, Not Registered: ${unlinkedSkuRows.length})`)}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Finance ============================== */
+
+function Finance({ t, orders }) {
+  const byPlatform = ["Shopee", "TikTok Shop"].map((pl) => {
+    const os = orders.filter((o) => o.platform === pl && o.status !== "已取消");
+    const revenue = os.reduce((s, o) => s + o.unitPrice * o.qty, 0);
+    const fees = os.reduce((s, o) => s + o.platformFee + o.commission, 0);
+    const cost = os.reduce((s, o) => s + o.cost * o.qty, 0);
+    const netProfit = os.reduce((s, o) => s + profit(o), 0);
+    return { platform: pl, revenue, fees, cost, netProfit };
+  });
+
+  const totalProfit = byPlatform.reduce((s, p) => s + p.netProfit, 0);
+  const totalRevenue = byPlatform.reduce((s, p) => s + p.revenue, 0);
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-3 gap-4">
+        <KPICard label={t("总营收 (RM)", "Total Revenue (RM)")} value={fmt(totalRevenue)} icon={TrendingUp} tone="bg-teal-500" />
+        <KPICard label={t("平台费用+佣金 (RM)", "Platform Fees + Commission (RM)")} value={fmt(byPlatform.reduce((s, p) => s + p.fees, 0))} icon={DollarSign} tone="bg-amber-500" />
+        <KPICard label={t("净利润 (RM)", "Net Profit (RM)")} value={fmt(totalProfit)} icon={TrendingUp} tone="bg-indigo-500" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-white border border-slate-200 rounded-xl p-4">
+          <div className="text-sm font-medium mb-3">{t("按平台利润拆分", "Profit Breakdown by Platform")}</div>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={byPlatform}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                <XAxis dataKey="platform" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Bar dataKey="revenue" name={t("营收", "Revenue")} fill="#0ea5a4" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="fees" name={t("费用+佣金", "Fees + Commission")} fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="netProfit" name={t("净利润", "Net Profit")} fill="#6366f1" radius={[4, 4, 0, 0]} />
+                <Legend />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-4">
+          <div className="text-sm font-medium mb-3">{t("平台明细", "Platform Detail")}</div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+                <th className="py-2 font-medium">{t("平台", "Platform")}</th>
+                <th className="py-2 font-medium text-right">{t("营收", "Revenue")}</th>
+                <th className="py-2 font-medium text-right">{t("成本", "Cost")}</th>
+                <th className="py-2 font-medium text-right">{t("净利润", "Net Profit")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byPlatform.map((p) => (
+                <tr key={p.platform} className="border-b border-slate-100 last:border-0">
+                  <td className="py-2.5">{p.platform}</td>
+                  <td className="py-2.5 text-right tabular-nums">{fmt(p.revenue)}</td>
+                  <td className="py-2.5 text-right tabular-nums">{fmt(p.cost)}</td>
+                  <td className="py-2.5 text-right tabular-nums font-medium text-emerald-600">{fmt(p.netProfit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="text-sm font-medium mb-3">{t("订单级利润明细（前 10 笔）", "Order-Level Profit Detail (First 10)")}</div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+              <th className="py-2 pr-3 font-medium">{t("订单编号", "Order No.")}</th>
+              <th className="py-2 pr-3 font-medium">{t("平台", "Platform")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("商品金额", "Product Amount")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("费用+佣金", "Fees + Commission")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("净利润", "Net Profit")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {orders.slice(0, 10).map((o) => {
+              const p = profit(o);
+              return (
+                <tr key={o.id} className="border-b border-slate-100 last:border-0">
+                  <td className="py-2.5 pr-3 font-medium">{o.id}</td>
+                  <td className="py-2.5 pr-3">{o.platform}</td>
+                  <td className="py-2.5 pr-3 text-right tabular-nums">{fmt(o.unitPrice * o.qty)}</td>
+                  <td className="py-2.5 pr-3 text-right tabular-nums">{fmt(o.platformFee + o.commission)}</td>
+                  <td className={`py-2.5 pr-3 text-right tabular-nums font-medium ${p >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{fmt(p)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== AI panel ============================== */
+
+function restockSuggestions(inventory) {
+  return inventory.map((item) => {
+    const total = item.warehouseA + item.warehouseB;
+    const dailySales = 2 + (item.sku.length % 4);
+    const daysLeft = Math.max(1, Math.round(total / dailySales));
+    const suggestedQty = Math.max(0, item.reorderPoint * 2 - total);
+    return { ...item, total, daysLeft, suggestedQty };
+  }).filter((i) => i.total < i.reorderPoint + 15).sort((a, b) => a.daysLeft - b.daysLeft);
+}
+
+const FAQ_RULES = [
+  { keys: ["追踪", "物流", "到哪"], reply: "您的包裹正在配送中，可在【订单管理中心】输入订单编号查看实时物流状态与追踪号码。" },
+  { keys: ["退款", "退货"], reply: "退款申请提交后 3-5 个工作日内处理，商品需保持未拆封状态。您可在订单详情页发起退款申请。" },
+  { keys: ["尺码", "size"], reply: "本店 M 码适合 55-65kg，L 码适合 65-75kg，如介于两者之间建议选大一码。" },
+  { keys: ["优惠", "折扣", "coupon"], reply: "关注店铺可获取新客优惠券，大促期间另有满减活动，请留意店铺公告。" },
+];
+function aiReply(text) {
+  const hit = FAQ_RULES.find((r) => r.keys.some((k) => text.includes(k)));
+  return hit ? hit.reply : "已收到您的问题，AI 客服正在为您查找答案，如未能解决将在 10 分钟内转接人工客服。";
+}
+
+function AIPanel({ t, orders, inventory }) {
+  const [messages, setMessages] = useState([
+    { from: "customer", text: "你好，请问我的包裹到哪里了？" },
+    { from: "ai", text: aiReply("追踪") },
+  ]);
+  const [input, setInput] = useState("");
+  const suggestions = restockSuggestions(inventory);
+  const topSelling = [...orders.reduce((map, o) => {
+    map.set(o.sku, (map.get(o.sku) || 0) + o.qty);
+    return map;
+  }, new Map())].sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  function send() {
+    if (!input.trim()) return;
+    const reply = aiReply(input);
+    setMessages((m) => [...m, { from: "customer", text: input }, { from: "ai", text: reply }]);
+    setInput("");
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-white border border-slate-200 rounded-xl p-4">
+          <div className="text-sm font-medium mb-3 flex items-center gap-1.5"><TrendingUp size={14} className="text-teal-500"/> {t("热销商品 Top 5", "Top 5 Best Sellers")}</div>
+          <div className="space-y-2">
+            {topSelling.map(([sku, qty], i) => {
+              const product = PRODUCTS.find((p) => p.sku === sku);
+              return (
+                <div key={sku} className="flex items-center justify-between text-sm border-b border-slate-100 pb-2 last:border-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 w-4">{i + 1}</span>
+                    <div>
+                      <div className="font-medium">{product?.name}</div>
+                      <div className="text-xs text-slate-400">{sku}</div>
+                    </div>
+                  </div>
+                  <span className="text-xs font-semibold text-teal-600 tabular-nums">{t(`${qty} 件`, `${qty} pcs`)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-4">
+          <div className="text-sm font-medium mb-3 flex items-center gap-1.5"><Sparkles size={14} className="text-indigo-500"/> {t("AI 补货建议", "AI Restock Suggestions")}</div>
+          <div className="space-y-2">
+            {suggestions.slice(0, 5).map((s) => (
+              <div key={s.sku} className="flex items-center justify-between text-sm border-b border-slate-100 pb-2 last:border-0">
+                <div>
+                  <div className="font-medium">{s.name}</div>
+                  <div className="text-xs text-slate-400">{t(`预计 ${s.daysLeft} 天后售罄`, `Est. sold out in ${s.daysLeft} days`)}</div>
+                </div>
+                <span className="text-xs font-semibold text-indigo-600 tabular-nums">{t(`建议补货 ${s.suggestedQty} 件`, `Suggest restock ${s.suggestedQty}`)}</span>
+              </div>
+            ))}
+            {suggestions.length === 0 && <div className="text-xs text-slate-400">{t("当前所有 SKU 库存充足，暂无补货建议。", "All SKUs currently have sufficient stock — no restock suggestions.")}</div>}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="text-sm font-medium mb-3 flex items-center gap-1.5"><Bot size={14} className="text-teal-500"/> {t("AI 客服自动回复演示", "AI Customer Service Auto-Reply Demo")}</div>
+        <div className="border border-slate-100 rounded-lg h-64 overflow-y-auto p-3 space-y-2 bg-slate-50">
+          {messages.map((m, i) => (
+            <div key={i} className={`flex ${m.from === "ai" ? "justify-start" : "justify-end"}`}>
+              <div className={`max-w-[70%] text-sm px-3 py-2 rounded-lg ${m.from === "ai" ? "bg-white border border-slate-200 text-slate-700" : "bg-teal-500 text-white"}`}>
+                {m.text}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2 mt-3">
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && send()}
+            placeholder={t("以客户身份输入问题，例如：可以退款吗？", "Type a question as a customer, e.g.: Can I get a refund?")}
+            className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+          />
+          <button onClick={send} className="px-3 py-2 bg-slate-900 text-white rounded-lg text-sm flex items-center gap-1.5 hover:bg-slate-800">
+            <Send size={14} /> {t("发送", "Send")}
+          </button>
+        </div>
+        <div className="text-xs text-slate-400 mt-2">{t("试试输入包含\"追踪\"、\"退款\"、\"尺码\"或\"优惠\"的问题", "Try a question containing \"tracking\", \"refund\", \"size\" or \"discount\"")}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Roles ============================== */
+
+const ROLE_EN = { 管理员: "Admin", 运营专员: "Operations", 仓管: "Warehouse", 财务: "Finance", 客服: "Customer Service" };
+const MODULE_EN = { 订单: "Orders", 库存: "Inventory", 财务: "Finance", AI: "AI", 权限: "Roles" };
+
+function Roles({ t }) {
+  const modules = ["订单", "库存", "财务", "AI", "权限"];
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="flex items-center gap-1.5 text-sm font-medium mb-3"><Users size={14} className="text-slate-500"/> {t("角色与权限矩阵", "Roles & Permissions Matrix")}</div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+            <th className="py-2 pr-3 font-medium">{t("角色", "Role")}</th>
+            <th className="py-2 pr-3 font-medium">{t("用户数", "Users")}</th>
+            {modules.map((m) => (<th key={m} className="py-2 pr-3 font-medium text-center">{t(m, MODULE_EN[m] || m)}</th>))}
+          </tr>
+        </thead>
+        <tbody>
+          {ROLES.map((r) => (
+            <tr key={r.role} className="border-b border-slate-100 last:border-0">
+              <td className="py-2.5 pr-3 font-medium">{t(r.role, ROLE_EN[r.role] || r.role)}</td>
+              <td className="py-2.5 pr-3 tabular-nums text-slate-500">{r.users}</td>
+              {modules.map((m) => (
+                <td key={m} className="py-2.5 pr-3 text-center">
+                  {r.perms[m] ? <CheckCircle2 size={15} className="text-emerald-500 inline" /> : <span className="text-slate-200">—</span>}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ============================== Ads spend (广告费用) ============================== */
+
+function AdsSpend({ t }) {
+  const [activePlatform, setActivePlatform] = useState("Shopee");
+  const theme = PLATFORM_THEME[activePlatform];
+
+  const allRows = AD_CAMPAIGNS.map((c) => ({ ...c, roas: c.revenue / c.spend }));
+  const rows = allRows.filter((c) => c.platform === activePlatform);
+
+  const totalSpend = rows.reduce((s, c) => s + c.spend, 0);
+  const totalRevenue = rows.reduce((s, c) => s + c.revenue, 0);
+  const overallRoas = totalSpend > 0 ? totalRevenue / totalSpend : 0;
+  const effectiveCount = rows.filter((c) => c.roas >= AD_ROAS_THRESHOLD).length;
+
+  return (
+    <div className="space-y-4">
+      {/* 平台切换：Shopee 与 TikTok Shop 广告数据完全分开，方便比较 */}
+      <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 gap-1">
+        {["Shopee", "TikTok Shop"].map((pf) => {
+          const pfTheme = PLATFORM_THEME[pf];
+          const active = activePlatform === pf;
+          return (
+            <button
+              key={pf}
+              onClick={() => setActivePlatform(pf)}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                active ? `${pfTheme.headerBg} text-white` : "text-slate-500 hover:bg-slate-50"
+              }`}
+            >
+              <span className={`h-2 w-2 rounded-full ${active ? "bg-white/80" : pfTheme.dot}`} />
+              {pf}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-4 gap-4">
+        <KPICard label={t(`${activePlatform} 广告支出 (RM)`, `${activePlatform} Ad Spend (RM)`)} value={fmt(totalSpend)} icon={Megaphone} tone={theme.headerBg} />
+        <KPICard label={t("广告带来营收 (RM)", "Ad-Driven Revenue (RM)")} value={fmt(totalRevenue)} icon={TrendingUp} tone="bg-teal-500" />
+        <KPICard label="ROAS" value={`${overallRoas.toFixed(2)}x`} sub={t(`有效判定线 ≥ ${AD_ROAS_THRESHOLD}x`, `Effective threshold ≥ ${AD_ROAS_THRESHOLD}x`)} icon={Sparkles} tone="bg-indigo-500" />
+        <KPICard label={t("有效广告数", "Effective Ads")} value={`${effectiveCount} / ${rows.length}`} icon={CheckCircle2} tone="bg-emerald-500" />
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="text-sm font-medium mb-3">{t(`${activePlatform} 各广告支出 vs 带来营收`, `${activePlatform} Ad Spend vs Revenue`)}</div>
+        <div className="h-56">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={rows} layout="vertical" margin={{ left: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+              <XAxis type="number" tick={{ fontSize: 11 }} />
+              <YAxis type="category" dataKey="id" tick={{ fontSize: 11 }} width={60} />
+              <Tooltip />
+              <Legend />
+              <Bar dataKey="spend" name={t("支出", "Spend")} fill="#f59e0b" radius={[0, 4, 4, 0]} />
+              <Bar dataKey="revenue" name={t("带来营收", "Revenue Driven")} fill={theme.dot.includes("orange") ? "#f97316" : "#e11d48"} radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className={`rounded-xl border ${theme.border} overflow-hidden bg-white`}>
+        <div className={`${theme.headerBg} text-white px-5 py-3 text-sm font-medium`}>{t(`${activePlatform} 广告明细与有效性判定`, `${activePlatform} Ad Detail & Effectiveness`)}</div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+              <th className="py-2 pr-3 pl-5 font-medium">{t("广告 / 商品", "Ad / Product")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("支出 (RM)", "Spend (RM)")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("点击", "Clicks")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("带来订单", "Orders")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("带来营收 (RM)", "Revenue (RM)")}</th>
+              <th className="py-2 pr-3 font-medium text-right">ROAS</th>
+              <th className="py-2 pr-3 pr-5 font-medium text-center">{t("判定", "Verdict")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr><td colSpan={7} className="py-6 text-center text-xs text-slate-400">{t("该平台暂无广告数据", "No ad data for this platform yet")}</td></tr>
+            )}
+            {rows
+              .slice()
+              .sort((a, b) => b.roas - a.roas)
+              .map((c) => {
+                const effective = c.roas >= AD_ROAS_THRESHOLD;
+                return (
+                  <tr key={c.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                    <td className="py-2.5 pr-3 pl-5">
+                      <div className="font-medium">{c.name}</div>
+                      <div className="text-xs text-slate-400">{c.sku}</div>
+                    </td>
+                    <td className="py-2.5 pr-3 text-right tabular-nums">{fmt(c.spend)}</td>
+                    <td className="py-2.5 pr-3 text-right tabular-nums">{c.clicks}</td>
+                    <td className="py-2.5 pr-3 text-right tabular-nums">{c.orders}</td>
+                    <td className="py-2.5 pr-3 text-right tabular-nums">{fmt(c.revenue)}</td>
+                    <td className="py-2.5 pr-3 text-right tabular-nums font-medium">{c.roas.toFixed(2)}x</td>
+                    <td className="py-2.5 pr-3 pr-5 text-center">
+                      {effective ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-200">{t("有效", "Effective")}</span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded-full border bg-rose-100 text-rose-700 border-rose-200">{t("低效", "Ineffective")}</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+          </tbody>
+        </table>
+        <div className="text-[11px] text-slate-400 px-5 py-3">
+          {t(
+            `ROAS（广告投入回报率）= 广告带来营收 ÷ 广告支出。数值 ≥ ${AD_ROAS_THRESHOLD}x 判定为"有效"，低于则建议减少预算或暂停。`,
+            `ROAS (Return on Ad Spend) = revenue driven ÷ ad spend. A value ≥ ${AD_ROAS_THRESHOLD}x is judged "Effective"; below that, consider reducing budget or pausing.`,
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Print shipping slip ============================== */
+
+function PrintSlip({ t, orders, onClose }) {
+  function handlePrint() {
+    window.print();
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="no-print flex items-center justify-between px-5 py-3 border-b border-slate-200 sticky top-0 bg-white">
+          <div className="text-sm font-medium">
+            {t("发货单预览", "Shipping Label Preview")}{orders.length > 1 ? t(`（共 ${orders.length} 张）`, ` (${orders.length} total)`) : ""}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handlePrint}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
+            >
+              <Printer size={13} /> {t("打印", "Print")}{orders.length > 1 ? t(`全部 ${orders.length} 张`, ` All (${orders.length})`) : ""}
+            </button>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+        <div className="print-slip">
+          {orders.map((order, idx) => (
+            <ShippingSlipPage key={order.id} t={t} order={order} isLast={idx === orders.length - 1} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShippingSlipPage({ t, order, isLast }) {
+  const theme = PLATFORM_THEME[order.platform];
+  const lang = t("zh", "en");
+  return (
+    <div className="p-6" style={!isLast ? { breakAfter: "page", borderBottom: "2px dashed #e2e8f0" } : undefined}>
+      <div className="flex items-center justify-between border-b-2 border-slate-900 pb-3 mb-4">
+        <div>
+          <div className="text-lg font-bold">{t("发货单", "Shipping Note")} Shipping Note</div>
+          <div className="text-xs text-slate-500">{t("MY 电商 AI ERP 智能管理系统", "MY E-commerce AI ERP System")}</div>
+        </div>
+        <div className="text-right">
+          <span className={`inline-flex items-center gap-1.5 text-sm font-semibold ${theme.text}`}>
+            <span className={`h-2.5 w-2.5 rounded-full ${theme.dot}`} />
+            {order.platform}
+          </span>
+          <div className="text-xs text-slate-400 mt-0.5">{order.date}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 text-sm mb-4">
+        <div>
+          <div className="text-[11px] text-slate-400 mb-1">{t("订单编号", "Order No.")}</div>
+          <div className="font-medium">{order.id}</div>
+        </div>
+        <div>
+          <div className="text-[11px] text-slate-400 mb-1">{t("追踪号码", "Tracking No.")}</div>
+          <div className="font-medium">{order.tracking}</div>
+        </div>
+        <div>
+          <div className="text-[11px] text-slate-400 mb-1">{t("出货仓库", "Ship-from Warehouse")}</div>
+          <div className="font-medium">{warehouseLabel(order.warehouse, lang)}</div>
+        </div>
+        <div>
+          <div className="text-[11px] text-slate-400 mb-1">{t("订单状态", "Order Status")}</div>
+          <div className="font-medium">{statusLabel(order.status, lang)}</div>
+        </div>
+      </div>
+
+      <div className="border border-slate-200 rounded-lg p-3 mb-4">
+        <div className="text-[11px] text-slate-400 mb-1">{t("收件人", "Recipient")} Recipient</div>
+        <div className="font-medium">{order.customer}</div>
+        <div className="text-sm text-slate-600">{order.phone}</div>
+        <div className="text-sm text-slate-600 mt-1 leading-relaxed">{order.address}</div>
+      </div>
+
+      <table className="w-full text-sm mb-4">
+        <thead>
+          <tr className="text-left text-[11px] text-slate-400 border-b border-slate-200">
+            <th className="py-1.5 font-medium">SKU</th>
+            <th className="py-1.5 font-medium">{t("商品名称", "Product Name")}</th>
+            <th className="py-1.5 font-medium text-right">{t("数量", "Qty")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr className="border-b border-slate-100">
+            <td className="py-2">{order.sku}</td>
+            <td className="py-2">{order.product}</td>
+            <td className="py-2 text-right tabular-nums">{order.qty}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div className="flex justify-between text-sm border-t border-slate-200 pt-3">
+        <span className="text-slate-500">{t("商品总额（客户已付）", "Total Amount (Paid by Customer)")}</span>
+        <span className="font-semibold tabular-nums">RM {fmt(order.unitPrice * order.qty + order.shippingFee)}</span>
+      </div>
+
+      <div className="mt-6 pt-4 border-t border-dashed border-slate-300 text-[11px] text-slate-400 text-center">
+        {t("请核对商品与数量后封箱 · 出货前请扫描追踪号码确认", "Please verify product and quantity before sealing · Scan tracking number before shipping")}
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+<script>
+(function () {
+  var src = document.getElementById("app-source").textContent;
+  var out = Babel.transform(src, { presets: [["react", { runtime: "classic" }]] });
+  (0, eval)(out.code);
+})();
+</script>
+</body>
+</html>
