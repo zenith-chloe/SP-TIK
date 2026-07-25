@@ -148,7 +148,7 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
 
 /* ============================== Orders (订单管理中心) ============================== */
 
-const NOTE_COLORS = { red: "#ef4444", yellow: "#eab308", cyan: "#06b6d4" };
+const NOTE_COLORS = { red: "#ef4444", yellow: "#eab308", purple: "#a855f7" };
 
 export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus, onUpdateNote, goTo }) {
   const [activePlatform, setActivePlatform] = useState("Shopee");
@@ -160,7 +160,11 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
   const [noteDraftText, setNoteDraftText] = useState("");
   const theme = PLATFORM_THEME[activePlatform];
   const lang = t("zh", "en");
-  const chipLabel = (s) => (s === "全部" ? t("全部", "All") : statusLabel(s, lang));
+  const chipLabel = (s) => {
+    if (s === "全部") return t("全部", "All");
+    if (s === "拣货") return t("已处理", "Processed");
+    return statusLabel(s, lang);
+  };
 
   const platformStores = stores.filter((s) => s.platform === activePlatform);
   const allManual = platformStores.length > 0 && platformStores.every((s) => s.syncMode === "manual");
@@ -174,7 +178,11 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
 
   const filtered = useMemo(() => {
     return all.filter((o) => {
-      if (statusFilter !== "全部" && o.status !== statusFilter) return false;
+      if (statusFilter === "拣货") {
+        if (o.status === "待处理" || o.status === "已取消") return false;
+      } else if (statusFilter !== "全部" && o.status !== statusFilter) {
+        return false;
+      }
       if (dateFilter && o.date !== dateFilter) return false;
       if (q && !(o.id.toLowerCase().includes(q.toLowerCase()) || o.customer.includes(q) || (o.sku || "").toLowerCase().includes(q.toLowerCase()))) return false;
       return true;
@@ -408,6 +416,14 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                           style={{ backgroundColor: hex, boxShadow: o.noteColor === key ? "0 0 0 2px #0f172a" : "none" }}
                         />
                       ))}
+                      <button
+                        onClick={() => onUpdateNote(o.id, null, noteDraftText)}
+                        title={t("无颜色", "No color")}
+                        className="h-5 w-5 rounded-full border border-slate-300 bg-white relative"
+                        style={{ boxShadow: !o.noteColor ? "0 0 0 2px #0f172a" : "none" }}
+                      >
+                        <span className="absolute inset-0.5 rounded-full" style={{ background: "linear-gradient(to top right, transparent 45%, #cbd5e1 47%, #cbd5e1 53%, transparent 55%)" }} />
+                      </button>
                     </div>
                     <textarea
                       value={noteDraftText}
@@ -429,7 +445,19 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                     <div className="text-[10px] text-slate-400 tabular-nums">{o.courier || "—"} · {o.tracking}</div>
                   </div>
                 </div>
-                <div className="text-xs text-slate-500 truncate mt-0.5">{o.customer}</div>
+                <div className="text-xs text-slate-500 truncate mt-0.5 flex items-center gap-1.5">
+                  <span className="truncate">{o.customer}</span>
+                  {o.noteText && (
+                    <span
+                      className="shrink-0 truncate max-w-[140px] text-[10px] px-1.5 py-0.5 rounded-full border"
+                      style={o.noteColor
+                        ? { backgroundColor: `${NOTE_COLORS[o.noteColor]}1a`, borderColor: NOTE_COLORS[o.noteColor], color: NOTE_COLORS[o.noteColor] }
+                        : { backgroundColor: "#f1f5f9", borderColor: "#e2e8f0", color: "#64748b" }}
+                    >
+                      {o.noteText}
+                    </span>
+                  )}
+                </div>
                 <div className="text-xs text-slate-400 truncate mt-0.5 flex items-center gap-1">
                   <span className="truncate">
                     {t("Seller SKU", "Seller SKU")}: {o.sku || t("（无SKU）", "(no SKU)")}{o.variation ? ` · ${o.variation}` : ""} × {o.qty}
