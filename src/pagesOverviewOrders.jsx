@@ -316,24 +316,29 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
             </div>
           </div>
           <div className="flex flex-wrap gap-1.5 mt-2 pb-3">
-            {statusChips.map((s) => {
+            {statusChips.flatMap((s) => {
               const active = statusFilter === s;
-              return (
+              const chip = (
                 <button
                   key={s}
                   onClick={() => setStatusFilter(s)}
-                  className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${active ? theme.chipActive : "bg-white text-slate-500 border-slate-200"}`}
+                  className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${active ? "border-sky-400 ring-1 ring-sky-400 bg-sky-50 text-sky-700" : "bg-white text-slate-500 border-slate-200"}`}
                 >
                   {chipLabel(s)}
                 </button>
               );
+              if (s !== "待处理") return [chip];
+              return [
+                chip,
+                <button
+                  key="__printed__"
+                  onClick={() => setStatusFilter("__printed__")}
+                  className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${statusFilter === "__printed__" ? "border-sky-400 ring-1 ring-sky-400 bg-sky-50 text-sky-700" : "bg-white text-slate-500 border-slate-200"}`}
+                >
+                  {t("已处理", "Processed")}
+                </button>,
+              ];
             })}
-            <button
-              onClick={() => setStatusFilter("__printed__")}
-              className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${statusFilter === "__printed__" ? theme.chipActive : "bg-white text-slate-500 border-slate-200"}`}
-            >
-              {t("已处理", "Processed")}
-            </button>
           </div>
         </div>
 
