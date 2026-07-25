@@ -38,7 +38,8 @@ export function ProductMove({ t, inventory, logs, stores, onTransfer, onMoveShop
         <div className="text-sm font-medium mb-3">{t("搬仓 / 搬店记录", "Transfer / Move Log")}</div>
         {logs.length === 0 && <div className="text-xs text-slate-400 text-center py-6">{t("暂无记录", "No records yet")}</div>}
         {logs.length > 0 && (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[560px]">
             <thead>
               <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
                 <th className="py-2 pr-3 font-medium">{t("类型", "Type")}</th>
@@ -68,6 +69,7 @@ export function ProductMove({ t, inventory, logs, stores, onTransfer, onMoveShop
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>
@@ -112,7 +114,7 @@ function WarehouseMoveForm({ t, inventory, onTransfer }) {
           <ArrowRightLeft size={14} className="text-teal-500" /> {t("仓库间调拨（同一商品，换个仓库存放）", "Transfer between warehouses (same product, different location)")}
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="text-xs text-slate-500 mb-1 block">{t("选择商品 SKU", "Select Product SKU")}</label>
             <select
@@ -178,7 +180,8 @@ function WarehouseMoveForm({ t, inventory, onTransfer }) {
 
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="text-sm font-medium mb-3">{t("当前各仓库库存一览", "Current Stock by Warehouse")}</div>
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[500px]">
           <thead>
             <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
               <th className="py-2 pr-3 font-medium">SKU</th>
@@ -200,6 +203,7 @@ function WarehouseMoveForm({ t, inventory, onTransfer }) {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -238,7 +242,7 @@ function ShopMoveForm({ t, inventory, stores, onMoveShop }) {
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="text-xs text-slate-500 mb-1 block">{t("选择商品 SKU", "Select Product SKU")}</label>
           <select
@@ -359,7 +363,7 @@ export function StoreManagement({ t, stores, onConnect, onSetSyncMode }) {
             "Supports connecting multiple merchants / store accounts (multiple stores per platform). Once connected, you can manage that store's data in Orders, Inventory, etc.",
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <select
             value={platform}
             onChange={(e) => setPlatform(e.target.value)}
@@ -376,7 +380,7 @@ export function StoreManagement({ t, stores, onConnect, onSetSyncMode }) {
           />
           <button
             onClick={handleConnect}
-            className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
+            className="flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
           >
             <Plus size={14} /> {t("连接", "Connect")}
           </button>
@@ -402,7 +406,8 @@ export function StoreManagement({ t, stores, onConnect, onSetSyncMode }) {
             </div>
             {list.length === 0 && <div className="text-xs text-slate-400 text-center py-6">{t(`尚未连接任何 ${pf} 店铺`, `No ${pf} stores connected yet`)}</div>}
             {list.length > 0 && (
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[560px]">
                 <thead>
                   <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
                     <th className="py-2 pr-3 pl-5 font-medium">{t("店铺名称", "Store Name")}</th>
@@ -454,6 +459,7 @@ export function StoreManagement({ t, stores, onConnect, onSetSyncMode }) {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         );

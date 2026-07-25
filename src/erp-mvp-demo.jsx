@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Boxes, RefreshCw, LogIn, LogOut, AlertTriangle } from "lucide-react";
+import { Boxes, RefreshCw, LogIn, LogOut, AlertTriangle, Menu, X } from "lucide-react";
 import {
   supabaseClient, mapDbStore, mapDbProduct, mapDbOrder, DEMO_TO_DB_STATUS, NAV,
 } from "./shared.jsx";
@@ -89,6 +89,7 @@ export default function App() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [printOrders, setPrintOrders] = useState(null);
   const [lang, setLang] = useState("zh"); // "zh" | "en"
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const t = (zh, en) => (lang === "en" ? en : zh);
 
   useEffect(() => {
@@ -102,8 +103,8 @@ export default function App() {
     const [accountsRes, productsRes, ordersRes, itemsRes] = await Promise.all([
       supabaseClient.from("platform_accounts").select("id, platform, account_name, created_at, token_expires_at"),
       supabaseClient.from("products").select("sku, name, stock_qty"),
-      supabaseClient.from("orders").select("id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, order_status, shipping_fee, order_date"),
-      supabaseClient.from("order_items").select("order_id, sku, product_name, qty, unit_price"),
+      supabaseClient.from("orders").select("id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, order_status, shipping_fee, order_date, print_count"),
+      supabaseClient.from("order_items").select("order_id, sku, product_name, qty, unit_price, image_url"),
     ]);
     const itemsByOrder = {};
     (itemsRes.data || []).forEach((it) => {
@@ -170,6 +171,14 @@ export default function App() {
     }
   }
 
+  function incrementPrintCount(orderIds) {
+    setOrders((prev) => prev.map((o) => (orderIds.includes(o.id) ? { ...o, printCount: (o.printCount || 0) + 1 } : o)));
+    orderIds.forEach((orderId) => {
+      const current = orders.find((o) => o.id === orderId)?.printCount || 0;
+      supabaseClient.from("orders").update({ print_count: current + 1 }).eq("order_no", orderId);
+    });
+  }
+
   if (session === undefined) {
     return (
       <div className="min-h-screen w-full bg-slate-50 flex items-center justify-center text-slate-400 text-sm">
@@ -201,9 +210,18 @@ export default function App() {
         }
       `}</style>
 
+      {/* Mobile drawer backdrop */}
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-40 bg-slate-900/40 md:hidden" onClick={() => setMobileNavOpen(false)} />
+      )}
+
       {/* Sidebar */}
-      <aside className="w-56 shrink-0 bg-violet-900 text-violet-100 flex flex-col">
-        <div className="px-5 py-5 border-b border-violet-800">
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 w-64 shrink-0 bg-violet-900 text-violet-100 flex flex-col transition-transform duration-200 md:static md:z-auto md:w-56 md:translate-x-0 ${
+          mobileNavOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="px-5 py-5 border-b border-violet-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="h-8 w-8 rounded-md bg-teal-500 flex items-center justify-center">
               <Boxes size={18} className="text-violet-900" />
@@ -213,15 +231,18 @@ export default function App() {
               <div className="text-[11px] text-violet-300 leading-tight">{t("AI 智能管理系统", "AI Management System")}</div>
             </div>
           </div>
+          <button onClick={() => setMobileNavOpen(false)} className="text-violet-300 hover:text-white md:hidden">
+            <X size={18} />
+          </button>
         </div>
-        <nav className="flex-1 py-3">
+        <nav className="flex-1 py-3 overflow-y-auto">
           {NAV.map((item) => {
             const Icon = item.icon;
             const active = tab === item.key;
             return (
               <button
                 key={item.key}
-                onClick={() => setTab(item.key)}
+                onClick={() => { setTab(item.key); setMobileNavOpen(false); }}
                 className={`w-full flex items-center gap-3 px-5 py-2.5 text-sm transition-colors ${
                   active ? "bg-violet-800 text-white border-r-2 border-teal-400" : "text-violet-300 hover:text-white hover:bg-violet-800/60"
                 }`}
@@ -239,42 +260,47 @@ export default function App() {
 
       {/* Main */}
       <main className="flex-1 min-w-0">
-        <header className="h-14 border-b border-slate-200 bg-white flex items-center px-6 justify-between">
-          <div className="text-sm text-slate-500">
-            {(() => {
-              const current = NAV.find((n) => n.key === tab);
-              return current ? (lang === "en" ? current.en : current.zh) : "";
-            })()}
+        <header className="h-14 border-b border-slate-200 bg-white flex items-center px-3 md:px-6 justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <button onClick={() => setMobileNavOpen(true)} className="text-slate-500 hover:text-slate-800 md:hidden shrink-0">
+              <Menu size={20} />
+            </button>
+            <div className="text-sm text-slate-500 truncate">
+              {(() => {
+                const current = NAV.find((n) => n.key === tab);
+                return current ? (lang === "en" ? current.en : current.zh) : "";
+              })()}
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="text-xs text-slate-400">{session.user.email}</div>
+          <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
+            <div className="hidden md:block text-xs text-slate-400">{session.user.email}</div>
             <button
               onClick={loadRealData}
-              className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
+              className="flex items-center gap-1.5 text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
               title={t("重新读取数据", "Reload data")}
             >
               <RefreshCw size={13} />
-              {t("刷新", "Refresh")}
+              <span className="hidden sm:inline">{t("刷新", "Refresh")}</span>
             </button>
             <button
               onClick={() => setLang((prev) => (prev === "zh" ? "en" : "zh"))}
-              className="text-xs px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
+              className="text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
               title={t("切换语言", "Switch language")}
             >
               {lang === "zh" ? "中 / EN" : "EN / 中"}
             </button>
             <button
               onClick={() => supabaseClient.auth.signOut()}
-              className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
+              className="flex items-center gap-1.5 text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
               title={t("登出", "Log out")}
             >
               <LogOut size={13} />
-              {t("登出", "Log out")}
+              <span className="hidden sm:inline">{t("登出", "Log out")}</span>
             </button>
           </div>
         </header>
 
-        <div className="p-6">
+        <div className="p-3 md:p-6">
           {tab === "overview" && <Overview t={t} orders={orders} inventory={inventory} stores={stores} onOpenOrder={setSelectedOrder} goTo={setTab} />}
           {tab === "orders" && (
             <Orders t={t} orders={orders} stores={stores} onOpenOrder={setSelectedOrder} onPrint={setPrintOrders} onUpdateStatus={updateOrderStatus} goTo={setTab} />
@@ -303,7 +329,7 @@ export default function App() {
         <OrderDrawer t={t} order={selectedOrder} onClose={() => setSelectedOrder(null)} onPrint={(o) => setPrintOrders([o])} onUpdateStatus={updateOrderStatus} />
       )}
       {printOrders && printOrders.length > 0 && (
-        <PrintSlip t={t} orders={printOrders} onClose={() => setPrintOrders(null)} />
+        <PrintSlip t={t} orders={printOrders} onClose={() => setPrintOrders(null)} onConfirmPrint={() => incrementPrintCount(printOrders.map((o) => o.id))} />
       )}
     </div>
   );

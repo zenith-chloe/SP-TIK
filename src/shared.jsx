@@ -63,6 +63,7 @@ export function mapDbOrder(order, items) {
     sku: first.sku || "",
     skuStatus: first.sku ? "ok" : "missing",
     product: first.product_name || "—",
+    productImage: first.image_url || null,
     qty: first.qty || 1,
     unitPrice: Number(first.unit_price || 0),
     shippingFee: Number(order.shipping_fee || 0),
@@ -73,6 +74,7 @@ export function mapDbOrder(order, items) {
     warehouse: "吉隆坡仓",
     status: DB_TO_DEMO_STATUS[order.order_status] || "待处理",
     date: (order.order_date || "").slice(0, 10),
+    printCount: order.print_count || 0,
   };
 }
 

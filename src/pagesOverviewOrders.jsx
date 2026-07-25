@@ -57,15 +57,15 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
         </div>
       )}
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KPICard label={t("订单总数", "Total Orders")} value={orders.length} sub="Shopee + TikTok Shop" icon={CheckCircle2} tone="bg-teal-500" />
         <KPICard label={t("待处理订单", "Pending Orders")} value={pending} sub={t("需要拣货/发货", "Needs picking/shipping")} icon={AlertTriangle} tone="bg-amber-500" />
         <KPICard label={t("库存预警 SKU", "Low Stock SKUs")} value={lowStock.length} sub={t("低于安全库存", "Below safety stock")} icon={AlertTriangle} tone="bg-rose-500" />
         <KPICard label={t("净利润 (RM)", "Net Profit (RM)")} value={fmt(totalProfit)} sub={t("已扣除平台费/佣金", "After platform fees/commission")} icon={CheckCircle2} tone="bg-indigo-500" />
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
-        <div className="col-span-2 bg-white border border-slate-200 rounded-xl p-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="md:col-span-2 bg-white border border-slate-200 rounded-xl p-4">
           <div className="text-sm font-medium mb-3">{t("近14天销售趋势（按平台）", "Last 14 Days Sales Trend (by Platform)")}</div>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
@@ -108,7 +108,8 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
             {t("前往订单管理中心", "Go to Order Management")} <ChevronRight size={12} />
           </button>
         </div>
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[560px]">
           <thead>
             <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
               <th className="py-2 pr-3 font-medium">{t("订单编号", "Order No.")}</th>
@@ -139,6 +140,7 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -244,7 +246,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
           <div className="text-xs text-white/90 tabular-nums">{t("营收", "Revenue")} RM {fmt(revenue)} · {t("净利润", "Net Profit")} RM {fmt(netProfit)}</div>
         </div>
 
-        <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-4 gap-3 text-xs`}>
+        <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-4 gap-3 text-xs`}>
           <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
             <div className="text-slate-400">{t("待处理", "Pending")}</div>
             <div className="text-base font-semibold text-amber-600 tabular-nums">{pending}</div>
@@ -332,6 +334,11 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                 onChange={() => toggleOne(o.id)}
                 className="h-3.5 w-3.5 mt-1.5 rounded border-slate-300 shrink-0"
               />
+              {o.productImage ? (
+                <img src={o.productImage} alt={o.product} className="h-10 w-10 rounded-lg object-cover border border-slate-200 shrink-0" />
+              ) : (
+                <div className="h-10 w-10 rounded-lg bg-slate-100 border border-slate-200 shrink-0" />
+              )}
               <div className="flex flex-col items-stretch gap-1 w-20 shrink-0">
                 <span className={`text-[10px] px-2 py-0.5 rounded-full border text-center ${statusColor(o.status)}`}>{statusLabel(o.status, lang)}</span>
                 {ACTIONABLE_STATUS.includes(o.status) && (
@@ -359,6 +366,11 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                 >
                   <Printer size={11} /> {t("打印", "Print")}
                 </button>
+                {o.printCount > 0 && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full border text-center bg-slate-100 text-slate-500 border-slate-200">
+                    {t(`已打印 ${o.printCount} 次`, `Printed ${o.printCount}x`)}
+                  </span>
+                )}
               </div>
 
               <button onClick={() => onOpenOrder(o)} className="min-w-0 flex-1 text-left">
@@ -545,7 +557,8 @@ export function Inventory({ t, inventory, stores }) {
       </div>
 
       <div className="bg-white border border-slate-200 rounded-xl p-4">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[720px]">
           <thead>
             <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
               <th className="py-2 pr-3 font-medium">SKU</th>
@@ -588,6 +601,7 @@ export function Inventory({ t, inventory, stores }) {
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

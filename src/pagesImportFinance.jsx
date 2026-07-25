@@ -344,8 +344,8 @@ export function ManualImport({ t, stores, inventory, onImport }) {
               </div>
             )}
 
-            <div className="border border-slate-200 rounded-lg overflow-hidden max-h-64 overflow-y-auto">
-              <table className="w-full text-xs">
+            <div className="border border-slate-200 rounded-lg overflow-auto max-h-64">
+              <table className="w-full text-xs min-w-[900px]">
                 <thead className="bg-slate-50 sticky top-0">
                   <tr className="text-left text-slate-400">
                     {CSV_TEMPLATE_HEADERS.map((h) => (<th key={h} className="py-2 px-2 font-medium">{h}</th>))}
@@ -400,13 +400,13 @@ export function Finance({ t, orders }) {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <KPICardImpl label={t("总营收 (RM)", "Total Revenue (RM)")} value={fmt(totalRevenue)} icon={TrendingUp} tone="bg-teal-500" />
         <KPICardImpl label={t("平台费用+佣金 (RM)", "Platform Fees + Commission (RM)")} value={fmt(byPlatform.reduce((s, p) => s + p.fees, 0))} icon={DollarSign} tone="bg-amber-500" />
         <KPICardImpl label={t("净利润 (RM)", "Net Profit (RM)")} value={fmt(totalProfit)} icon={TrendingUp} tone="bg-indigo-500" />
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4">
           <div className="text-sm font-medium mb-3">{t("按平台利润拆分", "Profit Breakdown by Platform")}</div>
           <div className="h-56">
@@ -452,7 +452,8 @@ export function Finance({ t, orders }) {
 
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="text-sm font-medium mb-3">{t("订单级利润明细（前 10 笔）", "Order-Level Profit Detail (First 10)")}</div>
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[560px]">
           <thead>
             <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
               <th className="py-2 pr-3 font-medium">{t("订单编号", "Order No.")}</th>
@@ -477,6 +478,7 @@ export function Finance({ t, orders }) {
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -526,7 +528,7 @@ export function AIPanel({ t, orders, inventory }) {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4">
           <div className="text-sm font-medium mb-3 flex items-center gap-1.5"><TrendingUp size={14} className="text-teal-500"/> {t("热销商品 Top 5", "Top 5 Best Sellers")}</div>
           <div className="space-y-2">
@@ -604,7 +606,8 @@ export function Roles({ t }) {
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-4">
       <div className="flex items-center gap-1.5 text-sm font-medium mb-3"><Users size={14} className="text-slate-500"/> {t("角色与权限矩阵", "Roles & Permissions Matrix")}</div>
-      <table className="w-full text-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full text-sm min-w-[500px]">
         <thead>
           <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
             <th className="py-2 pr-3 font-medium">{t("角色", "Role")}</th>
@@ -626,6 +629,7 @@ export function Roles({ t }) {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -665,7 +669,7 @@ export function AdsSpend({ t }) {
         })}
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KPICardImpl label={t(`${activePlatform} 广告支出 (RM)`, `${activePlatform} Ad Spend (RM)`)} value={fmt(totalSpend)} icon={Megaphone} tone={theme.headerBg} />
         <KPICardImpl label={t("广告带来营收 (RM)", "Ad-Driven Revenue (RM)")} value={fmt(totalRevenue)} icon={TrendingUp} tone="bg-teal-500" />
         <KPICardImpl label="ROAS" value={`${overallRoas.toFixed(2)}x`} sub={t(`有效判定线 ≥ ${AD_ROAS_THRESHOLD}x`, `Effective threshold ≥ ${AD_ROAS_THRESHOLD}x`)} icon={Sparkles} tone="bg-indigo-500" />
@@ -691,7 +695,8 @@ export function AdsSpend({ t }) {
 
       <div className={`rounded-xl border ${theme.border} overflow-hidden bg-white`}>
         <div className={`${theme.headerBg} text-white px-5 py-3 text-sm font-medium`}>{t(`${activePlatform} 广告明细与有效性判定`, `${activePlatform} Ad Detail & Effectiveness`)}</div>
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[700px]">
           <thead>
             <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
               <th className="py-2 pr-3 pl-5 font-medium">{t("广告 / 商品", "Ad / Product")}</th>
@@ -735,6 +740,7 @@ export function AdsSpend({ t }) {
               })}
           </tbody>
         </table>
+        </div>
         <div className="text-[11px] text-slate-400 px-5 py-3">
           {t(
             `ROAS（广告投入回报率）= 广告带来营收 ÷ 广告支出。数值 ≥ ${AD_ROAS_THRESHOLD}x 判定为"有效"，低于则建议减少预算或暂停。`,
@@ -748,9 +754,10 @@ export function AdsSpend({ t }) {
 
 /* ============================== Print shipping slip ============================== */
 
-export function PrintSlip({ t, orders, onClose }) {
+export function PrintSlip({ t, orders, onClose, onConfirmPrint }) {
   function handlePrint() {
     window.print();
+    onConfirmPrint?.();
   }
 
   return (
