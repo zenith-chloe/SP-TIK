@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Boxes, RefreshCw, LogIn, LogOut, AlertTriangle, Menu, X } from "lucide-react";
 import {
-  supabaseClient, mapDbStore, mapDbProduct, mapDbOrder, DEMO_TO_DB_STATUS, NAV,
+  supabaseClient, mapDbStore, mapDbProduct, mapDbOrder, mapDbTransferLog, DEMO_TO_DB_STATUS, DEMO_TO_DB_PLATFORM, NAV,
 } from "./shared.jsx";
 import { Overview, Orders, OrderDrawer, Inventory } from "./pagesOverviewOrders.jsx";
 import { ProductMove, StoreManagement } from "./pagesMove.jsx";
@@ -98,13 +98,14 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  async function loadRealData() {
-    setDataLoading(true);
-    const [accountsRes, productsRes, ordersRes, itemsRes] = await Promise.all([
+  async function loadRealData(silent = false) {
+    if (!silent) setDataLoading(true);
+    const [accountsRes, productsRes, ordersRes, itemsRes, transferLogsRes] = await Promise.all([
       supabaseClient.from("platform_accounts").select("id, platform, account_name, created_at, token_expires_at"),
-      supabaseClient.from("products").select("sku, name, stock_qty"),
-      supabaseClient.from("orders").select("id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, shipping_fee, order_date, print_count, note_color, note_text"),
+      supabaseClient.from("products").select("sku, name, warehouse_a_qty, warehouse_b_qty, listed_shop_id"),
+      supabaseClient.from("orders").select("id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, platform_status, shipping_fee, order_date, print_count, note_color, note_text"),
       supabaseClient.from("order_items").select("order_id, sku, product_name, variation, qty, unit_price, image_url"),
+      supabaseClient.from("transfer_logs").select("id, type, sku, from_location, to_location, qty, created_at").order("created_at", { ascending: false }),
     ]);
     const itemsByOrder = {};
     (itemsRes.data || []).forEach((it) => {
@@ -115,26 +116,36 @@ export default function App() {
     setStores(mappedStores);
     setInventory((productsRes.data || []).map((p) => mapDbProduct(p, firstShopeeStore)));
     setOrders((ordersRes.data || []).map((o) => mapDbOrder(o, itemsByOrder[o.id] || [])));
-    setDataLoading(false);
+    setTransferLogs((transferLogsRes.data || []).map(mapDbTransferLog));
+    if (!silent) setDataLoading(false);
   }
 
   useEffect(() => {
     if (session) loadRealData();
   }, [session]);
 
+  useEffect(() => {
+    if (!session) return;
+    const interval = setInterval(() => loadRealData(true), 60000);
+    return () => clearInterval(interval);
+  }, [session]);
+
   function transferStock(sku, fromWarehouse, toWarehouse, qty) {
-    setInventory((prev) =>
-      prev.map((item) => {
-        if (item.sku !== sku) return item;
-        const fromKey = fromWarehouse === "吉隆坡仓" ? "warehouseA" : "warehouseB";
-        const toKey = toWarehouse === "吉隆坡仓" ? "warehouseA" : "warehouseB";
-        return { ...item, [fromKey]: item[fromKey] - qty, [toKey]: item[toKey] + qty };
-      })
-    );
+    const item = inventory.find((i) => i.sku === sku);
+    if (!item) return;
+    const fromKey = fromWarehouse === "吉隆坡仓" ? "warehouseA" : "warehouseB";
+    const toKey = toWarehouse === "吉隆坡仓" ? "warehouseA" : "warehouseB";
+    const nextA = fromKey === "warehouseA" ? item.warehouseA - qty : toKey === "warehouseA" ? item.warehouseA + qty : item.warehouseA;
+    const nextB = fromKey === "warehouseB" ? item.warehouseB - qty : toKey === "warehouseB" ? item.warehouseB + qty : item.warehouseB;
+
+    setInventory((prev) => prev.map((i) => (i.sku === sku ? { ...i, warehouseA: nextA, warehouseB: nextB } : i)));
     setTransferLogs((prev) => [
       { id: `TR-${Date.now()}`, type: "warehouse", sku, from: fromWarehouse, to: toWarehouse, qty, date: new Date().toISOString() },
       ...prev,
     ]);
+
+    supabaseClient.from("products").update({ warehouse_a_qty: nextA, warehouse_b_qty: nextB }).eq("sku", sku);
+    supabaseClient.from("transfer_logs").insert({ type: "warehouse", sku, from_location: fromWarehouse, to_location: toWarehouse, qty });
   }
 
   function moveProductToShop(sku, fromShopId, toShopId) {
@@ -145,6 +156,9 @@ export default function App() {
       { id: `SM-${Date.now()}`, type: "shop", sku, from: fromName, to: toName, qty: null, date: new Date().toISOString() },
       ...prev,
     ]);
+
+    supabaseClient.from("products").update({ listed_shop_id: toShopId }).eq("sku", sku);
+    supabaseClient.from("transfer_logs").insert({ type: "shop", sku, from_location: fromName, to_location: toName, qty: null });
   }
 
   function connectStore(name, platform, syncMode = "manual") {
@@ -158,8 +172,44 @@ export default function App() {
     setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, syncMode: mode } : s)));
   }
 
-  function importOrders(newOrders) {
+  async function importOrders(newOrders) {
     setOrders((prev) => [...newOrders, ...prev]);
+
+    const orderRows = newOrders.map((o) => ({
+      platform: DEMO_TO_DB_PLATFORM[o.platform] || "shopee",
+      platform_account_id: o.shop,
+      order_no: o.id,
+      buyer_name: o.customer,
+      buyer_phone: o.phone,
+      shipping_address: o.address,
+      tracking_no: o.tracking && o.tracking !== "—" ? o.tracking : null,
+      order_status: "pending",
+      shipping_fee: o.shippingFee,
+      total_amount: +(o.unitPrice * o.qty).toFixed(2),
+      order_date: o.date,
+      updated_at: new Date().toISOString(),
+    }));
+    const { data: insertedOrders, error } = await supabaseClient
+      .from("orders")
+      .upsert(orderRows, { onConflict: "platform,order_no" })
+      .select("id, order_no");
+    if (error || !insertedOrders) return;
+
+    const idByOrderNo = {};
+    insertedOrders.forEach((row) => { idByOrderNo[row.order_no] = row.id; });
+    const itemRows = newOrders
+      .filter((o) => idByOrderNo[o.id])
+      .map((o) => ({
+        order_id: idByOrderNo[o.id],
+        sku: o.sku,
+        product_name: o.product,
+        qty: o.qty,
+        unit_price: o.unitPrice,
+        subtotal: +(o.unitPrice * o.qty).toFixed(2),
+      }));
+    if (itemRows.length > 0) {
+      await supabaseClient.from("order_items").upsert(itemRows, { onConflict: "order_id,sku" });
+    }
   }
 
   function updateOrderStatus(orderId, newStatus) {

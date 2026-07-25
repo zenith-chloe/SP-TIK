@@ -138,6 +138,7 @@ async function syncOneShop(creds: ShopeeCredentials, account: {
             courier: o.shipping_carrier ?? null,
             tracking_no: null,
             order_status: mapShopeeOrderStatus(o.order_status),
+            platform_status: o.order_status ?? null,
             total_amount: o.total_amount ?? 0,
             shipping_fee: 0,
             order_date: o.create_time ? new Date(o.create_time * 1000).toISOString() : new Date().toISOString(),

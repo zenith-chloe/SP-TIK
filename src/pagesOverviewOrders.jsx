@@ -30,7 +30,7 @@ export function KPICard({ label, value, sub, icon: Icon, tone }) {
 }
 
 export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
-  const pending = orders.filter((o) => o.status === "待处理").length;
+  const pending = orders.filter((o) => o.status === "待处理" && o.platformStatus !== "UNPAID").length;
   const totalProfit = orders.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
   const lowStock = inventory.filter((i) => i.warehouseA + i.warehouseB < i.reorderPoint);
   const recent = orders.slice(0, 6);
@@ -163,22 +163,23 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
   const lang = t("zh", "en");
   const chipLabel = (s) => (s === "全部" ? t("全部", "All") : statusLabel(s, lang));
 
-  // 还没交给物流 = 官方平台的 "To Ship"：待处理（未付款）+ 拣货（已付款待发货）
+  // 还没交给物流 = 官方平台的 "To Ship"：拣货（已付款待发货）+ 待处理里已付款的部分（不含未付款 UNPAID，平台的 To Ship 不算未付款单）
   const NOT_YET_SHIPPED = ["待处理", "拣货"];
+  const isNotYetShipped = (o) => NOT_YET_SHIPPED.includes(o.status) && o.platformStatus !== "UNPAID";
   const platformStores = stores.filter((s) => s.platform === activePlatform);
   const allManual = platformStores.length > 0 && platformStores.every((s) => s.syncMode === "manual");
 
   const all = useMemo(() => orders.filter((o) => o.platform === activePlatform), [orders, activePlatform]);
   const revenue = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + o.unitPrice * o.qty, 0);
   const netProfit = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
-  const pending = all.filter((o) => NOT_YET_SHIPPED.includes(o.status)).length;
+  const pending = all.filter(isNotYetShipped).length;
   const processed = all.filter((o) => (o.printCount || 0) > 0).length;
   const delivered = all.filter((o) => o.status === "已签收").length;
 
   const filtered = useMemo(() => {
     return all.filter((o) => {
       if (statusFilter === "__not_shipped__") {
-        if (!NOT_YET_SHIPPED.includes(o.status)) return false;
+        if (!isNotYetShipped(o)) return false;
       } else if (statusFilter === "__printed__") {
         if (!((o.printCount || 0) > 0)) return false;
       } else if (statusFilter !== "全部" && o.status !== statusFilter) {

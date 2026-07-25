@@ -105,6 +105,7 @@ async function syncOneShop(
           courier: o.shipping_provider_name ?? null,
           tracking_no: o.tracking_number ?? null,
           order_status: mapTikTokOrderStatus(o.status),
+          platform_status: o.status ?? null,
           total_amount: Number(o.payment?.total_amount ?? 0),
           shipping_fee: Number(o.payment?.shipping_fee ?? 0),
           order_date: o.create_time ? new Date(Number(o.create_time) * 1000).toISOString() : new Date().toISOString(),

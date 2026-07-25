@@ -26,6 +26,7 @@ export const DB_TO_DEMO_STATUS = {
   cancelled: "已取消",
 };
 export const DEMO_TO_DB_STATUS = { 已签收: "shipped", 退款中: "returned" };
+export const DEMO_TO_DB_PLATFORM = { Shopee: "shopee", "TikTok Shop": "tiktok", Telegram: "telegram" };
 
 export function mapDbStore(account) {
   return {
@@ -38,17 +39,21 @@ export function mapDbStore(account) {
   };
 }
 
-export function mapDbProduct(p, listedShopId) {
+export function mapDbProduct(p, fallbackShopId) {
   return {
     sku: p.sku,
     name: p.name,
-    warehouseA: p.stock_qty || 0,
-    warehouseB: 0,
+    warehouseA: p.warehouse_a_qty || 0,
+    warehouseB: p.warehouse_b_qty || 0,
     reorderPoint: 20,
     shopeeLinked: true,
     tiktokLinked: true,
-    listedShop: listedShopId,
+    listedShop: p.listed_shop_id || fallbackShopId,
   };
+}
+
+export function mapDbTransferLog(row) {
+  return { id: row.id, type: row.type, sku: row.sku, from: row.from_location, to: row.to_location, qty: row.qty, date: row.created_at };
 }
 
 export function mapDbOrder(order, items) {
@@ -75,6 +80,7 @@ export function mapDbOrder(order, items) {
     courier: order.courier || "—",
     warehouse: "吉隆坡仓",
     status: DB_TO_DEMO_STATUS[order.order_status] || "待处理",
+    platformStatus: order.platform_status || null,
     date: (order.order_date || "").slice(0, 10),
     printCount: order.print_count || 0,
     noteColor: order.note_color || null,
