@@ -158,6 +158,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [noteEditingId, setNoteEditingId] = useState(null);
   const [noteDraftText, setNoteDraftText] = useState("");
+  const [noteDraftColor, setNoteDraftColor] = useState(null);
   const theme = PLATFORM_THEME[activePlatform];
   const lang = t("zh", "en");
   const chipLabel = (s) => {
@@ -399,6 +400,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                     } else {
                       setNoteEditingId(o.id);
                       setNoteDraftText(o.noteText || "");
+                      setNoteDraftColor(o.noteColor || null);
                     }
                   }}
                   title={o.noteText || t("添加备注", "Add note")}
@@ -406,21 +408,21 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                   style={o.noteColor ? { backgroundColor: NOTE_COLORS[o.noteColor], borderColor: NOTE_COLORS[o.noteColor] } : undefined}
                 />
                 {noteEditingId === o.id && (
-                  <div className="absolute z-20 top-6 left-0 w-56 bg-white border border-slate-200 rounded-lg shadow-lg p-2.5" onClick={(e) => e.stopPropagation()}>
+                  <div className="absolute z-20 top-6 left-0 w-56 bg-white border-2 border-red-500 rounded-lg shadow-lg p-2.5" onClick={(e) => e.stopPropagation()}>
                     <div className="flex gap-2 mb-2">
                       {Object.entries(NOTE_COLORS).map(([key, hex]) => (
                         <button
                           key={key}
-                          onClick={() => onUpdateNote(o.id, key, noteDraftText)}
+                          onClick={() => setNoteDraftColor(key)}
                           className="h-5 w-5 rounded-full"
-                          style={{ backgroundColor: hex, boxShadow: o.noteColor === key ? "0 0 0 2px #0f172a" : "none" }}
+                          style={{ backgroundColor: hex, boxShadow: noteDraftColor === key ? "0 0 0 2px #0f172a" : "none" }}
                         />
                       ))}
                       <button
-                        onClick={() => onUpdateNote(o.id, null, noteDraftText)}
+                        onClick={() => setNoteDraftColor(null)}
                         title={t("无颜色", "No color")}
                         className="h-5 w-5 rounded-full border border-slate-300 bg-white relative"
-                        style={{ boxShadow: !o.noteColor ? "0 0 0 2px #0f172a" : "none" }}
+                        style={{ boxShadow: !noteDraftColor ? "0 0 0 2px #0f172a" : "none" }}
                       >
                         <span className="absolute inset-0.5 rounded-full" style={{ background: "linear-gradient(to top right, transparent 45%, #cbd5e1 47%, #cbd5e1 53%, transparent 55%)" }} />
                       </button>
@@ -428,36 +430,41 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                     <textarea
                       value={noteDraftText}
                       onChange={(e) => setNoteDraftText(e.target.value)}
-                      onBlur={() => onUpdateNote(o.id, o.noteColor, noteDraftText)}
                       placeholder={t("这是什么问题？", "What's the issue?")}
                       rows={2}
                       className="w-full text-xs border border-slate-200 rounded-lg p-1.5 outline-none focus:border-teal-400"
                     />
+                    <button
+                      onClick={() => { onUpdateNote(o.id, noteDraftColor, noteDraftText); setNoteEditingId(null); }}
+                      className="mt-2 w-full text-xs py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
+                    >
+                      {t("保存", "Save")}
+                    </button>
                   </div>
                 )}
               </div>
 
               <button onClick={() => onOpenOrder(o)} className="min-w-0 flex-1 text-left">
                 <div className="flex items-start justify-between">
-                  <div className="text-sm font-medium truncate">{o.id}</div>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <div className="text-sm font-medium truncate">{o.id}</div>
+                    {o.noteText && (
+                      <span
+                        className="shrink-0 truncate max-w-[100px] text-[10px] px-1.5 py-0.5 rounded-full border"
+                        style={o.noteColor
+                          ? { backgroundColor: `${NOTE_COLORS[o.noteColor]}1a`, borderColor: NOTE_COLORS[o.noteColor], color: NOTE_COLORS[o.noteColor] }
+                          : { backgroundColor: "#f1f5f9", borderColor: "#e2e8f0", color: "#64748b" }}
+                      >
+                        {o.noteText}
+                      </span>
+                    )}
+                  </div>
                   <div className="text-right shrink-0 ml-2">
                     <div className="text-xs text-slate-400 tabular-nums">{o.date}</div>
                     <div className="text-[10px] text-slate-400 tabular-nums">{o.courier || "—"} · {o.tracking}</div>
                   </div>
                 </div>
-                <div className="text-xs text-slate-500 truncate mt-0.5 flex items-center gap-1.5">
-                  <span className="truncate">{o.customer}</span>
-                  {o.noteText && (
-                    <span
-                      className="shrink-0 truncate max-w-[140px] text-[10px] px-1.5 py-0.5 rounded-full border"
-                      style={o.noteColor
-                        ? { backgroundColor: `${NOTE_COLORS[o.noteColor]}1a`, borderColor: NOTE_COLORS[o.noteColor], color: NOTE_COLORS[o.noteColor] }
-                        : { backgroundColor: "#f1f5f9", borderColor: "#e2e8f0", color: "#64748b" }}
-                    >
-                      {o.noteText}
-                    </span>
-                  )}
-                </div>
+                <div className="text-xs text-slate-500 truncate mt-0.5">{o.customer}</div>
                 <div className="text-xs text-slate-400 truncate mt-0.5 flex items-center gap-1">
                   <span className="truncate">
                     {t("Seller SKU", "Seller SKU")}: {o.sku || t("（无SKU）", "(no SKU)")}{o.variation ? ` · ${o.variation}` : ""} × {o.qty}
