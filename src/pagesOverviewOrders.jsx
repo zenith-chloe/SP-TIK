@@ -270,7 +270,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
         <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-5 gap-3 text-xs`}>
           <button
             onClick={() => setStatusFilter("__not_shipped__")}
-            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "__not_shipped__" ? "border-rose-400 ring-1 ring-rose-400" : "border-rose-200"}`}
+            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "__not_shipped__" ? "border-rose-400 ring-1 ring-rose-400" : "border-slate-200"}`}
           >
             <div className="text-slate-400">{t("待处理", "Pending")}</div>
             <div className="text-base font-semibold text-rose-600 tabular-nums">{pending}</div>
@@ -282,14 +282,20 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
             <div className="text-slate-400">{t("已处理", "Processed")}</div>
             <div className="text-base font-semibold text-sky-600 tabular-nums">{processed}</div>
           </button>
-          <div className="bg-white rounded-lg border border-emerald-200 px-3 py-2">
+          <button
+            onClick={() => setStatusFilter("已签收")}
+            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "已签收" ? "border-emerald-400 ring-1 ring-emerald-400" : "border-slate-200"}`}
+          >
             <div className="text-slate-400">{t("已签收", "Delivered")}</div>
             <div className="text-base font-semibold text-emerald-600 tabular-nums">{delivered}</div>
-          </div>
-          <div className="bg-white rounded-lg border border-amber-200 px-3 py-2">
+          </button>
+          <button
+            onClick={() => setStatusFilter("全部")}
+            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "全部" ? "border-amber-400 ring-1 ring-amber-400" : "border-slate-200"}`}
+          >
             <div className="text-slate-400">{t("总订单", "Total Orders")}</div>
             <div className="text-base font-semibold text-amber-600 tabular-nums">{all.length}</div>
-          </div>
+          </button>
           <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
             <div className="text-slate-400">{t("净利润 (RM)", "Net Profit (RM)")}</div>
             <div className="text-base font-semibold text-indigo-600 tabular-nums">{fmt(netProfit)}</div>
