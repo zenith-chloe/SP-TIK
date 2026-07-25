@@ -352,11 +352,6 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                 onChange={() => toggleOne(o.id)}
                 className="h-3.5 w-3.5 mt-1.5 rounded border-slate-300 shrink-0"
               />
-              {o.productImage ? (
-                <img src={o.productImage} alt={o.product} className="h-10 w-10 rounded-lg object-cover border border-slate-200 shrink-0" />
-              ) : (
-                <div className="h-10 w-10 rounded-lg bg-slate-100 border border-slate-200 shrink-0" />
-              )}
               <div className="flex flex-col items-stretch gap-1 w-20 shrink-0">
                 <span className={`text-[10px] px-2 py-0.5 rounded-full border text-center ${statusColor(o.status)}`}>{statusLabel(o.status, lang)}</span>
                 {ACTIONABLE_STATUS.includes(o.status) && (
@@ -465,20 +460,30 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                   </div>
                 </div>
                 <div className="text-xs text-slate-500 truncate mt-0.5">{o.customer}</div>
-                <div className="text-xs text-slate-400 truncate mt-0.5 flex items-center gap-1">
-                  <span className="truncate">
-                    {t("Seller SKU", "Seller SKU")}: {o.sku || t("（无SKU）", "(no SKU)")}{o.variation ? ` · ${o.variation}` : ""} × {o.qty}
-                  </span>
-                  {o.skuStatus === "missing" && (
-                    <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-600 border border-rose-200">
-                      <AlertTriangle size={9} /> {t("缺SKU", "Missing SKU")}
-                    </span>
+                <div className="flex items-start gap-2 mt-1.5">
+                  {o.productImage ? (
+                    <img src={o.productImage} alt={o.product} className="h-9 w-9 rounded-lg object-cover border border-slate-200 shrink-0" />
+                  ) : (
+                    <div className="h-9 w-9 rounded-lg bg-slate-100 border border-slate-200 shrink-0" />
                   )}
-                  {o.skuStatus === "unlinked" && (
-                    <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
-                      <AlertTriangle size={9} /> {t("系统未登记", "Not registered")}
-                    </span>
-                  )}
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium text-slate-700 truncate">{o.product}</div>
+                    <div className="text-[11px] text-slate-400 truncate mt-0.5 flex items-center gap-1">
+                      <span className="truncate">
+                        {o.variation ? `${o.variation} · ` : ""}{t("Seller SKU", "Seller SKU")}: {o.sku || t("（无SKU）", "(no SKU)")} × {o.qty}
+                      </span>
+                      {o.skuStatus === "missing" && (
+                        <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-600 border border-rose-200">
+                          <AlertTriangle size={9} /> {t("缺SKU", "Missing SKU")}
+                        </span>
+                      )}
+                      {o.skuStatus === "unlinked" && (
+                        <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                          <AlertTriangle size={9} /> {t("系统未登记", "Not registered")}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </button>
               <ChevronRight size={14} className="text-slate-300 mt-1 shrink-0" />
