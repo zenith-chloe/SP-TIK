@@ -330,11 +330,12 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
           </div>
           <div className="flex flex-wrap gap-1.5 mt-2 pb-3">
             {statusChips.flatMap((s) => {
-              const active = statusFilter === s;
+              const filterValue = s === "待处理" ? "__not_shipped__" : s;
+              const active = statusFilter === filterValue;
               const chip = (
                 <button
                   key={s}
-                  onClick={() => setStatusFilter(s)}
+                  onClick={() => setStatusFilter(filterValue)}
                   className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${active ? chipActiveClass(s) : "bg-white text-slate-500 border-slate-200"}`}
                 >
                   {chipLabel(s)}
