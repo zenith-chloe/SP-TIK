@@ -162,9 +162,15 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
   const theme = PLATFORM_THEME[activePlatform];
   const lang = t("zh", "en");
   const chipLabel = (s) => (s === "全部" ? t("全部", "All") : statusLabel(s, lang));
+  const chipActiveClass = (s) => {
+    if (s === "全部") return "border-amber-400 ring-1 ring-amber-400 bg-amber-50 text-amber-700";
+    if (s === "待处理") return "border-rose-400 ring-1 ring-rose-400 bg-rose-50 text-rose-700";
+    if (s === "已签收") return "border-emerald-400 ring-1 ring-emerald-400 bg-emerald-50 text-emerald-700";
+    return "border-sky-400 ring-1 ring-sky-400 bg-sky-50 text-sky-700";
+  };
 
-  // 还没交给物流 = 官方平台的 "To Ship"：拣货（已付款待发货）+ 待处理里已付款的部分（不含未付款 UNPAID，平台的 To Ship 不算未付款单）
-  const NOT_YET_SHIPPED = ["待处理", "拣货"];
+  // 还没交给物流 = 官方平台的 "To Ship"：待处理里已付款的部分（不含未付款 UNPAID，平台的 To Ship 不算未付款单）
+  const NOT_YET_SHIPPED = ["待处理"];
   const isNotYetShipped = (o) => NOT_YET_SHIPPED.includes(o.status) && o.platformStatus !== "UNPAID";
   const platformStores = stores.filter((s) => s.platform === activePlatform);
   const allManual = platformStores.length > 0 && platformStores.every((s) => s.syncMode === "manual");
@@ -264,10 +270,10 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
         <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-5 gap-3 text-xs`}>
           <button
             onClick={() => setStatusFilter("__not_shipped__")}
-            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "__not_shipped__" ? "border-amber-400 ring-1 ring-amber-400" : "border-slate-200"}`}
+            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "__not_shipped__" ? "border-rose-400 ring-1 ring-rose-400" : "border-rose-200"}`}
           >
             <div className="text-slate-400">{t("待处理", "Pending")}</div>
-            <div className="text-base font-semibold text-amber-600 tabular-nums">{pending}</div>
+            <div className="text-base font-semibold text-rose-600 tabular-nums">{pending}</div>
           </button>
           <button
             onClick={() => setStatusFilter("__printed__")}
@@ -276,13 +282,13 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
             <div className="text-slate-400">{t("已处理", "Processed")}</div>
             <div className="text-base font-semibold text-sky-600 tabular-nums">{processed}</div>
           </button>
-          <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
+          <div className="bg-white rounded-lg border border-emerald-200 px-3 py-2">
             <div className="text-slate-400">{t("已签收", "Delivered")}</div>
             <div className="text-base font-semibold text-emerald-600 tabular-nums">{delivered}</div>
           </div>
-          <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
+          <div className="bg-white rounded-lg border border-amber-200 px-3 py-2">
             <div className="text-slate-400">{t("总订单", "Total Orders")}</div>
-            <div className="text-base font-semibold text-slate-700 tabular-nums">{all.length}</div>
+            <div className="text-base font-semibold text-amber-600 tabular-nums">{all.length}</div>
           </div>
           <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
             <div className="text-slate-400">{t("净利润 (RM)", "Net Profit (RM)")}</div>
@@ -323,7 +329,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                 <button
                   key={s}
                   onClick={() => setStatusFilter(s)}
-                  className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${active ? "border-sky-400 ring-1 ring-sky-400 bg-sky-50 text-sky-700" : "bg-white text-slate-500 border-slate-200"}`}
+                  className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${active ? chipActiveClass(s) : "bg-white text-slate-500 border-slate-200"}`}
                 >
                   {chipLabel(s)}
                 </button>

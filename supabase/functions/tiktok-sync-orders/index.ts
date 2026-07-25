@@ -136,7 +136,7 @@ async function syncOneShop(
           qty: 1,
           unit_price: Number(item.sale_price ?? 0),
           subtotal: Number(item.sale_price ?? 0),
-          image_url: null,
+          image_url: item.sku_image ?? null,
         },
         { onConflict: "order_id,sku" },
       );

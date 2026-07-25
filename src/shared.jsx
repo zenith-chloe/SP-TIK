@@ -20,7 +20,7 @@ export const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 export const DB_TO_DEMO_PLATFORM = { shopee: "Shopee", tiktok: "TikTok Shop", telegram: "Telegram" };
 export const DB_TO_DEMO_STATUS = {
   pending: "待处理",
-  processing: "拣货",
+  processing: "待处理",
   shipped: "出货",
   returned: "退款中",
   cancelled: "已取消",
@@ -90,7 +90,7 @@ export function mapDbOrder(order, items) {
 
 /* ============================== Mock data ============================== */
 
-export const STATUS_STEPS = ["待处理", "拣货", "包装", "出货", "物流中", "已签收"];
+export const STATUS_STEPS = ["待处理", "包装", "出货", "物流中", "已签收"];
 export const EXTRA_STATUS = ["已取消", "退款中"];
 export const ACTIONABLE_STATUS = ["出货", "物流中"];
 
@@ -216,7 +216,6 @@ export function fmt(n) {
 export function statusColor(status) {
   const map = {
     待处理: "bg-amber-100 text-amber-700 border-amber-200",
-    拣货: "bg-sky-100 text-sky-700 border-sky-200",
     包装: "bg-indigo-100 text-indigo-700 border-indigo-200",
     出货: "bg-blue-100 text-blue-700 border-blue-200",
     物流中: "bg-cyan-100 text-cyan-700 border-cyan-200",
@@ -229,7 +228,6 @@ export function statusColor(status) {
 
 const STATUS_EN = {
   待处理: "Pending",
-  拣货: "Picking",
   包装: "Packing",
   出货: "Shipped Out",
   物流中: "In Transit",
