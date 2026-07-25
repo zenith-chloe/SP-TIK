@@ -165,9 +165,6 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
 
   // 还没交给物流 = 官方平台的 "To Ship"：待处理（未付款）+ 拣货（已付款待发货）
   const NOT_YET_SHIPPED = ["待处理", "拣货"];
-  // 已经交给物流 / 完成
-  const ALREADY_SHIPPED = ["出货", "物流中", "已签收"];
-
   const platformStores = stores.filter((s) => s.platform === activePlatform);
   const allManual = platformStores.length > 0 && platformStores.every((s) => s.syncMode === "manual");
 
@@ -175,15 +172,15 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
   const revenue = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + o.unitPrice * o.qty, 0);
   const netProfit = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
   const pending = all.filter((o) => NOT_YET_SHIPPED.includes(o.status)).length;
-  const processed = all.filter((o) => ALREADY_SHIPPED.includes(o.status)).length;
+  const processed = all.filter((o) => (o.printCount || 0) > 0).length;
   const delivered = all.filter((o) => o.status === "已签收").length;
 
   const filtered = useMemo(() => {
     return all.filter((o) => {
       if (statusFilter === "__not_shipped__") {
         if (!NOT_YET_SHIPPED.includes(o.status)) return false;
-      } else if (statusFilter === "__shipped__") {
-        if (!ALREADY_SHIPPED.includes(o.status)) return false;
+      } else if (statusFilter === "__printed__") {
+        if (!((o.printCount || 0) > 0)) return false;
       } else if (statusFilter !== "全部" && o.status !== statusFilter) {
         return false;
       }
@@ -272,8 +269,8 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
             <div className="text-base font-semibold text-amber-600 tabular-nums">{pending}</div>
           </button>
           <button
-            onClick={() => setStatusFilter("__shipped__")}
-            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "__shipped__" ? "border-sky-400 ring-1 ring-sky-400" : "border-slate-200"}`}
+            onClick={() => setStatusFilter("__printed__")}
+            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "__printed__" ? "border-sky-400 ring-1 ring-sky-400" : "border-slate-200"}`}
           >
             <div className="text-slate-400">{t("已处理", "Processed")}</div>
             <div className="text-base font-semibold text-sky-600 tabular-nums">{processed}</div>
