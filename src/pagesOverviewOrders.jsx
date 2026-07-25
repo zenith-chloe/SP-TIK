@@ -161,11 +161,12 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
   const [noteDraftColor, setNoteDraftColor] = useState(null);
   const theme = PLATFORM_THEME[activePlatform];
   const lang = t("zh", "en");
-  const chipLabel = (s) => {
-    if (s === "全部") return t("全部", "All");
-    if (s === "拣货") return t("已处理", "Processed");
-    return statusLabel(s, lang);
-  };
+  const chipLabel = (s) => (s === "全部" ? t("全部", "All") : statusLabel(s, lang));
+
+  // 还没交给物流 = 官方平台的 "To Ship"：待处理（未付款）+ 拣货（已付款待发货）
+  const NOT_YET_SHIPPED = ["待处理", "拣货"];
+  // 已经交给物流 / 完成
+  const ALREADY_SHIPPED = ["出货", "物流中", "已签收"];
 
   const platformStores = stores.filter((s) => s.platform === activePlatform);
   const allManual = platformStores.length > 0 && platformStores.every((s) => s.syncMode === "manual");
@@ -173,14 +174,16 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
   const all = useMemo(() => orders.filter((o) => o.platform === activePlatform), [orders, activePlatform]);
   const revenue = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + o.unitPrice * o.qty, 0);
   const netProfit = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
-  const pending = all.filter((o) => o.status === "待处理").length;
-  const processed = all.filter((o) => o.status !== "待处理" && o.status !== "已取消").length;
+  const pending = all.filter((o) => NOT_YET_SHIPPED.includes(o.status)).length;
+  const processed = all.filter((o) => ALREADY_SHIPPED.includes(o.status)).length;
   const delivered = all.filter((o) => o.status === "已签收").length;
 
   const filtered = useMemo(() => {
     return all.filter((o) => {
-      if (statusFilter === "拣货") {
-        if (o.status === "待处理" || o.status === "已取消") return false;
+      if (statusFilter === "__not_shipped__") {
+        if (!NOT_YET_SHIPPED.includes(o.status)) return false;
+      } else if (statusFilter === "__shipped__") {
+        if (!ALREADY_SHIPPED.includes(o.status)) return false;
       } else if (statusFilter !== "全部" && o.status !== statusFilter) {
         return false;
       }
@@ -261,14 +264,20 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
         </div>
 
         <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-5 gap-3 text-xs`}>
-          <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
+          <button
+            onClick={() => setStatusFilter("__not_shipped__")}
+            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "__not_shipped__" ? "border-amber-400 ring-1 ring-amber-400" : "border-slate-200"}`}
+          >
             <div className="text-slate-400">{t("待处理", "Pending")}</div>
             <div className="text-base font-semibold text-amber-600 tabular-nums">{pending}</div>
-          </div>
-          <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
+          </button>
+          <button
+            onClick={() => setStatusFilter("__shipped__")}
+            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "__shipped__" ? "border-sky-400 ring-1 ring-sky-400" : "border-slate-200"}`}
+          >
             <div className="text-slate-400">{t("已处理", "Processed")}</div>
             <div className="text-base font-semibold text-sky-600 tabular-nums">{processed}</div>
-          </div>
+          </button>
           <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
             <div className="text-slate-400">{t("已签收", "Delivered")}</div>
             <div className="text-base font-semibold text-emerald-600 tabular-nums">{delivered}</div>

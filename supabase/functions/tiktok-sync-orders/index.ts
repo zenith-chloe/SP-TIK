@@ -83,8 +83,8 @@ async function syncOneShop(
     "/order/202309/orders/search",
     creds,
     account.access_token,
-    { shop_cipher: shopCipher, page_size: "50" },
-    { create_time_ge: thirtyDaysAgo, sort_field: "create_time", sort_order: "DESC" },
+    { shop_cipher: shopCipher, page_size: "50", sort_field: "create_time", sort_order: "DESC" },
+    { create_time_ge: thirtyDaysAgo },
   );
 
   const orders = searchData.orders ?? [];
@@ -211,8 +211,8 @@ Deno.serve(async (req: Request) => {
         "/order/202309/orders/search",
         creds,
         accounts[0].access_token,
-        { shop_cipher: shopCipher, page_size: "5" },
-        { sort_field: "create_time", sort_order: "DESC" },
+        { shop_cipher: shopCipher, page_size: "5", sort_field: "create_time", sort_order: "DESC" },
+        {},
       );
       return new Response(JSON.stringify({ shopCipher, searchData }, null, 2), {
         headers: { "Content-Type": "application/json" },
