@@ -103,8 +103,8 @@ export default function App() {
     const [accountsRes, productsRes, ordersRes, itemsRes] = await Promise.all([
       supabaseClient.from("platform_accounts").select("id, platform, account_name, created_at, token_expires_at"),
       supabaseClient.from("products").select("sku, name, stock_qty"),
-      supabaseClient.from("orders").select("id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, order_status, shipping_fee, order_date, print_count"),
-      supabaseClient.from("order_items").select("order_id, sku, product_name, qty, unit_price, image_url"),
+      supabaseClient.from("orders").select("id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, shipping_fee, order_date, print_count, note_color, note_text"),
+      supabaseClient.from("order_items").select("order_id, sku, product_name, variation, qty, unit_price, image_url"),
     ]);
     const itemsByOrder = {};
     (itemsRes.data || []).forEach((it) => {
@@ -169,6 +169,11 @@ export default function App() {
     if (dbStatus) {
       supabaseClient.from("orders").update({ order_status: dbStatus }).eq("order_no", orderId);
     }
+  }
+
+  function updateOrderNote(orderId, color, text) {
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, noteColor: color, noteText: text } : o)));
+    supabaseClient.from("orders").update({ note_color: color, note_text: text }).eq("order_no", orderId);
   }
 
   function incrementPrintCount(orderIds) {
@@ -303,7 +308,7 @@ export default function App() {
         <div className="p-3 md:p-6">
           {tab === "overview" && <Overview t={t} orders={orders} inventory={inventory} stores={stores} onOpenOrder={setSelectedOrder} goTo={setTab} />}
           {tab === "orders" && (
-            <Orders t={t} orders={orders} stores={stores} onOpenOrder={setSelectedOrder} onPrint={setPrintOrders} onUpdateStatus={updateOrderStatus} goTo={setTab} />
+            <Orders t={t} orders={orders} stores={stores} onOpenOrder={setSelectedOrder} onPrint={setPrintOrders} onUpdateStatus={updateOrderStatus} onUpdateNote={updateOrderNote} goTo={setTab} />
           )}
           {tab === "manualimport" && <ManualImport t={t} stores={stores} inventory={inventory} onImport={importOrders} />}
           {tab === "inventory" && <Inventory t={t} inventory={inventory} stores={stores} />}

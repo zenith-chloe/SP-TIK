@@ -164,6 +164,7 @@ async function syncOneShop(creds: ShopeeCredentials, account: {
             order_id: orderRow.id,
             sku: item.model_sku || item.item_sku || String(item.item_id),
             product_name: item.item_name,
+            variation: item.model_name ?? null,
             qty: item.model_quantity_purchased ?? 1,
             unit_price: item.model_discounted_price ?? item.model_original_price ?? 0,
             subtotal: (item.model_discounted_price ?? 0) * (item.model_quantity_purchased ?? 1),

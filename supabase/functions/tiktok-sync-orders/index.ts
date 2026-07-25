@@ -131,6 +131,7 @@ async function syncOneShop(
           order_id: orderRow.id,
           sku: item.seller_sku || item.sku_id || String(item.id),
           product_name: item.product_name,
+          variation: item.sku_name ?? null,
           qty: 1,
           unit_price: Number(item.sale_price ?? 0),
           subtotal: Number(item.sale_price ?? 0),

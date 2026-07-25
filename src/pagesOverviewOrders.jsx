@@ -148,12 +148,16 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
 
 /* ============================== Orders (订单管理中心) ============================== */
 
-export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus, goTo }) {
+const NOTE_COLORS = { red: "#ef4444", yellow: "#eab308", cyan: "#06b6d4" };
+
+export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus, onUpdateNote, goTo }) {
   const [activePlatform, setActivePlatform] = useState("Shopee");
   const [statusFilter, setStatusFilter] = useState("全部");
   const [q, setQ] = useState("");
   const [dateFilter, setDateFilter] = useState("");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [noteEditingId, setNoteEditingId] = useState(null);
+  const [noteDraftText, setNoteDraftText] = useState("");
   const theme = PLATFORM_THEME[activePlatform];
   const lang = t("zh", "en");
   const chipLabel = (s) => (s === "全部" ? t("全部", "All") : statusLabel(s, lang));
@@ -165,6 +169,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
   const revenue = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + o.unitPrice * o.qty, 0);
   const netProfit = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
   const pending = all.filter((o) => o.status === "待处理").length;
+  const processed = all.filter((o) => o.status !== "待处理" && o.status !== "已取消").length;
   const delivered = all.filter((o) => o.status === "已签收").length;
 
   const filtered = useMemo(() => {
@@ -246,10 +251,14 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
           <div className="text-xs text-white/90 tabular-nums">{t("营收", "Revenue")} RM {fmt(revenue)} · {t("净利润", "Net Profit")} RM {fmt(netProfit)}</div>
         </div>
 
-        <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-4 gap-3 text-xs`}>
+        <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-5 gap-3 text-xs`}>
           <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
             <div className="text-slate-400">{t("待处理", "Pending")}</div>
             <div className="text-base font-semibold text-amber-600 tabular-nums">{pending}</div>
+          </div>
+          <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
+            <div className="text-slate-400">{t("已处理", "Processed")}</div>
+            <div className="text-base font-semibold text-sky-600 tabular-nums">{processed}</div>
           </div>
           <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
             <div className="text-slate-400">{t("已签收", "Delivered")}</div>
@@ -373,13 +382,58 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                 )}
               </div>
 
+              <div className="relative shrink-0 mt-1">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (noteEditingId === o.id) {
+                      setNoteEditingId(null);
+                    } else {
+                      setNoteEditingId(o.id);
+                      setNoteDraftText(o.noteText || "");
+                    }
+                  }}
+                  title={o.noteText || t("添加备注", "Add note")}
+                  className="h-4 w-4 rounded-full border border-slate-300"
+                  style={o.noteColor ? { backgroundColor: NOTE_COLORS[o.noteColor], borderColor: NOTE_COLORS[o.noteColor] } : undefined}
+                />
+                {noteEditingId === o.id && (
+                  <div className="absolute z-20 top-6 left-0 w-56 bg-white border border-slate-200 rounded-lg shadow-lg p-2.5" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex gap-2 mb-2">
+                      {Object.entries(NOTE_COLORS).map(([key, hex]) => (
+                        <button
+                          key={key}
+                          onClick={() => onUpdateNote(o.id, key, noteDraftText)}
+                          className="h-5 w-5 rounded-full"
+                          style={{ backgroundColor: hex, boxShadow: o.noteColor === key ? "0 0 0 2px #0f172a" : "none" }}
+                        />
+                      ))}
+                    </div>
+                    <textarea
+                      value={noteDraftText}
+                      onChange={(e) => setNoteDraftText(e.target.value)}
+                      onBlur={() => onUpdateNote(o.id, o.noteColor, noteDraftText)}
+                      placeholder={t("这是什么问题？", "What's the issue?")}
+                      rows={2}
+                      className="w-full text-xs border border-slate-200 rounded-lg p-1.5 outline-none focus:border-teal-400"
+                    />
+                  </div>
+                )}
+              </div>
+
               <button onClick={() => onOpenOrder(o)} className="min-w-0 flex-1 text-left">
-                <div className="flex items-center justify-between">
+                <div className="flex items-start justify-between">
                   <div className="text-sm font-medium truncate">{o.id}</div>
-                  <div className="text-xs text-slate-400 tabular-nums shrink-0 ml-2">{o.date}</div>
+                  <div className="text-right shrink-0 ml-2">
+                    <div className="text-xs text-slate-400 tabular-nums">{o.date}</div>
+                    <div className="text-[10px] text-slate-400 tabular-nums">{o.courier || "—"} · {o.tracking}</div>
+                  </div>
                 </div>
+                <div className="text-xs text-slate-500 truncate mt-0.5">{o.customer}</div>
                 <div className="text-xs text-slate-400 truncate mt-0.5 flex items-center gap-1">
-                  <span className="truncate">{o.customer} · {o.sku || t("（无SKU）", "(no SKU)")} × {o.qty} · {t("追踪号", "Tracking")} {o.tracking}</span>
+                  <span className="truncate">
+                    {t("Seller SKU", "Seller SKU")}: {o.sku || t("（无SKU）", "(no SKU)")}{o.variation ? ` · ${o.variation}` : ""} × {o.qty}
+                  </span>
                   {o.skuStatus === "missing" && (
                     <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-600 border border-rose-200">
                       <AlertTriangle size={9} /> {t("缺SKU", "Missing SKU")}

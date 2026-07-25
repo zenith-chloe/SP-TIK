@@ -64,6 +64,7 @@ export function mapDbOrder(order, items) {
     skuStatus: first.sku ? "ok" : "missing",
     product: first.product_name || "—",
     productImage: first.image_url || null,
+    variation: first.variation || "",
     qty: first.qty || 1,
     unitPrice: Number(first.unit_price || 0),
     shippingFee: Number(order.shipping_fee || 0),
@@ -71,10 +72,13 @@ export function mapDbOrder(order, items) {
     commission: 0,
     cost: 0,
     tracking: order.tracking_no || "—",
+    courier: order.courier || "—",
     warehouse: "吉隆坡仓",
     status: DB_TO_DEMO_STATUS[order.order_status] || "待处理",
     date: (order.order_date || "").slice(0, 10),
     printCount: order.print_count || 0,
+    noteColor: order.note_color || null,
+    noteText: order.note_text || "",
   };
 }
 
