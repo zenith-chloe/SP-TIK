@@ -328,6 +328,12 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                 </button>
               );
             })}
+            <button
+              onClick={() => setStatusFilter("__printed__")}
+              className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${statusFilter === "__printed__" ? theme.chipActive : "bg-white text-slate-500 border-slate-200"}`}
+            >
+              {t("已处理", "Processed")}
+            </button>
           </div>
         </div>
 
