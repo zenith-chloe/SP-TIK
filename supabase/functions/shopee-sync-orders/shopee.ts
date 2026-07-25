@@ -33,8 +33,8 @@ export async function hmacSha256Hex(key: string, message: string): Promise<strin
 export function mapShopeeOrderStatus(shopeeStatus: string): string {
   switch (shopeeStatus) {
     case "UNPAID":
-      return "pending";
     case "READY_TO_SHIP":
+      return "pending";
     case "PROCESSED":
     case "INVOICE_PENDING":
       return "processing";

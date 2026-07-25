@@ -64,8 +64,8 @@ export async function signApiRequest(
 export function mapTikTokOrderStatus(status: string): string {
   switch (status) {
     case "UNPAID":
-      return "pending";
     case "AWAITING_SHIPMENT":
+      return "pending";
     case "AWAITING_COLLECTION":
     case "PARTIALLY_SHIPPING":
       return "processing";
