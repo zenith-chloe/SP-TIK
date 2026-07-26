@@ -53,6 +53,80 @@ async function tiktokCall(
   return data.data;
 }
 
+// Deducts stock for one order_item, exactly once, via the stock_movements
+// UNIQUE(order_id, sku) constraint: the insert only succeeds the first time
+// this (order, sku) pair is seen, so re-syncing the same order (which
+// happens on every run within the 30-day window) never double-deducts.
+async function deductStockForItem(
+  orderId: string,
+  sku: string,
+  qty: number,
+  platform: "tiktok" | "shopee",
+  orderStatus: string,
+  platformStatus: string | null,
+) {
+  if (platformStatus === "UNPAID" || orderStatus === "cancelled") return;
+
+  const { data: product } = await supabase
+    .from("products")
+    .select("id, warehouse_a_qty")
+    .eq("sku", sku)
+    .maybeSingle();
+  if (!product) return;
+
+  const stockBefore = Math.max(product.warehouse_a_qty ?? 0, 0);
+  // Never let warehouse_a_qty go negative: deduct at most what's actually there.
+  const actualDeduction = Math.min(qty, stockBefore);
+  const stockAfter = stockBefore - actualDeduction;
+  const insufficientStock = actualDeduction < qty;
+
+  const { data: inserted, error: insertErr } = await supabase
+    .from("stock_movements")
+    .insert({
+      product_id: product.id,
+      sku,
+      order_id: orderId,
+      platform,
+      qty_deducted: actualDeduction,
+      stock_before: stockBefore,
+      stock_after: stockAfter,
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (insertErr) {
+    if (insertErr.code === "23505") return; // already deducted for this order+sku
+    await supabase.from("sync_logs").insert({
+      action: "stock_deduction",
+      status: "failed",
+      message: `order ${orderId} sku ${sku}: ${insertErr.message}`,
+    });
+    return;
+  }
+  if (!inserted) return;
+
+  const { error: updateErr } = await supabase
+    .from("products")
+    .update({ warehouse_a_qty: stockAfter })
+    .eq("id", product.id);
+  if (updateErr) {
+    await supabase.from("sync_logs").insert({
+      action: "stock_deduction",
+      status: "failed",
+      message: `order ${orderId} sku ${sku}: product update failed - ${updateErr.message}`,
+    });
+    return;
+  }
+
+  if (insufficientStock) {
+    await supabase.from("sync_logs").insert({
+      action: "stock_deduction",
+      status: "failed",
+      message: `order ${orderId} sku ${sku}: insufficient stock, wanted ${qty} but only had ${stockBefore} — deducted ${actualDeduction} and stopped at 0`,
+    });
+  }
+}
+
 async function ensureShopCipher(
   creds: TikTokCredentials,
   account: { id: string; shop_id: string; access_token: string; shop_cipher: string | null },
@@ -127,21 +201,49 @@ async function syncOneShop(
     }
     syncedOrders++;
 
+    // TikTok sends one line_item per unit (qty is always 1 on each), so if the
+    // same SKU appears in multiple line_items on this order they must be
+    // summed here first — otherwise the order_items upsert (keyed on
+    // order_id+sku) would just overwrite qty=1 with qty=1 again, and the
+    // stock_movements idempotency guard would silently skip the deduction
+    // for every line_item after the first, under-deducting stock.
+    const itemsBySku = new Map<string, { productName: string; variation: string | null; qty: number; subtotal: number; imageUrl: string | null }>();
     for (const item of o.line_items ?? []) {
+      const sku = item.seller_sku || item.sku_id || String(item.id);
+      const salePrice = Number(item.sale_price ?? 0);
+      const existing = itemsBySku.get(sku);
+      if (existing) {
+        existing.qty += 1;
+        existing.subtotal += salePrice;
+      } else {
+        itemsBySku.set(sku, {
+          productName: item.product_name,
+          variation: item.sku_name ?? null,
+          qty: 1,
+          subtotal: salePrice,
+          imageUrl: item.sku_image ?? null,
+        });
+      }
+    }
+
+    for (const [sku, grouped] of itemsBySku) {
       const { error: itemErr } = await supabase.from("order_items").upsert(
         {
           order_id: orderRow.id,
-          sku: item.seller_sku || item.sku_id || String(item.id),
-          product_name: item.product_name,
-          variation: item.sku_name ?? null,
-          qty: 1,
-          unit_price: Number(item.sale_price ?? 0),
-          subtotal: Number(item.sale_price ?? 0),
-          image_url: item.sku_image ?? null,
+          sku,
+          product_name: grouped.productName,
+          variation: grouped.variation,
+          qty: grouped.qty,
+          unit_price: grouped.subtotal / grouped.qty,
+          subtotal: grouped.subtotal,
+          image_url: grouped.imageUrl,
         },
         { onConflict: "order_id,sku" },
       );
-      if (!itemErr) syncedItems++;
+      if (!itemErr) {
+        syncedItems++;
+        await deductStockForItem(orderRow.id, sku, grouped.qty, "tiktok", mapTikTokOrderStatus(o.status), o.status ?? null);
+      }
     }
   }
 

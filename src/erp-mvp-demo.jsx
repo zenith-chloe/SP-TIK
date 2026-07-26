@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Boxes, RefreshCw, LogIn, LogOut, AlertTriangle, Menu, X } from "lucide-react";
 import {
   supabaseClient, mapDbStore, mapDbProduct, mapDbOrder, mapDbTransferLog, DEMO_TO_DB_STATUS, DEMO_TO_DB_PLATFORM, NAV,
@@ -91,6 +91,7 @@ export default function App() {
   const [lang, setLang] = useState("zh"); // "zh" | "en"
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const t = (zh, en) => (lang === "en" ? en : zh);
+  const lastSyncAtRef = useRef(null);
 
   useEffect(() => {
     supabaseClient.auth.getSession().then(({ data }) => setSession(data.session));
@@ -98,25 +99,63 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  const ORDER_COLUMNS = "id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, platform_status, is_cod, shipping_fee, order_date, print_count, note_color, note_text, updated_at";
+
   async function loadRealData(silent = false) {
     if (!silent) setDataLoading(true);
-    const [accountsRes, productsRes, ordersRes, itemsRes, transferLogsRes] = await Promise.all([
+
+    // The periodic silent refresh only fetches orders changed since the last
+    // successful load (relies on the updated_at trigger covering every write
+    // path), instead of re-pulling the whole table every cycle. A manual
+    // refresh (silent=false, e.g. login or the "刷新" button) always does a
+    // full reload so it stays a reliable "get me the real state" escape hatch.
+    const isIncremental = silent && lastSyncAtRef.current;
+
+    let ordersQuery = supabaseClient.from("orders").select(ORDER_COLUMNS);
+    ordersQuery = isIncremental
+      ? ordersQuery.gt("updated_at", lastSyncAtRef.current)
+      : ordersQuery.order("order_date", { ascending: false }).limit(5000);
+
+    const [accountsRes, productsRes, ordersRes, transferLogsRes] = await Promise.all([
       supabaseClient.from("platform_accounts").select("id, platform, account_name, created_at, token_expires_at"),
       supabaseClient.from("products").select("sku, name, warehouse_a_qty, warehouse_b_qty, listed_shop_id"),
-      supabaseClient.from("orders").select("id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, platform_status, is_cod, shipping_fee, order_date, print_count, note_color, note_text"),
-      supabaseClient.from("order_items").select("order_id, sku, product_name, variation, qty, unit_price, image_url"),
+      ordersQuery,
       supabaseClient.from("transfer_logs").select("id, type, sku, from_location, to_location, qty, created_at").order("created_at", { ascending: false }),
     ]);
+
+    const changedOrders = ordersRes.data || [];
+    const changedOrderIds = changedOrders.map((o) => o.id);
     const itemsByOrder = {};
-    (itemsRes.data || []).forEach((it) => {
-      (itemsByOrder[it.order_id] ||= []).push(it);
-    });
+    if (changedOrderIds.length > 0) {
+      const { data: items } = await supabaseClient
+        .from("order_items")
+        .select("order_id, sku, product_name, variation, qty, unit_price, image_url")
+        .in("order_id", changedOrderIds);
+      (items || []).forEach((it) => {
+        (itemsByOrder[it.order_id] ||= []).push(it);
+      });
+    }
+
     const mappedStores = (accountsRes.data || []).map(mapDbStore);
     const firstShopeeStore = mappedStores.find((s) => s.platform === "Shopee")?.id;
     setStores(mappedStores);
     setInventory((productsRes.data || []).map((p) => mapDbProduct(p, firstShopeeStore)));
-    setOrders((ordersRes.data || []).map((o) => mapDbOrder(o, itemsByOrder[o.id] || [])));
     setTransferLogs((transferLogsRes.data || []).map(mapDbTransferLog));
+
+    const mappedChangedOrders = changedOrders.map((o) => mapDbOrder(o, itemsByOrder[o.id] || []));
+    if (isIncremental) {
+      setOrders((prev) => {
+        const byId = new Map(prev.map((o) => [o.id, o]));
+        mappedChangedOrders.forEach((o) => byId.set(o.id, o));
+        return Array.from(byId.values());
+      });
+    } else {
+      setOrders(mappedChangedOrders);
+    }
+
+    const maxUpdatedAt = changedOrders.reduce((max, o) => (o.updated_at > max ? o.updated_at : max), lastSyncAtRef.current || "");
+    lastSyncAtRef.current = maxUpdatedAt || new Date().toISOString();
+
     if (!silent) setDataLoading(false);
   }
 

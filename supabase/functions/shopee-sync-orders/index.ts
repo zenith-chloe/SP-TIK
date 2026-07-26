@@ -24,6 +24,80 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 
+// Deducts stock for one order_item, exactly once, via the stock_movements
+// UNIQUE(order_id, sku) constraint: the insert only succeeds the first time
+// this (order, sku) pair is seen, so re-syncing the same order (which
+// happens on every run within the sync window) never double-deducts.
+async function deductStockForItem(
+  orderId: string,
+  sku: string,
+  qty: number,
+  platform: "tiktok" | "shopee",
+  orderStatus: string,
+  platformStatus: string | null,
+) {
+  if (platformStatus === "UNPAID" || orderStatus === "cancelled") return;
+
+  const { data: product } = await supabase
+    .from("products")
+    .select("id, warehouse_a_qty")
+    .eq("sku", sku)
+    .maybeSingle();
+  if (!product) return;
+
+  const stockBefore = Math.max(product.warehouse_a_qty ?? 0, 0);
+  // Never let warehouse_a_qty go negative: deduct at most what's actually there.
+  const actualDeduction = Math.min(qty, stockBefore);
+  const stockAfter = stockBefore - actualDeduction;
+  const insufficientStock = actualDeduction < qty;
+
+  const { data: inserted, error: insertErr } = await supabase
+    .from("stock_movements")
+    .insert({
+      product_id: product.id,
+      sku,
+      order_id: orderId,
+      platform,
+      qty_deducted: actualDeduction,
+      stock_before: stockBefore,
+      stock_after: stockAfter,
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (insertErr) {
+    if (insertErr.code === "23505") return; // already deducted for this order+sku
+    await supabase.from("sync_logs").insert({
+      action: "stock_deduction",
+      status: "failed",
+      message: `order ${orderId} sku ${sku}: ${insertErr.message}`,
+    });
+    return;
+  }
+  if (!inserted) return;
+
+  const { error: updateErr } = await supabase
+    .from("products")
+    .update({ warehouse_a_qty: stockAfter })
+    .eq("id", product.id);
+  if (updateErr) {
+    await supabase.from("sync_logs").insert({
+      action: "stock_deduction",
+      status: "failed",
+      message: `order ${orderId} sku ${sku}: product update failed - ${updateErr.message}`,
+    });
+    return;
+  }
+
+  if (insufficientStock) {
+    await supabase.from("sync_logs").insert({
+      action: "stock_deduction",
+      status: "failed",
+      message: `order ${orderId} sku ${sku}: insufficient stock, wanted ${qty} but only had ${stockBefore} — deducted ${actualDeduction} and stopped at 0`,
+    });
+  }
+}
+
 async function refreshTokenIfNeeded(
   creds: ShopeeCredentials,
   account: { id: string; shop_id: string; access_token: string; refresh_token: string; token_expires_at: string },
@@ -160,21 +234,51 @@ async function syncOneShop(creds: ShopeeCredentials, account: {
       }
       syncedOrders++;
 
+      // If the same SKU appears in more than one item_list entry on this order
+      // (e.g. distinct order lines that resolve to the same override SKU),
+      // sum them here first — otherwise the order_items upsert (keyed on
+      // order_id+sku) would overwrite instead of accumulate, and the
+      // stock_movements idempotency guard would skip the deduction for every
+      // entry after the first, under-deducting stock.
+      const itemsBySku = new Map<string, { productName: string; variation: string | null; qty: number; subtotal: number; imageUrl: string | null }>();
       for (const item of o.item_list ?? []) {
+        const sku = item.model_sku || item.item_sku || String(item.item_id);
+        const qty = item.model_quantity_purchased ?? 1;
+        const unitPrice = item.model_discounted_price ?? item.model_original_price ?? 0;
+        const subtotal = unitPrice * qty;
+        const existing = itemsBySku.get(sku);
+        if (existing) {
+          existing.qty += qty;
+          existing.subtotal += subtotal;
+        } else {
+          itemsBySku.set(sku, {
+            productName: item.item_name,
+            variation: item.model_name ?? null,
+            qty,
+            subtotal,
+            imageUrl: item.image_info?.image_url ?? null,
+          });
+        }
+      }
+
+      for (const [sku, grouped] of itemsBySku) {
         const { error: itemErr } = await supabase.from("order_items").upsert(
           {
             order_id: orderRow.id,
-            sku: item.model_sku || item.item_sku || String(item.item_id),
-            product_name: item.item_name,
-            variation: item.model_name ?? null,
-            qty: item.model_quantity_purchased ?? 1,
-            unit_price: item.model_discounted_price ?? item.model_original_price ?? 0,
-            subtotal: (item.model_discounted_price ?? 0) * (item.model_quantity_purchased ?? 1),
-            image_url: item.image_info?.image_url ?? null,
+            sku,
+            product_name: grouped.productName,
+            variation: grouped.variation,
+            qty: grouped.qty,
+            unit_price: grouped.qty > 0 ? grouped.subtotal / grouped.qty : 0,
+            subtotal: grouped.subtotal,
+            image_url: grouped.imageUrl,
           },
           { onConflict: "order_id,sku" },
         );
-        if (!itemErr) syncedItems++;
+        if (!itemErr) {
+          syncedItems++;
+          await deductStockForItem(orderRow.id, sku, grouped.qty, "shopee", mapShopeeOrderStatus(o.order_status), o.order_status ?? null);
+        }
       }
     }
   }
