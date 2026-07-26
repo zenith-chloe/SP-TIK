@@ -144,8 +144,10 @@ export default function App() {
       ...prev,
     ]);
 
-    supabaseClient.from("products").update({ warehouse_a_qty: nextA, warehouse_b_qty: nextB }).eq("sku", sku);
-    supabaseClient.from("transfer_logs").insert({ type: "warehouse", sku, from_location: fromWarehouse, to_location: toWarehouse, qty });
+    supabaseClient.from("products").update({ warehouse_a_qty: nextA, warehouse_b_qty: nextB }).eq("sku", sku)
+      .then(({ error }) => error && console.error("transferStock update failed", error));
+    supabaseClient.from("transfer_logs").insert({ type: "warehouse", sku, from_location: fromWarehouse, to_location: toWarehouse, qty })
+      .then(({ error }) => error && console.error("transfer_logs insert failed", error));
   }
 
   function moveProductToShop(sku, fromShopId, toShopId) {
@@ -157,8 +159,10 @@ export default function App() {
       ...prev,
     ]);
 
-    supabaseClient.from("products").update({ listed_shop_id: toShopId }).eq("sku", sku);
-    supabaseClient.from("transfer_logs").insert({ type: "shop", sku, from_location: fromName, to_location: toName, qty: null });
+    supabaseClient.from("products").update({ listed_shop_id: toShopId }).eq("sku", sku)
+      .then(({ error }) => error && console.error("moveProductToShop update failed", error));
+    supabaseClient.from("transfer_logs").insert({ type: "shop", sku, from_location: fromName, to_location: toName, qty: null })
+      .then(({ error }) => error && console.error("transfer_logs insert failed", error));
   }
 
   function connectStore(name, platform, syncMode = "manual") {
@@ -217,20 +221,23 @@ export default function App() {
     setSelectedOrder((prev) => (prev && prev.id === orderId ? { ...prev, status: newStatus } : prev));
     const dbStatus = DEMO_TO_DB_STATUS[newStatus];
     if (dbStatus) {
-      supabaseClient.from("orders").update({ order_status: dbStatus }).eq("order_no", orderId);
+      supabaseClient.from("orders").update({ order_status: dbStatus }).eq("order_no", orderId)
+        .then(({ error }) => error && console.error("updateOrderStatus failed", error));
     }
   }
 
   function updateOrderNote(orderId, color, text) {
     setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, noteColor: color, noteText: text } : o)));
-    supabaseClient.from("orders").update({ note_color: color, note_text: text }).eq("order_no", orderId);
+    supabaseClient.from("orders").update({ note_color: color, note_text: text }).eq("order_no", orderId)
+      .then(({ error }) => error && console.error("updateOrderNote failed", error));
   }
 
   function incrementPrintCount(orderIds) {
     setOrders((prev) => prev.map((o) => (orderIds.includes(o.id) ? { ...o, printCount: (o.printCount || 0) + 1 } : o)));
     orderIds.forEach((orderId) => {
       const current = orders.find((o) => o.id === orderId)?.printCount || 0;
-      supabaseClient.from("orders").update({ print_count: current + 1 }).eq("order_no", orderId);
+      supabaseClient.from("orders").update({ print_count: current + 1 }).eq("order_no", orderId)
+        .then(({ error }) => error && console.error("incrementPrintCount failed", error));
     });
   }
 
