@@ -823,9 +823,9 @@ const LABEL_FIELD_DEFS = [
   { key: "senderName", zh: "寄件人", en: "Sender Name", type: "text" },
   { key: "senderAddress", zh: "寄件地址", en: "Sender Address", type: "textarea" },
   { key: "postcode", zh: "邮编", en: "Postcode", type: "text" },
-  { key: "recipientName", zh: "收件人", en: "Recipient Name", type: "text" },
-  { key: "recipientPhone", zh: "收件人电话", en: "Recipient Phone", type: "text" },
-  { key: "recipientAddress", zh: "收件地址", en: "Recipient Address", type: "textarea" },
+  { key: "recipientName", zh: "收件人", en: "Recipient Name", type: "text", locked: true },
+  { key: "recipientPhone", zh: "收件人电话", en: "Recipient Phone", type: "text", locked: true },
+  { key: "recipientAddress", zh: "收件地址", en: "Recipient Address", type: "textarea", locked: true },
   { key: "note", zh: "备注", en: "Note", type: "text" },
 ];
 
@@ -906,7 +906,11 @@ export function PrintSlip({ t, orders, onClose, onConfirmPrint }) {
             {LABEL_FIELD_DEFS.map((f) => (
               <div key={f.key}>
                 <label className="text-[11px] text-slate-400 mb-1 block">{lang === "en" ? f.en : f.zh}</label>
-                {f.type === "textarea" ? (
+                {f.locked ? (
+                  <div className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-500 whitespace-pre-wrap">
+                    {activeFields[f.key] || "—"}
+                  </div>
+                ) : f.type === "textarea" ? (
                   <textarea
                     value={activeFields[f.key]}
                     onChange={(e) => updateField(activeOrder.id, f.key, e.target.value)}

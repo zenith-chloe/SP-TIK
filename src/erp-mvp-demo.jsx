@@ -126,7 +126,7 @@ export default function App() {
 
   useEffect(() => {
     if (!session) return;
-    const interval = setInterval(() => loadRealData(true), 60000);
+    const interval = setInterval(() => loadRealData(true), 20000);
     return () => clearInterval(interval);
   }, [session]);
 
