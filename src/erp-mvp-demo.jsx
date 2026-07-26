@@ -76,6 +76,57 @@ function LoginScreen({ t }) {
   );
 }
 
+// Mirrors the idempotent insert-then-conditionally-update pattern the
+// TikTok/Shopee sync edge functions use for stock_movements: the INSERT only
+// succeeds the first time this (order, sku) pair is seen (UNIQUE(order_id,
+// sku)), so re-printing the same order — or a later platform sync reaching
+// the same order — never double-deducts, whichever trigger gets there first.
+async function deductStockForPrintedItem(order, item) {
+  if (order.platform_status === "UNPAID" || order.order_status === "cancelled") return;
+
+  const { data: product } = await supabaseClient
+    .from("products")
+    .select("id, warehouse_a_qty")
+    .eq("sku", item.sku)
+    .maybeSingle();
+  if (!product) return;
+
+  const stockBefore = Math.max(product.warehouse_a_qty || 0, 0);
+  // Never let warehouse_a_qty go negative: deduct at most what's actually there.
+  const actualDeduction = Math.min(item.qty || 0, stockBefore);
+  const stockAfter = stockBefore - actualDeduction;
+
+  const { data: inserted, error: insertErr } = await supabaseClient
+    .from("stock_movements")
+    .insert({
+      product_id: product.id,
+      sku: item.sku,
+      order_id: order.id,
+      platform: order.platform,
+      qty_deducted: actualDeduction,
+      stock_before: stockBefore,
+      stock_after: stockAfter,
+    })
+    .select("id")
+    .maybeSingle();
+  if (insertErr || !inserted) return; // 23505 = already deducted for this order+sku
+
+  await supabaseClient
+    .from("products")
+    .update({ warehouse_a_qty: stockAfter })
+    .eq("id", product.id)
+    .then(({ error }) => error && console.error("print stock deduction: product update failed", error));
+}
+
+// Placeholder for TikTok's Fulfillment/Logistics API write-back (mark
+// shipped + upload tracking number) once that OAuth scope is granted — the
+// current token gets a 105005 access-denied on logistics endpoints, so
+// there's nothing to call yet. Left as a no-op call site in the print flow
+// so wiring the real API in later is additive, not a restructure.
+async function syncFulfillmentToPlatform(_order) {
+  // Intentionally empty until TikTok Fulfillment scope is approved.
+}
+
 /* ============================== App ============================== */
 
 export default function App() {
@@ -100,6 +151,47 @@ export default function App() {
   }, []);
 
   const ORDER_COLUMNS = "id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, platform_status, is_cod, shipping_fee, order_date, print_count, note_color, note_text, updated_at";
+
+  // Supabase's REST API caps any single response at 1000 rows and a `.in()`
+  // filter with thousands of ids blows past sane URL length limits, so once
+  // order_items crossed that scale (after the TikTok full sync backfilled
+  // thousands of historical orders) a single unbounded `.in(changedOrderIds)`
+  // query silently came back truncated — orders past the cutoff got an empty
+  // items array, which is why their SKU/photo/product name looked "missing"
+  // even though order_items had the data all along. Two safeguards, not one:
+  // chunking keeps each request's id list short enough to stay under URL
+  // length limits, and `.range()` paging inside each chunk means even a
+  // chunk whose orders happen to carry unusually many line items each still
+  // gets read to completion instead of silently stopping at row 1000.
+  async function fetchOrderItemsFor(orderIds) {
+    const CHUNK_SIZE = 200;
+    const PAGE_SIZE = 1000;
+    const chunks = [];
+    for (let i = 0; i < orderIds.length; i += CHUNK_SIZE) chunks.push(orderIds.slice(i, i + CHUNK_SIZE));
+
+    async function fetchChunk(chunk) {
+      const all = [];
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabaseClient
+          .from("order_items")
+          .select("order_id, sku, product_name, variation, qty, unit_price, image_url")
+          .in("order_id", chunk)
+          .range(from, from + PAGE_SIZE - 1);
+        if (error) {
+          console.error("fetchOrderItemsFor chunk failed", error);
+          break;
+        }
+        all.push(...(data || []));
+        if (!data || data.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
+      return all;
+    }
+
+    const results = await Promise.all(chunks.map(fetchChunk));
+    return results.flat();
+  }
 
   async function loadRealData(silent = false) {
     if (!silent) setDataLoading(true);
@@ -127,11 +219,8 @@ export default function App() {
     const changedOrderIds = changedOrders.map((o) => o.id);
     const itemsByOrder = {};
     if (changedOrderIds.length > 0) {
-      const { data: items } = await supabaseClient
-        .from("order_items")
-        .select("order_id, sku, product_name, variation, qty, unit_price, image_url")
-        .in("order_id", changedOrderIds);
-      (items || []).forEach((it) => {
+      const items = await fetchOrderItemsFor(changedOrderIds);
+      items.forEach((it) => {
         (itemsByOrder[it.order_id] ||= []).push(it);
       });
     }
@@ -271,13 +360,41 @@ export default function App() {
       .then(({ error }) => error && console.error("updateOrderNote failed", error));
   }
 
-  function incrementPrintCount(orderIds) {
-    setOrders((prev) => prev.map((o) => (orderIds.includes(o.id) ? { ...o, printCount: (o.printCount || 0) + 1 } : o)));
-    orderIds.forEach((orderId) => {
-      const current = orders.find((o) => o.id === orderId)?.printCount || 0;
-      supabaseClient.from("orders").update({ print_count: current + 1 }).eq("order_no", orderId)
+  // Printing a shipping label is the ERP-internal signal that an order has
+  // moved from "待处理" into fulfillment: bumps print_count (existing
+  // behavior), flips order_status pending -> processing, and deducts stock
+  // for every item on the order via the same idempotent stock_movements
+  // pattern the platform syncs use. TikTok sync itself is untouched — if a
+  // sync run already deducted a given (order, sku) first, this is a no-op
+  // for that pair thanks to the shared unique constraint.
+  async function handlePrintConfirm(orderNos) {
+    const { data: dbOrders, error: fetchErr } = await supabaseClient
+      .from("orders")
+      .select("id, order_no, platform, order_status, platform_status, print_count")
+      .in("order_no", orderNos);
+    if (fetchErr || !dbOrders || dbOrders.length === 0) return;
+
+    const toProcessingIds = dbOrders.filter((o) => o.order_status === "pending").map((o) => o.id);
+    if (toProcessingIds.length > 0) {
+      supabaseClient.from("orders").update({ order_status: "processing" }).in("id", toProcessingIds)
+        .then(({ error }) => error && console.error("print: order_status -> processing failed", error));
+    }
+
+    dbOrders.forEach((o) => {
+      supabaseClient.from("orders").update({ print_count: (o.print_count || 0) + 1 }).eq("id", o.id)
         .then(({ error }) => error && console.error("incrementPrintCount failed", error));
     });
+
+    setOrders((prev) => prev.map((o) => (orderNos.includes(o.id) ? { ...o, printCount: (o.printCount || 0) + 1 } : o)));
+
+    const items = await fetchOrderItemsFor(dbOrders.map((o) => o.id));
+    const orderById = new Map(dbOrders.map((o) => [o.id, o]));
+    for (const item of items) {
+      const order = orderById.get(item.order_id);
+      if (order) await deductStockForPrintedItem(order, item);
+    }
+
+    dbOrders.forEach((o) => syncFulfillmentToPlatform(o));
   }
 
   if (session === undefined) {
@@ -431,7 +548,7 @@ export default function App() {
         <OrderDrawer t={t} order={selectedOrder} onClose={() => setSelectedOrder(null)} onPrint={(o) => setPrintOrders([o])} onUpdateStatus={updateOrderStatus} />
       )}
       {printOrders && printOrders.length > 0 && (
-        <PrintSlip t={t} orders={printOrders} onClose={() => setPrintOrders(null)} onConfirmPrint={() => incrementPrintCount(printOrders.map((o) => o.id))} />
+        <PrintSlip t={t} orders={printOrders} onClose={() => setPrintOrders(null)} onConfirmPrint={() => handlePrintConfirm(printOrders.map((o) => o.id))} />
       )}
     </div>
   );
