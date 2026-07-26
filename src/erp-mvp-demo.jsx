@@ -5,7 +5,7 @@ import {
 } from "./shared.jsx";
 import { Overview, Orders, OrderDrawer, Inventory } from "./pagesOverviewOrders.jsx";
 import { ProductMove, StoreManagement } from "./pagesMove.jsx";
-import { ManualImport, Finance, AIPanel, Roles, AdsSpend, PrintSlip } from "./pagesImportFinance.jsx";
+import { ManualImport, Finance, AIPanel, Roles, AdsSpend, PrintSlip, LabelPrinting } from "./pagesImportFinance.jsx";
 
 /* ============================== Login ============================== */
 
@@ -382,7 +382,8 @@ export default function App() {
           {tab === "stores" && <StoreManagement t={t} stores={stores} onConnect={connectStore} onSetSyncMode={setStoreSyncMode} />}
           {tab === "finance" && <Finance t={t} orders={orders} />}
           {tab === "ads" && <AdsSpend t={t} />}
-          {tab === "ai" && <AIPanel t={t} orders={orders} inventory={inventory} onPrint={setPrintOrders} />}
+          {tab === "ai" && <AIPanel t={t} orders={orders} inventory={inventory} />}
+          {tab === "labels" && <LabelPrinting t={t} orders={orders} onPrint={setPrintOrders} />}
           {tab === "roles" && <Roles t={t} />}
         </div>
       </main>

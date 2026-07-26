@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, ShoppingCart, Warehouse, DollarSign, Bot, ShieldCheck,
-  Upload, ArrowRightLeft, Store, Megaphone,
+  Upload, ArrowRightLeft, Store, Megaphone, Printer,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -270,5 +270,6 @@ export const NAV = [
   { key: "finance", zh: "财务与利润", en: "Finance & Profit", icon: DollarSign },
   { key: "ads", zh: "广告费用", en: "Ad Spend", icon: Megaphone },
   { key: "ai", zh: "AI智能功能", en: "AI Features", icon: Bot },
+  { key: "labels", zh: "标签打印", en: "Label Printing", icon: Printer },
   { key: "roles", zh: "权限管理", en: "Roles & Permissions", icon: ShieldCheck },
 ];

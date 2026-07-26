@@ -509,18 +509,7 @@ function aiReply(text) {
   return hit ? hit.reply : "已收到您的问题，AI 客服正在为您查找答案，如未能解决将在 10 分钟内转接人工客服。";
 }
 
-export function AIPanel({ t, orders, inventory, onPrint }) {
-  const [messages, setMessages] = useState([
-    { from: "customer", text: "你好，请问我的包裹到哪里了？" },
-    { from: "ai", text: aiReply("追踪") },
-  ]);
-  const [input, setInput] = useState("");
-  const suggestions = restockSuggestions(inventory);
-  const topSelling = [...orders.reduce((map, o) => {
-    map.set(o.sku, (map.get(o.sku) || 0) + o.qty);
-    return map;
-  }, new Map())].sort((a, b) => b[1] - a[1]).slice(0, 5);
-
+export function LabelPrinting({ t, orders, onPrint }) {
   const [printQuery, setPrintQuery] = useState("");
   const [printSelectedIds, setPrintSelectedIds] = useState(() => new Set());
   const printMatches = printQuery.trim()
@@ -548,6 +537,51 @@ export function AIPanel({ t, orders, inventory, onPrint }) {
     }
   }
 
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="text-sm font-medium mb-3 flex items-center gap-1.5"><Printer size={14} className="text-slate-500"/> {t("标签打印", "Label Printing")}</div>
+      <input
+        value={printQuery}
+        onChange={(e) => setPrintQuery(e.target.value)}
+        placeholder={t("搜索订单编号 / 客户 / SKU", "Search order no. / customer / SKU")}
+        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+      />
+      {printMatches.length > 0 && (
+        <div className="mt-2 border border-slate-100 rounded-lg divide-y divide-slate-100 max-h-56 overflow-y-auto">
+          {printMatches.map((o) => (
+            <label key={o.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
+              <input type="checkbox" checked={printSelectedIds.has(o.id)} onChange={() => togglePrintSelect(o.id)} className="h-3.5 w-3.5 rounded border-slate-300" />
+              <div className="flex-1 min-w-0">
+                <div className="font-medium truncate">{o.id}</div>
+                <div className="text-xs text-slate-400 truncate">{o.customer} · {o.product}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      )}
+      <button
+        onClick={handlePrintSelected}
+        disabled={printSelectedIds.size === 0}
+        className={`mt-3 flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg text-white ${printSelectedIds.size > 0 ? "bg-slate-900 hover:bg-slate-800" : "bg-slate-300 cursor-not-allowed"}`}
+      >
+        <Printer size={14} /> {t(`打印已选 (${printSelectedIds.size})`, `Print Selected (${printSelectedIds.size})`)}
+      </button>
+    </div>
+  );
+}
+
+export function AIPanel({ t, orders, inventory }) {
+  const [messages, setMessages] = useState([
+    { from: "customer", text: "你好，请问我的包裹到哪里了？" },
+    { from: "ai", text: aiReply("追踪") },
+  ]);
+  const [input, setInput] = useState("");
+  const suggestions = restockSuggestions(inventory);
+  const topSelling = [...orders.reduce((map, o) => {
+    map.set(o.sku, (map.get(o.sku) || 0) + o.qty);
+    return map;
+  }, new Map())].sort((a, b) => b[1] - a[1]).slice(0, 5);
+
   function send() {
     if (!input.trim()) return;
     const reply = aiReply(input);
@@ -557,36 +591,6 @@ export function AIPanel({ t, orders, inventory, onPrint }) {
 
   return (
     <div className="space-y-6">
-      <div className="bg-white border border-slate-200 rounded-xl p-4">
-        <div className="text-sm font-medium mb-3 flex items-center gap-1.5"><Printer size={14} className="text-slate-500"/> {t("标签打印", "Label Printing")}</div>
-        <input
-          value={printQuery}
-          onChange={(e) => setPrintQuery(e.target.value)}
-          placeholder={t("搜索订单编号 / 客户 / SKU", "Search order no. / customer / SKU")}
-          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400"
-        />
-        {printMatches.length > 0 && (
-          <div className="mt-2 border border-slate-100 rounded-lg divide-y divide-slate-100 max-h-56 overflow-y-auto">
-            {printMatches.map((o) => (
-              <label key={o.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
-                <input type="checkbox" checked={printSelectedIds.has(o.id)} onChange={() => togglePrintSelect(o.id)} className="h-3.5 w-3.5 rounded border-slate-300" />
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium truncate">{o.id}</div>
-                  <div className="text-xs text-slate-400 truncate">{o.customer} · {o.product}</div>
-                </div>
-              </label>
-            ))}
-          </div>
-        )}
-        <button
-          onClick={handlePrintSelected}
-          disabled={printSelectedIds.size === 0}
-          className={`mt-3 flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg text-white ${printSelectedIds.size > 0 ? "bg-slate-900 hover:bg-slate-800" : "bg-slate-300 cursor-not-allowed"}`}
-        >
-          <Printer size={14} /> {t(`打印已选 (${printSelectedIds.size})`, `Print Selected (${printSelectedIds.size})`)}
-        </button>
-      </div>
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4">
           <div className="text-sm font-medium mb-3 flex items-center gap-1.5"><TrendingUp size={14} className="text-teal-500"/> {t("热销商品 Top 5", "Top 5 Best Sellers")}</div>
