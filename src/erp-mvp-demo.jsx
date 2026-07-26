@@ -375,7 +375,7 @@ export default function App() {
           {tab === "stores" && <StoreManagement t={t} stores={stores} onConnect={connectStore} onSetSyncMode={setStoreSyncMode} />}
           {tab === "finance" && <Finance t={t} orders={orders} />}
           {tab === "ads" && <AdsSpend t={t} />}
-          {tab === "ai" && <AIPanel t={t} orders={orders} inventory={inventory} />}
+          {tab === "ai" && <AIPanel t={t} orders={orders} inventory={inventory} onPrint={setPrintOrders} />}
           {tab === "roles" && <Roles t={t} />}
         </div>
       </main>

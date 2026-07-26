@@ -30,7 +30,7 @@ export function KPICard({ label, value, sub, icon: Icon, tone }) {
 }
 
 export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
-  const pending = orders.filter((o) => o.status === "待处理" && o.platformStatus !== "UNPAID").length;
+  const pending = orders.filter((o) => o.status === "待处理" && o.platformStatus !== "UNPAID" && !(o.printCount > 0)).length;
   const totalProfit = orders.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
   const lowStock = inventory.filter((i) => i.warehouseA + i.warehouseB < i.reorderPoint);
   const recent = orders.slice(0, 6);
@@ -171,7 +171,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
 
   // 还没交给物流 = 官方平台的 "To Ship"：待处理里已付款的部分（不含未付款 UNPAID，平台的 To Ship 不算未付款单）
   const NOT_YET_SHIPPED = ["待处理"];
-  const isNotYetShipped = (o) => NOT_YET_SHIPPED.includes(o.status) && o.platformStatus !== "UNPAID";
+  const isNotYetShipped = (o) => NOT_YET_SHIPPED.includes(o.status) && o.platformStatus !== "UNPAID" && !(o.printCount > 0);
   const platformStores = stores.filter((s) => s.platform === activePlatform);
   const allManual = platformStores.length > 0 && platformStores.every((s) => s.syncMode === "manual");
 

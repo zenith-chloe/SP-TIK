@@ -208,6 +208,18 @@ Deno.serve(async (req: Request) => {
   if (url.searchParams.get("debug") === "1") {
     try {
       const { shopCipher } = await ensureShopCipher(creds, accounts[0]);
+      if (url.searchParams.get("endpoint") === "warehouses") {
+        const warehouseData = await tiktokCall(
+          "GET",
+          "/logistics/202309/warehouses",
+          creds,
+          accounts[0].access_token,
+          { shop_cipher: shopCipher },
+        );
+        return new Response(JSON.stringify({ shopCipher, warehouseData }, null, 2), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       const statusParam = url.searchParams.get("status");
       const searchData = await tiktokCall(
         "POST",
