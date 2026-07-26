@@ -752,18 +752,57 @@ export function AdsSpend({ t }) {
   );
 }
 
-/* ============================== Print shipping slip ============================== */
+/* ============================== Print shipping slip (courier-label style, editable) ============================== */
+
+const LABEL_FIELD_DEFS = [
+  { key: "shipByDate", zh: "发货日期", en: "Ship By Date", type: "date" },
+  { key: "weight", zh: "重量 (kg)", en: "Weight (kg)", type: "text" },
+  { key: "senderName", zh: "寄件人", en: "Sender Name", type: "text" },
+  { key: "senderAddress", zh: "寄件地址", en: "Sender Address", type: "textarea" },
+  { key: "postcode", zh: "邮编", en: "Postcode", type: "text" },
+  { key: "recipientName", zh: "收件人", en: "Recipient Name", type: "text" },
+  { key: "recipientPhone", zh: "收件人电话", en: "Recipient Phone", type: "text" },
+  { key: "recipientAddress", zh: "收件地址", en: "Recipient Address", type: "textarea" },
+  { key: "note", zh: "备注", en: "Note", type: "text" },
+];
+
+function labelFields(order, overrides) {
+  const o = overrides[order.id] || {};
+  return {
+    orderId: order.platformOrderId || order.id,
+    shipByDate: o.shipByDate ?? order.date,
+    weight: o.weight ?? "",
+    senderName: o.senderName ?? "",
+    senderAddress: o.senderAddress ?? "",
+    postcode: o.postcode ?? "",
+    recipientName: o.recipientName ?? order.customer,
+    recipientPhone: o.recipientPhone ?? order.phone,
+    recipientAddress: o.recipientAddress ?? order.address,
+    note: o.note ?? "",
+  };
+}
 
 export function PrintSlip({ t, orders, onClose, onConfirmPrint }) {
+  const [activeIdx, setActiveIdx] = useState(0);
+  const [overrides, setOverrides] = useState({});
+  const lang = t("zh", "en");
+
+  function updateField(orderId, key, value) {
+    setOverrides((prev) => ({ ...prev, [orderId]: { ...(prev[orderId] || {}), [key]: value } }));
+  }
+
   function handlePrint() {
     window.print();
     onConfirmPrint?.();
   }
 
+  const activeOrder = orders[activeIdx] || orders[0];
+  const activeFields = labelFields(activeOrder, overrides);
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="no-print flex items-center justify-between px-5 py-3 border-b border-slate-200 sticky top-0 bg-white">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl h-[85vh] flex flex-col">
+        <div className="no-print flex items-center justify-between px-5 py-3 border-b border-slate-200">
           <div className="text-sm font-medium">
             {t("发货单预览", "Shipping Label Preview")}{orders.length > 1 ? t(`（共 ${orders.length} 张）`, ` (${orders.length} total)`) : ""}
           </div>
@@ -779,9 +818,60 @@ export function PrintSlip({ t, orders, onClose, onConfirmPrint }) {
             </button>
           </div>
         </div>
-        <div className="print-slip">
+
+        <div className="no-print flex-1 flex overflow-hidden">
+          <div className="flex-1 overflow-y-auto bg-slate-100 p-4 flex flex-col items-center gap-3">
+            {orders.length > 1 && (
+              <div className="flex gap-1.5 flex-wrap justify-center">
+                {orders.map((o, i) => (
+                  <button
+                    key={o.id}
+                    onClick={() => setActiveIdx(i)}
+                    className={`text-[11px] px-2.5 py-1 rounded-full border ${i === activeIdx ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+                  >
+                    {i + 1}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="shadow-sm">
+              <ShippingLabelCard t={t} order={activeOrder} fields={activeFields} />
+            </div>
+          </div>
+          <div className="w-72 shrink-0 border-l border-slate-200 overflow-y-auto p-4 space-y-3">
+            <div className="text-xs font-medium text-slate-500">{t("编辑标签内容", "Edit label")}</div>
+            {LABEL_FIELD_DEFS.map((f) => (
+              <div key={f.key}>
+                <label className="text-[11px] text-slate-400 mb-1 block">{lang === "en" ? f.en : f.zh}</label>
+                {f.type === "textarea" ? (
+                  <textarea
+                    value={activeFields[f.key]}
+                    onChange={(e) => updateField(activeOrder.id, f.key, e.target.value)}
+                    rows={2}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400 resize-none"
+                  />
+                ) : (
+                  <input
+                    type={f.type === "date" ? "date" : "text"}
+                    value={activeFields[f.key]}
+                    onChange={(e) => updateField(activeOrder.id, f.key, e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="print-slip" style={{ position: "absolute", left: "-9999px", top: 0 }}>
           {orders.map((order, idx) => (
-            <ShippingSlipPage key={order.id} t={t} order={order} isLast={idx === orders.length - 1} />
+            <ShippingLabelCard
+              key={order.id}
+              t={t}
+              order={order}
+              fields={labelFields(order, overrides)}
+              isLast={idx === orders.length - 1}
+            />
           ))}
         </div>
       </div>
@@ -789,74 +879,59 @@ export function PrintSlip({ t, orders, onClose, onConfirmPrint }) {
   );
 }
 
-function ShippingSlipPage({ t, order, isLast }) {
+function ShippingLabelCard({ t, order, fields, isLast }) {
   const theme = PLATFORM_THEME[order.platform];
   const lang = t("zh", "en");
   return (
-    <div className="p-6" style={!isLast ? { breakAfter: "page", borderBottom: "2px dashed #e2e8f0" } : undefined}>
-      <div className="flex items-center justify-between border-b-2 border-slate-900 pb-3 mb-4">
-        <div>
-          <div className="text-lg font-bold">{t("发货单", "Shipping Note")} Shipping Note</div>
-          <div className="text-xs text-slate-500">{t("MY 电商 AI ERP 智能管理系统", "MY E-commerce AI ERP System")}</div>
-        </div>
-        <div className="text-right">
-          <span className={`inline-flex items-center gap-1.5 text-sm font-semibold ${theme.text}`}>
-            <span className={`h-2.5 w-2.5 rounded-full ${theme.dot}`} />
-            {order.platform}
-          </span>
-          <div className="text-xs text-slate-400 mt-0.5">{order.date}</div>
-        </div>
+    <div
+      className="w-[380px] bg-white p-4 text-sm"
+      style={!isLast ? { breakAfter: "page", borderBottom: "2px dashed #e2e8f0" } : undefined}
+    >
+      <div className="flex items-center gap-3 border-b-2 border-slate-900 pb-2 mb-3">
+        <span className={`text-lg font-bold shrink-0 ${theme.text}`}>{order.platform}</span>
+        <div
+          className="flex-1 h-8"
+          style={{ backgroundImage: "repeating-linear-gradient(90deg, #0f172a 0 2px, transparent 2px 5px)" }}
+        />
       </div>
 
-      <div className="grid grid-cols-2 gap-4 text-sm mb-4">
-        <div>
-          <div className="text-[11px] text-slate-400 mb-1">{t("订单编号", "Order No.")}</div>
-          <div className="font-medium">{order.id}</div>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-400 mb-1">{t("追踪号码", "Tracking No.")}</div>
-          <div className="font-medium">{order.tracking}</div>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-400 mb-1">{t("出货仓库", "Ship-from Warehouse")}</div>
-          <div className="font-medium">{warehouseLabel(order.warehouse, lang)}</div>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-400 mb-1">{t("订单状态", "Order Status")}</div>
-          <div className="font-medium">{statusLabel(order.status, lang)}</div>
-        </div>
-      </div>
-
-      <div className="border border-slate-200 rounded-lg p-3 mb-4">
-        <div className="text-[11px] text-slate-400 mb-1">{t("收件人", "Recipient")} Recipient</div>
-        <div className="font-medium">{order.customer}</div>
-        <div className="text-sm text-slate-600">{order.phone}</div>
-        <div className="text-sm text-slate-600 mt-1 leading-relaxed">{order.address}</div>
-      </div>
-
-      <table className="w-full text-sm mb-4">
-        <thead>
-          <tr className="text-left text-[11px] text-slate-400 border-b border-slate-200">
-            <th className="py-1.5 font-medium">SKU</th>
-            <th className="py-1.5 font-medium">{t("商品名称", "Product Name")}</th>
-            <th className="py-1.5 font-medium text-right">{t("数量", "Qty")}</th>
-          </tr>
-        </thead>
+      <div className="text-[11px] font-semibold text-slate-500 mb-1">{t("订单信息 Order Details", "Order Details")}</div>
+      <table className="w-full text-xs mb-3">
         <tbody>
-          <tr className="border-b border-slate-100">
-            <td className="py-2">{order.sku}</td>
-            <td className="py-2">{order.product}</td>
-            <td className="py-2 text-right tabular-nums">{order.qty}</td>
+          <tr>
+            <td className="py-0.5 text-slate-400 w-28">{t("发货日期 Ship By", "Ship By Date")}</td>
+            <td className="py-0.5 font-medium">{fields.shipByDate || "—"}</td>
+          </tr>
+          <tr>
+            <td className="py-0.5 text-slate-400">{t("重量 Weight(kg)", "Weight(kg)")}</td>
+            <td className="py-0.5 font-medium">{fields.weight || "—"}</td>
+          </tr>
+          <tr>
+            <td className="py-0.5 text-slate-400">{t("订单编号 Order ID", "Order ID")}</td>
+            <td className="py-0.5 font-medium">{fields.orderId}</td>
           </tr>
         </tbody>
       </table>
 
-      <div className="flex justify-between text-sm border-t border-slate-200 pt-3">
-        <span className="text-slate-500">{t("商品总额（客户已付）", "Total Amount (Paid by Customer)")}</span>
+      <div className="text-[11px] font-semibold text-slate-500 mb-1">{t("寄件人 Sender Details (Pengirim)", "Sender Details (Pengirim)")}</div>
+      <div className="text-xs font-medium mb-0.5">{fields.senderName || "—"}</div>
+      <div className="text-xs text-slate-600 mb-1 leading-relaxed">{fields.senderAddress || "—"}</div>
+      <div className="text-[11px] text-slate-400 mb-3">{t("邮编", "Postcode")}: {fields.postcode || "—"}</div>
+
+      <div className="text-[11px] font-semibold text-slate-500 mb-1">{t("收件人 Recipient Details (Penerima)", "Recipient Details (Penerima)")}</div>
+      <div className="text-xs font-medium">{fields.recipientName}</div>
+      <div className="text-xs text-slate-600">{fields.recipientPhone}</div>
+      <div className="text-xs text-slate-600 leading-relaxed">{fields.recipientAddress}</div>
+
+      <div className="mt-3 pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
+        <span className="text-slate-500">{order.sku} · {order.product} × {order.qty}</span>
         <span className="font-semibold tabular-nums">RM {fmt(order.unitPrice * order.qty + order.shippingFee)}</span>
       </div>
+      {fields.note && (
+        <div className="mt-2 text-[11px] text-slate-500">{fields.note}</div>
+      )}
 
-      <div className="mt-6 pt-4 border-t border-dashed border-slate-300 text-[11px] text-slate-400 text-center">
+      <div className="mt-3 pt-2 border-t border-dashed border-slate-300 text-[10px] text-slate-400 text-center">
         {t("请核对商品与数量后封箱 · 出货前请扫描追踪号码确认", "Please verify product and quantity before sealing · Scan tracking number before shipping")}
       </div>
     </div>
