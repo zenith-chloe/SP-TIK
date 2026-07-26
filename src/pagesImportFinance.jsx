@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
+import JsBarcode from "jsbarcode";
+import { QRCodeSVG } from "qrcode.react";
 import {
   Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Info, TrendingUp,
   DollarSign, Sparkles, Bot, Send, Users, Megaphone, Printer, X,
@@ -879,54 +881,95 @@ export function PrintSlip({ t, orders, onClose, onConfirmPrint }) {
   );
 }
 
+function Barcode({ value }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (ref.current && value) {
+      JsBarcode(ref.current, value, {
+        format: "CODE128",
+        displayValue: true,
+        fontSize: 11,
+        height: 32,
+        margin: 0,
+      });
+    }
+  }, [value]);
+  if (!value) return null;
+  return <svg ref={ref} style={{ width: "100%" }} />;
+}
+
 function ShippingLabelCard({ t, order, fields, isLast }) {
   const theme = PLATFORM_THEME[order.platform];
   const lang = t("zh", "en");
+  const trackingValue = order.tracking && order.tracking !== "—" ? order.tracking : fields.orderId;
   return (
     <div
       className="w-[380px] bg-white p-4 text-sm"
       style={!isLast ? { breakAfter: "page", borderBottom: "2px dashed #e2e8f0" } : undefined}
     >
-      <div className="flex items-center gap-3 border-b-2 border-slate-900 pb-2 mb-3">
-        <span className={`text-lg font-bold shrink-0 ${theme.text}`}>{order.platform}</span>
-        <div
-          className="flex-1 h-8"
-          style={{ backgroundImage: "repeating-linear-gradient(90deg, #0f172a 0 2px, transparent 2px 5px)" }}
-        />
+      <div className="border-b-2 border-slate-900 pb-2 mb-3">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className={`text-lg font-bold ${theme.text}`}>{order.platform}</span>
+          <QRCodeSVG value={fields.orderId} size={44} />
+        </div>
+        <Barcode value={trackingValue} />
       </div>
 
-      <div className="text-[11px] font-semibold text-slate-500 mb-1">{t("订单信息 Order Details", "Order Details")}</div>
-      <table className="w-full text-xs mb-3">
-        <tbody>
-          <tr>
-            <td className="py-0.5 text-slate-400 w-28">{t("发货日期 Ship By", "Ship By Date")}</td>
-            <td className="py-0.5 font-medium">{fields.shipByDate || "—"}</td>
-          </tr>
-          <tr>
-            <td className="py-0.5 text-slate-400">{t("重量 Weight(kg)", "Weight(kg)")}</td>
-            <td className="py-0.5 font-medium">{fields.weight || "—"}</td>
-          </tr>
-          <tr>
-            <td className="py-0.5 text-slate-400">{t("订单编号 Order ID", "Order ID")}</td>
-            <td className="py-0.5 font-medium">{fields.orderId}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div className="text-[11px] font-semibold text-slate-500 mb-1">{t("寄件人 Sender Details (Pengirim)", "Sender Details (Pengirim)")}</div>
-      <div className="text-xs font-medium mb-0.5">{fields.senderName || "—"}</div>
-      <div className="text-xs text-slate-600 mb-1 leading-relaxed">{fields.senderAddress || "—"}</div>
-      <div className="text-[11px] text-slate-400 mb-3">{t("邮编", "Postcode")}: {fields.postcode || "—"}</div>
-
-      <div className="text-[11px] font-semibold text-slate-500 mb-1">{t("收件人 Recipient Details (Penerima)", "Recipient Details (Penerima)")}</div>
-      <div className="text-xs font-medium">{fields.recipientName}</div>
-      <div className="text-xs text-slate-600">{fields.recipientPhone}</div>
-      <div className="text-xs text-slate-600 leading-relaxed">{fields.recipientAddress}</div>
-
-      <div className="mt-3 pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
-        <span className="text-slate-500">{order.sku} · {order.product} × {order.qty}</span>
-        <span className="font-semibold tabular-nums">RM {fmt(order.unitPrice * order.qty + order.shippingFee)}</span>
+      <div className="border border-slate-300 mb-2">
+        <div className="text-[11px] font-semibold text-slate-500 px-2 pt-1.5 pb-1 border-b border-slate-300 bg-slate-50">
+          {t("订单信息 Order Details", "Order Details")}
+        </div>
+        <table className="w-full text-xs">
+          <tbody>
+            <tr className="border-b border-slate-200">
+              <td className="py-1 px-2 text-slate-400 w-28">{t("发货日期 Ship By", "Ship By Date")}</td>
+              <td className="py-1 px-2 font-medium">{fields.shipByDate || "—"}</td>
+            </tr>
+            <tr className="border-b border-slate-200">
+              <td className="py-1 px-2 text-slate-400">{t("重量 Weight(kg)", "Weight(kg)")}</td>
+              <td className="py-1 px-2 font-medium">{fields.weight || "—"}</td>
+            </tr>
+            <tr className="border-b border-slate-200">
+              <td className="py-1 px-2 text-slate-400">{t("订单编号 Order ID", "Order ID")}</td>
+              <td className="py-1 px-2 font-medium">{fields.orderId}</td>
+            </tr>
+            <tr className="border-b border-slate-200">
+              <td className="py-1 px-2 text-slate-400">{t("运输公司 Courier", "Courier")}</td>
+              <td className="py-1 px-2 font-medium">{order.courier}</td>
+            </tr>
+            <tr>
+              <td className="py-1 px-2 text-slate-400">{t("付款方式 Payment", "Payment")}</td>
+              <td className={`py-1 px-2 font-medium ${order.isCod ? "text-rose-600" : ""}`}>
+                {order.isCod ? t("到货付款 COD", "Cash on Delivery (COD)") : t("已线上付款", "Paid Online")}
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
+
+      <div className="border border-slate-300 mb-2">
+        <div className="text-[11px] font-semibold text-slate-500 px-2 pt-1.5 pb-1 border-b border-slate-300 bg-slate-50">
+          {t("寄件人 Sender Details (Pengirim)", "Sender Details (Pengirim)")}
+        </div>
+        <div className="px-2 py-1.5">
+          <div className="text-xs font-medium mb-0.5">{fields.senderName || "—"}</div>
+          <div className="text-xs text-slate-600 mb-1 leading-relaxed">{fields.senderAddress || "—"}</div>
+          <div className="text-[11px] text-slate-400">{t("邮编", "Postcode")}: {fields.postcode || "—"}</div>
+        </div>
+      </div>
+
+      <div className="border border-slate-300 mb-3">
+        <div className="text-[11px] font-semibold text-slate-500 px-2 pt-1.5 pb-1 border-b border-slate-300 bg-slate-50">
+          {t("收件人 Recipient Details (Penerima)", "Recipient Details (Penerima)")}
+        </div>
+        <div className="px-2 py-1.5">
+          <div className="text-xs font-medium">{fields.recipientName}</div>
+          <div className="text-xs text-slate-600">{fields.recipientPhone}</div>
+          <div className="text-xs text-slate-600 leading-relaxed">{fields.recipientAddress}</div>
+        </div>
+      </div>
+
+      <div className="text-xs text-slate-500">{order.sku} · {order.product} × {order.qty}</div>
       {fields.note && (
         <div className="mt-2 text-[11px] text-slate-500">{fields.note}</div>
       )}

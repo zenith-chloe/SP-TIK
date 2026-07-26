@@ -103,7 +103,7 @@ export default function App() {
     const [accountsRes, productsRes, ordersRes, itemsRes, transferLogsRes] = await Promise.all([
       supabaseClient.from("platform_accounts").select("id, platform, account_name, created_at, token_expires_at"),
       supabaseClient.from("products").select("sku, name, warehouse_a_qty, warehouse_b_qty, listed_shop_id"),
-      supabaseClient.from("orders").select("id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, platform_status, shipping_fee, order_date, print_count, note_color, note_text"),
+      supabaseClient.from("orders").select("id, order_no, platform, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, platform_status, is_cod, shipping_fee, order_date, print_count, note_color, note_text"),
       supabaseClient.from("order_items").select("order_id, sku, product_name, variation, qty, unit_price, image_url"),
       supabaseClient.from("transfer_logs").select("id, type, sku, from_location, to_location, qty, created_at").order("created_at", { ascending: false }),
     ]);

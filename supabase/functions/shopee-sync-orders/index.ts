@@ -121,7 +121,7 @@ async function syncOneShop(creds: ShopeeCredentials, account: {
 
     const detailResp = await shopeeGet("/api/v2/order/get_order_detail", creds, account.shop_id, accessToken, {
       order_sn_list: batch.join(","),
-      response_optional_fields: "item_list,recipient_address,total_amount,shipping_carrier,order_status",
+      response_optional_fields: "item_list,recipient_address,total_amount,shipping_carrier,order_status,cod",
     });
 
     for (const o of detailResp.response?.order_list ?? []) {
@@ -139,6 +139,7 @@ async function syncOneShop(creds: ShopeeCredentials, account: {
             tracking_no: null,
             order_status: mapShopeeOrderStatus(o.order_status),
             platform_status: o.order_status ?? null,
+            is_cod: o.cod ?? false,
             total_amount: o.total_amount ?? 0,
             shipping_fee: 0,
             order_date: o.create_time ? new Date(o.create_time * 1000).toISOString() : new Date().toISOString(),

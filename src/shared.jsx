@@ -81,6 +81,7 @@ export function mapDbOrder(order, items) {
     warehouse: "吉隆坡仓",
     status: DB_TO_DEMO_STATUS[order.order_status] || "待处理",
     platformStatus: order.platform_status || null,
+    isCod: order.is_cod || false,
     date: (order.order_date || "").slice(0, 10),
     printCount: order.print_count || 0,
     noteColor: order.note_color || null,
