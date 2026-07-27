@@ -5,14 +5,14 @@ import JsBarcode from "jsbarcode";
 import { QRCodeSVG } from "qrcode.react";
 import {
   Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Info, TrendingUp,
-  DollarSign, Sparkles, Bot, Send, Users, Megaphone, Printer, X,
+  DollarSign, Sparkles, Bot, Send, Users, Megaphone, Printer, X, Settings, Package, GripVertical, Plus,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import {
   PRODUCTS, PLATFORM_THEME, ROLES, AD_CAMPAIGNS, AD_ROAS_THRESHOLD,
-  profit, fmt, statusLabel, warehouseLabel,
+  profit, fmt, statusLabel, warehouseLabel, supabaseClient,
 } from "./shared.jsx";
 import { KPICard as KPICardImpl } from "./pagesOverviewOrders.jsx";
 
@@ -509,7 +509,237 @@ function aiReply(text) {
   return hit ? hit.reply : "已收到您的问题，AI 客服正在为您查找答案，如未能解决将在 10 分钟内转接人工客服。";
 }
 
-export function LabelPrinting({ t, orders, onPrint }) {
+// Per-shop Seller (sender) info used on shipping labels — auto-selected per
+// order by platformAccountId in PrintSlip/labelFields; this panel is where
+// an owner maintains the source values per connected store. Customer/
+// recipient info is never editable here or anywhere in print — it's always
+// read straight from the order (see labelFields / ShippingLabelCard).
+function SellerSettingsPanel({ t, stores, onUpdateSellerInfo }) {
+  const [drafts, setDrafts] = useState({});
+
+  function draftFor(store) {
+    return drafts[store.id] || { name: store.sellerName || "", address: store.sellerAddress || "", phone: store.sellerPhone || "" };
+  }
+  function setDraftField(storeId, key, value) {
+    setDrafts((prev) => ({ ...prev, [storeId]: { ...draftFor({ id: storeId, ...prev[storeId] }), [key]: value } }));
+  }
+  function save(store) {
+    const d = draftFor(store);
+    onUpdateSellerInfo?.(store.id, d);
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="text-sm font-medium flex items-center gap-1.5"><Settings size={14} className="text-slate-500" /> {t("Seller 资料（店铺管理）", "Seller Info (Store Management)")}</div>
+      <div className="text-xs text-slate-400 mt-1 mb-3">
+        {t("每个店铺各自维护一份发货单 Seller 资料，打印时按订单来源店铺自动选用，不再手动填写或写死。", "Each store keeps its own shipping-label Seller info. Printing auto-selects it by the order's originating store instead of manual entry or a hardcoded name.")}
+      </div>
+      {(!stores || stores.length === 0) && <div className="text-xs text-slate-400">{t("尚未连接任何店铺", "No stores connected yet")}</div>}
+      <div className="space-y-3">
+        {(stores || []).map((store) => {
+          const d = draftFor(store);
+          return (
+            <div key={store.id} className="border border-slate-200 rounded-lg p-3">
+              <div className="text-xs font-medium text-slate-600 mb-2">{store.platform} · {store.name}</div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[11px] text-slate-400 mb-1 block">{t("Seller / 店铺名称", "Seller / Shop Name")}</label>
+                  <input
+                    value={d.name}
+                    onChange={(e) => setDraftField(store.id, "name", e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-400 mb-1 block">{t("Seller 电话", "Seller Phone")}</label>
+                  <input
+                    value={d.phone}
+                    onChange={(e) => setDraftField(store.id, "phone", e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-400 mb-1 block">{t("Seller 地址", "Seller Address")}</label>
+                  <input
+                    value={d.address}
+                    onChange={(e) => setDraftField(store.id, "address", e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+                  />
+                </div>
+              </div>
+              <button
+                onClick={() => save(store)}
+                className="mt-2 text-[11px] px-2.5 py-1 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
+              >
+                {t("保存", "Save")}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Optional fields the admin can choose to show/hide per template — customer/
+// recipient fields are intentionally absent from both lists: they're always
+// rendered and never editable (see ShippingLabelCard's Recipient block),
+// not something print can be configured to omit.
+const SHIPPING_TOGGLABLE_FIELDS = [
+  { key: "shipByDate", zh: "发货日期", en: "Ship By Date" },
+  { key: "weight", zh: "重量", en: "Weight" },
+  { key: "senderName", zh: "寄件人 Seller 名称", en: "Sender / Seller Name" },
+  { key: "senderPhone", zh: "寄件人电话", en: "Sender Phone" },
+  { key: "senderAddress", zh: "寄件地址", en: "Sender Address" },
+  { key: "postcode", zh: "邮编", en: "Postcode" },
+  { key: "note", zh: "备注", en: "Note" },
+];
+const PICKING_TOGGLABLE_FIELDS = [
+  { key: "image", zh: "产品图片", en: "Product Photo" },
+  { key: "sku", zh: "SKU", en: "SKU" },
+  { key: "productName", zh: "产品名称", en: "Product Name" },
+  { key: "qty", zh: "数量 Qty", en: "Qty" },
+];
+
+// Which fields print on each template, and in what order — both persisted
+// in label_template_settings.enabled_fields as a single ordered array
+// (Postgres arrays keep element order, so array position IS print order;
+// no separate "sort index" column needed). Admin drags rows to reorder the
+// enabled set; re-adding a removed field appends it to the end.
+function TemplateFieldSettingsPanel({ t }) {
+  const [settings, setSettings] = useState(null); // null = loading
+  const dragKeyRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    supabaseClient
+      .from("label_template_settings")
+      .select("template_type, enabled_fields")
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error || !data) { setSettings({ shipping: [], picking: [] }); return; }
+        const byType = {};
+        data.forEach((row) => { byType[row.template_type] = row.enabled_fields || []; });
+        setSettings({ shipping: byType.shipping || [], picking: byType.picking || [] });
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  function save(templateType, nextOrder) {
+    setSettings((prev) => ({ ...prev, [templateType]: nextOrder }));
+    supabaseClient
+      .from("label_template_settings")
+      .update({ enabled_fields: nextOrder, updated_at: new Date().toISOString() })
+      .eq("template_type", templateType)
+      .then(({ error }) => error && console.error("TemplateFieldSettingsPanel save failed", error));
+  }
+
+  function remove(templateType, key) {
+    const current = settings[templateType];
+    save(templateType, current.filter((k) => k !== key));
+  }
+
+  function add(templateType, key) {
+    const current = settings[templateType];
+    if (current.includes(key)) return;
+    save(templateType, [...current, key]);
+  }
+
+  function reorder(templateType, draggedKey, targetKey) {
+    if (draggedKey === targetKey) return;
+    const current = [...settings[templateType]];
+    const from = current.indexOf(draggedKey);
+    const to = current.indexOf(targetKey);
+    if (from === -1 || to === -1) return;
+    current.splice(from, 1);
+    current.splice(to, 0, draggedKey);
+    save(templateType, current);
+  }
+
+  function renderChecklist(templateType, fieldDefs, title) {
+    const order = settings?.[templateType] || [];
+    const orderSet = new Set(order);
+    const enabledDefs = order.map((key) => fieldDefs.find((f) => f.key === key)).filter(Boolean);
+    const disabledDefs = fieldDefs.filter((f) => !orderSet.has(f.key));
+
+    return (
+      <div className="border border-slate-200 rounded-lg p-3">
+        <div className="text-xs font-medium text-slate-600 mb-2">{title}</div>
+
+        <div className="text-[11px] text-slate-400 mb-1">{t("已启用（拖动排序）", "Enabled (drag to reorder)")}</div>
+        {enabledDefs.length === 0 && <div className="text-[11px] text-slate-300 mb-2">{t("无", "None")}</div>}
+        <div className="space-y-1 mb-2">
+          {enabledDefs.map((f) => (
+            <div
+              key={f.key}
+              draggable
+              onDragStart={() => { dragKeyRef.current = f.key; }}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => { e.preventDefault(); reorder(templateType, dragKeyRef.current, f.key); }}
+              className="flex items-center gap-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 cursor-move"
+            >
+              <GripVertical size={12} className="text-slate-400 shrink-0" />
+              <span className="flex-1">{t(f.zh, f.en)}</span>
+              <button
+                onClick={() => remove(templateType, f.key)}
+                className="text-[11px] text-slate-400 hover:text-rose-600"
+                title={t("移除", "Remove")}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {disabledDefs.length > 0 && (
+          <>
+            <div className="text-[11px] text-slate-400 mb-1">{t("未启用", "Disabled")}</div>
+            <div className="flex flex-wrap gap-1.5">
+              {disabledDefs.map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => add(templateType, f.key)}
+                  className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-full border border-slate-200 text-slate-500 hover:bg-slate-50"
+                >
+                  <Plus size={10} /> {t(f.zh, f.en)}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="text-sm font-medium flex items-center gap-1.5"><Package size={14} className="text-slate-500" /> {t("模板字段设置", "Template Field Settings")}</div>
+      <div className="text-xs text-slate-400 mt-1 mb-3">
+        {t("选择每种模板要打印的字段，并可拖动调整顺序。客户/收件人资料一律必印且不可编辑，不在下面的选项内。", "Choose which fields print on each template, and drag to reorder them. Customer/recipient info always prints and is never editable — it isn't part of the options below.")}
+      </div>
+      {settings === null ? (
+        <div className="text-xs text-slate-400">{t("加载中…", "Loading…")}</div>
+      ) : (
+        <div className="space-y-3">
+          {renderChecklist("shipping", SHIPPING_TOGGLABLE_FIELDS, t("平台物流面单", "Platform Shipping Label"))}
+          {renderChecklist("picking", PICKING_TOGGLABLE_FIELDS, t("仓库拣货单", "Warehouse Picking List"))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LabelSettings({ t, stores, onUpdateSellerInfo }) {
+  return (
+    <div className="space-y-4">
+      <SellerSettingsPanel t={t} stores={stores} onUpdateSellerInfo={onUpdateSellerInfo} />
+      <TemplateFieldSettingsPanel t={t} />
+    </div>
+  );
+}
+
+export function LabelPrinting({ t, orders, stores, onPrint, onUpdateSellerInfo }) {
+  const [view, setView] = useState("print"); // "print" | "settings"
   const [printQuery, setPrintQuery] = useState("");
   const [printSelectedIds, setPrintSelectedIds] = useState(() => new Set());
   const printMatches = printQuery.trim()
@@ -529,7 +759,9 @@ export function LabelPrinting({ t, orders, onPrint }) {
   }
 
   function handlePrintSelected() {
-    const selected = orders.filter((o) => printSelectedIds.has(o.id));
+    // Oldest-first (FIFO), not selection order, so a batch always prints in
+    // a predictable sequence regardless of which orders were checked when.
+    const selected = orders.filter((o) => printSelectedIds.has(o.id)).sort((a, b) => a.date.localeCompare(b.date));
     if (selected.length > 0) {
       onPrint?.(selected);
       setPrintSelectedIds(new Set());
@@ -538,34 +770,55 @@ export function LabelPrinting({ t, orders, onPrint }) {
   }
 
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-4">
-      <div className="text-sm font-medium mb-3 flex items-center gap-1.5"><Printer size={14} className="text-slate-500"/> {t("标签打印", "Label Printing")}</div>
-      <input
-        value={printQuery}
-        onChange={(e) => setPrintQuery(e.target.value)}
-        placeholder={t("搜索订单编号 / 客户 / SKU", "Search order no. / customer / SKU")}
-        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400"
-      />
-      {printMatches.length > 0 && (
-        <div className="mt-2 border border-slate-100 rounded-lg divide-y divide-slate-100 max-h-56 overflow-y-auto">
-          {printMatches.map((o) => (
-            <label key={o.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
-              <input type="checkbox" checked={printSelectedIds.has(o.id)} onChange={() => togglePrintSelect(o.id)} className="h-3.5 w-3.5 rounded border-slate-300" />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium truncate">{o.id}</div>
-                <div className="text-xs text-slate-400 truncate">{o.customer} · {o.product}</div>
-              </div>
-            </label>
-          ))}
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setView("print")}
+          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border ${view === "print" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+        >
+          <Printer size={12} /> {t("标签打印", "Label Printing")}
+        </button>
+        <button
+          onClick={() => setView("settings")}
+          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border ${view === "settings" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+        >
+          <Settings size={12} /> {t("标签设置", "Label Settings")}
+        </button>
+      </div>
+
+      {view === "settings" ? (
+        <LabelSettings t={t} stores={stores} onUpdateSellerInfo={onUpdateSellerInfo} />
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-xl p-4">
+          <div className="text-sm font-medium mb-3 flex items-center gap-1.5"><Printer size={14} className="text-slate-500"/> {t("标签打印", "Label Printing")}</div>
+          <input
+            value={printQuery}
+            onChange={(e) => setPrintQuery(e.target.value)}
+            placeholder={t("搜索订单编号 / 客户 / SKU", "Search order no. / customer / SKU")}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+          />
+          {printMatches.length > 0 && (
+            <div className="mt-2 border border-slate-100 rounded-lg divide-y divide-slate-100 max-h-56 overflow-y-auto">
+              {printMatches.map((o) => (
+                <label key={o.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
+                  <input type="checkbox" checked={printSelectedIds.has(o.id)} onChange={() => togglePrintSelect(o.id)} className="h-3.5 w-3.5 rounded border-slate-300" />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium truncate">{o.id}</div>
+                    <div className="text-xs text-slate-400 truncate">{o.customer} · {o.product}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+          <button
+            onClick={handlePrintSelected}
+            disabled={printSelectedIds.size === 0}
+            className={`mt-3 flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg text-white ${printSelectedIds.size > 0 ? "bg-slate-900 hover:bg-slate-800" : "bg-slate-300 cursor-not-allowed"}`}
+          >
+            <Printer size={14} /> {t(`打印已选 (${printSelectedIds.size})`, `Print Selected (${printSelectedIds.size})`)}
+          </button>
         </div>
       )}
-      <button
-        onClick={handlePrintSelected}
-        disabled={printSelectedIds.size === 0}
-        className={`mt-3 flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg text-white ${printSelectedIds.size > 0 ? "bg-slate-900 hover:bg-slate-800" : "bg-slate-300 cursor-not-allowed"}`}
-      >
-        <Printer size={14} /> {t(`打印已选 (${printSelectedIds.size})`, `Print Selected (${printSelectedIds.size})`)}
-      </button>
     </div>
   );
 }
@@ -817,57 +1070,142 @@ export function AdsSpend({ t }) {
 
 /* ============================== Print shipping slip (courier-label style, editable) ============================== */
 
-const LABEL_FIELD_DEFS = [
-  { key: "shipByDate", zh: "发货日期", en: "Ship By Date", type: "date" },
-  { key: "weight", zh: "重量 (kg)", en: "Weight (kg)", type: "text" },
-  { key: "senderName", zh: "寄件人", en: "Sender Name", type: "text" },
-  { key: "senderAddress", zh: "寄件地址", en: "Sender Address", type: "textarea" },
-  { key: "postcode", zh: "邮编", en: "Postcode", type: "text" },
-  { key: "recipientName", zh: "收件人", en: "Recipient Name", type: "text", locked: true },
-  { key: "recipientPhone", zh: "收件人电话", en: "Recipient Phone", type: "text", locked: true },
-  { key: "recipientAddress", zh: "收件地址", en: "Recipient Address", type: "textarea", locked: true },
-  { key: "note", zh: "备注", en: "Note", type: "text" },
-];
-
-function labelFields(order, overrides) {
-  const o = overrides[order.id] || {};
+// Seller/sender values come from the order's originating store (system
+// settings maintained in 标签设置 → Seller Info), auto-selected by
+// order.platformAccountId — never a hardcoded name and never hand-edited at
+// print time. Customer/recipient fields are always read straight from the
+// order, never editable, anywhere in the print flow.
+function labelFields(order, stores) {
+  const store = (stores || []).find((s) => s.id === order.platformAccountId);
   return {
     orderId: order.platformOrderId || order.id,
-    shipByDate: o.shipByDate ?? order.date,
-    weight: o.weight ?? "",
-    senderName: o.senderName ?? "",
-    senderAddress: o.senderAddress ?? "",
-    postcode: o.postcode ?? "",
-    recipientName: o.recipientName ?? order.customer,
-    recipientPhone: o.recipientPhone ?? order.phone,
-    recipientAddress: o.recipientAddress ?? order.address,
-    note: o.note ?? "",
+    shipByDate: order.date,
+    weight: "",
+    senderName: store?.sellerName ?? "",
+    senderPhone: store?.sellerPhone ?? "",
+    senderAddress: store?.sellerAddress ?? "",
+    postcode: "",
+    recipientName: order.customer,
+    recipientPhone: order.phone,
+    recipientAddress: order.address,
+    note: "",
   };
 }
 
-export function PrintSlip({ t, orders, onClose, onConfirmPrint }) {
-  const [activeIdx, setActiveIdx] = useState(0);
-  const [overrides, setOverrides] = useState({});
-  const lang = t("zh", "en");
+// Fetches full order_items (image/sku/product name/qty) for the 仓库拣货单
+// template — PrintSlip's `orders` prop only carries mapDbOrder's single-item
+// summary, so a real picking list needs its own fetch. Self-contained here
+// (doesn't touch erp-mvp-demo.jsx's loadRealData/handlePrintConfirm), using
+// the same chunk + range() pagination pattern already proven safe past
+// Supabase's 1000-row cap.
+async function fetchPickingItemsByOrderNo(orderNos) {
+  if (!orderNos || orderNos.length === 0) return {};
 
-  function updateField(orderId, key, value) {
-    setOverrides((prev) => ({ ...prev, [orderId]: { ...(prev[orderId] || {}), [key]: value } }));
+  const { data: orderRows, error: orderErr } = await supabaseClient
+    .from("orders")
+    .select("id, order_no")
+    .in("order_no", orderNos);
+  if (orderErr || !orderRows || orderRows.length === 0) return {};
+
+  const orderNoById = new Map(orderRows.map((o) => [o.id, o.order_no]));
+  const ids = orderRows.map((o) => o.id);
+
+  const CHUNK_SIZE = 200;
+  const PAGE_SIZE = 1000;
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += CHUNK_SIZE) chunks.push(ids.slice(i, i + CHUNK_SIZE));
+
+  async function fetchChunk(chunk) {
+    const all = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabaseClient
+        .from("order_items")
+        .select("order_id, sku, product_name, qty, image_url")
+        .in("order_id", chunk)
+        .range(from, from + PAGE_SIZE - 1);
+      if (error) {
+        console.error("fetchPickingItemsByOrderNo chunk failed", error);
+        break;
+      }
+      all.push(...(data || []));
+      if (!data || data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+    return all;
   }
 
+  const results = (await Promise.all(chunks.map(fetchChunk))).flat();
+  const byOrderNo = {};
+  results.forEach((item) => {
+    const orderNo = orderNoById.get(item.order_id);
+    if (!orderNo) return;
+    (byOrderNo[orderNo] ||= []).push(item);
+  });
+  return byOrderNo;
+}
+
+export function PrintSlip({ t, orders, stores, onClose, onConfirmPrint }) {
+  const [activeIdx, setActiveIdx] = useState(0);
+  const [template, setTemplate] = useState("shipping"); // "shipping" | "picking"
+  const [pickingItemsByOrderNo, setPickingItemsByOrderNo] = useState({});
+  const [enabledFieldsByTemplate, setEnabledFieldsByTemplate] = useState({ shipping: null, picking: null }); // null = not loaded yet (show everything)
+  const lang = t("zh", "en");
+
+  // 仓库拣货单 needs every order_item (not just mapDbOrder's single-item
+  // summary), fetched once per batch of orders opened for printing.
+  useEffect(() => {
+    let cancelled = false;
+    fetchPickingItemsByOrderNo(orders.map((o) => o.id)).then((byOrderNo) => {
+      if (!cancelled) setPickingItemsByOrderNo(byOrderNo);
+    });
+    return () => { cancelled = true; };
+  }, [orders]);
+
+  // Which optional fields render, and in what order — entirely driven by
+  // the admin's 标签设置 choices (label_template_settings.enabled_fields, a
+  // Postgres array so element order IS print order). Fetched fresh each
+  // time the print preview opens. There is no per-print editing anywhere in
+  // this component: Seller info comes from stores (店铺管理/Seller Settings,
+  // resolved in labelFields by order.platformAccountId), field visibility/
+  // order comes from here, and customer/recipient fields are always read
+  // straight from the order — nothing on this screen is user-editable.
+  useEffect(() => {
+    let cancelled = false;
+    supabaseClient
+      .from("label_template_settings")
+      .select("template_type, enabled_fields")
+      .then(({ data, error }) => {
+        if (cancelled || error || !data) return;
+        const byType = {};
+        data.forEach((row) => { byType[row.template_type] = row.enabled_fields || []; });
+        setEnabledFieldsByTemplate({ shipping: byType.shipping || [], picking: byType.picking || [] });
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const shippingEnabled = enabledFieldsByTemplate.shipping; // ordered array | null
+  const pickingEnabled = enabledFieldsByTemplate.picking; // ordered array | null
+
+  // Printing itself — print_count bump, stock deduction, order_status flip,
+  // TikTok sync — is entirely owned by onConfirmPrint (handlePrintConfirm in
+  // erp-mvp-demo.jsx) and fires the same way no matter which template was
+  // visually printed. Nothing here changes that.
   function handlePrint() {
     window.print();
     onConfirmPrint?.();
   }
 
   const activeOrder = orders[activeIdx] || orders[0];
-  const activeFields = labelFields(activeOrder, overrides);
+  const activeFields = labelFields(activeOrder, stores);
+  const activeItems = pickingItemsByOrderNo[activeOrder?.id] || [];
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl h-[85vh] flex flex-col">
         <div className="no-print flex items-center justify-between px-5 py-3 border-b border-slate-200">
           <div className="text-sm font-medium">
-            {t("发货单预览", "Shipping Label Preview")}{orders.length > 1 ? t(`（共 ${orders.length} 张）`, ` (${orders.length} total)`) : ""}
+            {t("打印预览", "Print Preview")}{orders.length > 1 ? t(`（共 ${orders.length} 张）`, ` (${orders.length} total)`) : ""}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -882,64 +1220,89 @@ export function PrintSlip({ t, orders, onClose, onConfirmPrint }) {
           </div>
         </div>
 
-        <div className="no-print flex-1 flex overflow-hidden">
-          <div className="flex-1 overflow-y-auto bg-slate-100 p-4 flex flex-col items-center gap-3">
-            {orders.length > 1 && (
-              <div className="flex gap-1.5 flex-wrap justify-center">
-                {orders.map((o, i) => (
-                  <button
-                    key={o.id}
-                    onClick={() => setActiveIdx(i)}
-                    className={`text-[11px] px-2.5 py-1 rounded-full border ${i === activeIdx ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
-                  >
-                    {i + 1}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="shadow-sm">
-              <ShippingLabelCard t={t} order={activeOrder} fields={activeFields} />
-            </div>
+        <div className="no-print flex items-center gap-2 px-5 py-2.5 border-b border-slate-200 bg-slate-50">
+          <span className="text-[11px] text-slate-400">{t("模板", "Template")}</span>
+          <button
+            onClick={() => setTemplate("shipping")}
+            className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border ${template === "shipping" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+          >
+            <Printer size={11} /> {t("平台物流面单", "Platform Shipping Label")}
+          </button>
+          <button
+            onClick={() => setTemplate("picking")}
+            className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border ${template === "picking" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+          >
+            <Package size={11} /> {t("仓库拣货单", "Warehouse Picking List")}
+          </button>
+        </div>
+
+        {activeOrder?.printCount > 0 && (
+          <div className="no-print flex items-center gap-2 px-5 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-xs">
+            <AlertTriangle size={13} className="shrink-0" />
+            <span>
+              {t(
+                `此订单已打印过 ${activeOrder.printCount} 次，请确认是否需要重复打印`,
+                `This order has already been printed ${activeOrder.printCount} time(s) — confirm before printing again`,
+              )}
+              {activeOrder.lastPrintedAt && (
+                <span className="text-amber-600">
+                  {t(" · 上次打印：", " · Last printed: ")}
+                  {new Date(activeOrder.lastPrintedAt).toLocaleString(lang === "en" ? "en-MY" : "zh-CN")}
+                  {activeOrder.lastPrintedBy ? ` (${activeOrder.lastPrintedBy})` : ""}
+                </span>
+              )}
+            </span>
           </div>
-          <div className="w-72 shrink-0 border-l border-slate-200 overflow-y-auto p-4 space-y-3">
-            <div className="text-xs font-medium text-slate-500">{t("编辑标签内容", "Edit label")}</div>
-            {LABEL_FIELD_DEFS.map((f) => (
-              <div key={f.key}>
-                <label className="text-[11px] text-slate-400 mb-1 block">{lang === "en" ? f.en : f.zh}</label>
-                {f.locked ? (
-                  <div className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-500 whitespace-pre-wrap">
-                    {activeFields[f.key] || "—"}
-                  </div>
-                ) : f.type === "textarea" ? (
-                  <textarea
-                    value={activeFields[f.key]}
-                    onChange={(e) => updateField(activeOrder.id, f.key, e.target.value)}
-                    rows={2}
-                    className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400 resize-none"
-                  />
-                ) : (
-                  <input
-                    type={f.type === "date" ? "date" : "text"}
-                    value={activeFields[f.key]}
-                    onChange={(e) => updateField(activeOrder.id, f.key, e.target.value)}
-                    className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
-                  />
-                )}
-              </div>
-            ))}
+        )}
+
+        <div className="no-print flex-1 overflow-y-auto bg-slate-100 p-4 flex flex-col items-center gap-3">
+          {orders.length > 1 && (
+            <div className="flex gap-1.5 flex-wrap justify-center">
+              {orders.map((o, i) => (
+                <button
+                  key={o.id}
+                  onClick={() => setActiveIdx(i)}
+                  className={`text-[11px] px-2.5 py-1 rounded-full border ${i === activeIdx ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+                >
+                  {i + 1}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="shadow-sm">
+            {template === "shipping" ? (
+              <ShippingLabelCard t={t} order={activeOrder} fields={activeFields} enabledFields={shippingEnabled} />
+            ) : (
+              <WarehousePickingCard t={t} order={activeOrder} items={activeItems} enabledFields={pickingEnabled} />
+            )}
           </div>
         </div>
 
-        <div className="print-slip" style={{ position: "absolute", left: "-9999px", top: 0 }}>
-          {orders.map((order, idx) => (
-            <ShippingLabelCard
-              key={order.id}
-              t={t}
-              order={order}
-              fields={labelFields(order, overrides)}
-              isLast={idx === orders.length - 1}
-            />
-          ))}
+        <div
+          className={`print-slip ${template === "shipping" ? "print-slip-shipping" : "print-slip-picking"}`}
+          style={{ position: "absolute", left: "-9999px", top: 0 }}
+        >
+          {orders.map((order, idx) =>
+            template === "shipping" ? (
+              <ShippingLabelCard
+                key={order.id}
+                t={t}
+                order={order}
+                fields={labelFields(order, stores)}
+                enabledFields={shippingEnabled}
+                isLast={idx === orders.length - 1}
+              />
+            ) : (
+              <WarehousePickingCard
+                key={order.id}
+                t={t}
+                order={order}
+                items={pickingItemsByOrderNo[order.id] || []}
+                enabledFields={pickingEnabled}
+                isLast={idx === orders.length - 1}
+              />
+            ),
+          )}
         </div>
       </div>
     </div>
@@ -963,84 +1326,189 @@ function Barcode({ value }) {
   return <svg ref={ref} style={{ width: "100%" }} />;
 }
 
-function ShippingLabelCard({ t, order, fields, isLast }) {
+// enabledFields is the ordered array from label_template_settings (or null
+// while loading, treated as "show everything in the default order" so the
+// preview never flashes empty). Array position drives render order within
+// each section — orderedSubset() picks out just the keys relevant to a
+// section, in the admin's chosen order. Customer/recipient fields aren't
+// gated by this at all: they're mandatory and always rendered.
+// 100mm × 150mm thermal-label layout, structured like a real courier/TikTok
+// Shop Seller Centre label: brand strip, courier + tracking barcode, QR +
+// Order ID, TO (recipient, prominent), FROM (seller), then a compact SKU
+// table. Actual brand/courier logo IMAGES aren't embedded — TikTok's and
+// couriers' logos are trademarked assets I can't source or fabricate; the
+// `logoUrl` slots below render nothing until real, authorized image files
+// are supplied, and fall back to a plain text wordmark so the label still
+// works without them.
+function ShippingLabelCard({ t, order, fields, enabledFields, isLast }) {
   const theme = PLATFORM_THEME[order.platform];
-  const lang = t("zh", "en");
   const trackingValue = order.tracking && order.tracking !== "—" ? order.tracking : fields.orderId;
+  const isVisible = (key) => !enabledFields || enabledFields.includes(key);
+  const orderedSubset = (keys) => (enabledFields ? enabledFields.filter((k) => keys.includes(k)) : keys);
+
+  const orderDetailKeys = orderedSubset(["shipByDate", "weight"]);
+  const senderKeys = orderedSubset(["senderName", "senderPhone", "senderAddress", "postcode"]);
+  // Real brand/courier logo image assets go here once available (e.g. from
+  // Supabase Storage or a static import) — left null so nothing is fabricated.
+  const platformLogoUrl = null;
+  const courierLogoUrl = null;
+
+  function renderSenderRow(key) {
+    if (key === "senderName") return <div key={key} className="font-semibold">{fields.senderName || "—"}</div>;
+    if (key === "senderPhone") return fields.senderPhone ? <div key={key} className="text-[10px] text-slate-600">{fields.senderPhone}</div> : null;
+    if (key === "senderAddress") return <div key={key} className="text-[10px] text-slate-600 leading-snug">{fields.senderAddress || "—"}</div>;
+    if (key === "postcode") return <div key={key} className="text-[10px] text-slate-400">{t("邮编", "Postcode")}: {fields.postcode || "—"}</div>;
+    return null;
+  }
+
+  return (
+    <div
+      className="bg-white p-3 text-[11px] flex flex-col"
+      style={{ width: "100mm", minHeight: "150mm", ...( !isLast ? { breakAfter: "page" } : {}) }}
+    >
+      {/* Brand strip */}
+      <div className="flex items-center justify-between border-b-2 border-slate-900 pb-1.5 mb-1.5">
+        {platformLogoUrl ? (
+          <img src={platformLogoUrl} alt={order.platform} className="h-6" />
+        ) : (
+          <span className={`text-base font-extrabold ${theme.text}`}>{order.platform}</span>
+        )}
+        {order.isCod && (
+          <span className="text-[10px] font-bold text-white bg-rose-600 px-2 py-0.5 rounded">{t("到货付款 COD", "COD")}</span>
+        )}
+      </div>
+
+      {/* Courier + tracking barcode */}
+      <div className="border border-slate-300 mb-1.5 px-2 py-1.5">
+        <div className="flex items-center justify-between mb-1">
+          {courierLogoUrl ? (
+            <img src={courierLogoUrl} alt={order.courier} className="h-4" />
+          ) : (
+            <span className="text-[11px] font-bold">{order.courier}</span>
+          )}
+          {isVisible("weight") && <span className="text-[10px] text-slate-500">{fields.weight ? `${fields.weight} kg` : ""}</span>}
+        </div>
+        <Barcode value={trackingValue} />
+        <div className="text-center text-[10px] text-slate-500 tracking-wide">{trackingValue}</div>
+      </div>
+
+      {/* TO — recipient, always shown, never editable/locked to the order */}
+      <div className="border border-slate-900 mb-1.5">
+        <div className="text-[10px] font-bold text-white bg-slate-900 px-2 py-0.5">{t("收件人 TO (Penerima)", "TO (Penerima)")}</div>
+        <div className="px-2 py-1.5">
+          <div className="text-sm font-bold">{fields.recipientName}</div>
+          <div className="text-xs font-medium">{fields.recipientPhone}</div>
+          <div className="text-xs text-slate-700 leading-snug">{fields.recipientAddress}</div>
+        </div>
+      </div>
+
+      {/* FROM — seller, auto-selected by the order's originating store */}
+      {senderKeys.length > 0 && (
+        <div className="border border-slate-300 mb-1.5">
+          <div className="text-[10px] font-semibold text-slate-500 px-2 py-0.5 bg-slate-50 border-b border-slate-300">
+            {t("寄件人 FROM (Pengirim)", "FROM (Pengirim)")}
+          </div>
+          <div className="px-2 py-1.5 space-y-0.5">
+            {senderKeys.map(renderSenderRow)}
+          </div>
+        </div>
+      )}
+
+      {/* Order ID + QR */}
+      <div className="flex items-center justify-between border border-slate-300 px-2 py-1.5 mb-1.5">
+        <div>
+          <div className="text-[10px] text-slate-400">{t("订单编号 Order ID", "Order ID")}</div>
+          <div className="text-xs font-bold">{fields.orderId}</div>
+          {isVisible("shipByDate") && fields.shipByDate && (
+            <div className="text-[10px] text-slate-400 mt-0.5">{t("发货日期", "Ship By")}: {fields.shipByDate}</div>
+          )}
+        </div>
+        <QRCodeSVG value={fields.orderId} size={40} />
+      </div>
+
+      {isVisible("note") && fields.note && (
+        <div className="text-[10px] text-slate-500 mb-1">{fields.note}</div>
+      )}
+
+      <div className="mt-auto pt-1.5 border-t border-dashed border-slate-300 text-[9px] text-slate-400 text-center">
+        {t("出货前请扫描追踪号码确认 · 商品明细请见仓库拣货单", "Scan tracking number to confirm before shipping · See warehouse picking list for item details")}
+      </div>
+    </div>
+  );
+}
+
+// 仓库拣货单 — internal picking list, not shown to the courier: product
+// photo/SKU/name/qty for every item on the order, no sender/recipient/price
+// info. Sourced from real order_items (fetchPickingItemsByOrderNo), not the
+// single-item summary the rest of the app uses for list display.
+function WarehousePickingCard({ t, order, items, enabledFields, isLast }) {
+  const theme = PLATFORM_THEME[order.platform];
+  const COL_DEFS = {
+    image: { key: "image", label: t("图片", "Photo"), className: "text-left font-semibold py-1.5 px-2 w-12" },
+    sku: { key: "sku", label: "SKU", className: "text-left font-semibold py-1.5 px-2" },
+    productName: { key: "productName", label: t("产品名称", "Product Name"), className: "text-left font-semibold py-1.5 px-2" },
+    qty: { key: "qty", label: "Qty", className: "text-right font-semibold py-1.5 px-2 w-12" },
+  };
+  // Column order follows the admin's 标签设置 order (array position),
+  // falling back to the default image/sku/productName/qty order while
+  // settings are still loading.
+  const cols = (enabledFields || ["image", "sku", "productName", "qty"])
+    .map((key) => COL_DEFS[key])
+    .filter(Boolean);
+
+  function renderCell(item, key) {
+    if (key === "image") {
+      return item.image_url ? (
+        <img src={item.image_url} alt={item.sku} className="h-9 w-9 object-cover rounded border border-slate-200" />
+      ) : (
+        <div className="h-9 w-9 rounded border border-slate-200 bg-slate-50" />
+      );
+    }
+    if (key === "sku") return item.sku || t("（无SKU）", "(no SKU)");
+    if (key === "productName") return item.product_name || "—";
+    if (key === "qty") return item.qty;
+    return null;
+  }
+
   return (
     <div
       className="w-[380px] bg-white p-4 text-sm"
       style={!isLast ? { breakAfter: "page", borderBottom: "2px dashed #e2e8f0" } : undefined}
     >
-      <div className="border-b-2 border-slate-900 pb-2 mb-3">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className={`text-lg font-bold ${theme.text}`}>{order.platform}</span>
-          <QRCodeSVG value={fields.orderId} size={44} />
-        </div>
-        <Barcode value={trackingValue} />
+      <div className="border-b-2 border-slate-900 pb-2 mb-3 flex items-center justify-between">
+        <span className={`text-lg font-bold ${theme.text}`}>{order.platform}</span>
+        <span className="text-xs text-slate-500">{t("仓库拣货单", "Warehouse Picking List")}</span>
       </div>
+      <div className="text-xs text-slate-500 mb-3">{t("订单编号", "Order No.")}: {order.platformOrderId || order.id}</div>
 
-      <div className="border border-slate-300 mb-2">
-        <div className="text-[11px] font-semibold text-slate-500 px-2 pt-1.5 pb-1 border-b border-slate-300 bg-slate-50">
-          {t("订单信息 Order Details", "Order Details")}
-        </div>
+      <div className="border border-slate-300">
         <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-300 text-slate-500">
+              {cols.map((c) => <th key={c.key} className={c.className}>{c.label}</th>)}
+            </tr>
+          </thead>
           <tbody>
-            <tr className="border-b border-slate-200">
-              <td className="py-1 px-2 text-slate-400 w-28">{t("发货日期 Ship By", "Ship By Date")}</td>
-              <td className="py-1 px-2 font-medium">{fields.shipByDate || "—"}</td>
-            </tr>
-            <tr className="border-b border-slate-200">
-              <td className="py-1 px-2 text-slate-400">{t("重量 Weight(kg)", "Weight(kg)")}</td>
-              <td className="py-1 px-2 font-medium">{fields.weight || "—"}</td>
-            </tr>
-            <tr className="border-b border-slate-200">
-              <td className="py-1 px-2 text-slate-400">{t("订单编号 Order ID", "Order ID")}</td>
-              <td className="py-1 px-2 font-medium">{fields.orderId}</td>
-            </tr>
-            <tr className="border-b border-slate-200">
-              <td className="py-1 px-2 text-slate-400">{t("运输公司 Courier", "Courier")}</td>
-              <td className="py-1 px-2 font-medium">{order.courier}</td>
-            </tr>
-            <tr>
-              <td className="py-1 px-2 text-slate-400">{t("付款方式 Payment", "Payment")}</td>
-              <td className={`py-1 px-2 font-medium ${order.isCod ? "text-rose-600" : ""}`}>
-                {order.isCod ? t("到货付款 COD", "Cash on Delivery (COD)") : t("已线上付款", "Paid Online")}
-              </td>
-            </tr>
+            {items.length === 0 && (
+              <tr>
+                <td colSpan={cols.length || 1} className="py-3 px-2 text-center text-slate-400">{t("无商品数据", "No item data")}</td>
+              </tr>
+            )}
+            {items.map((item, i) => (
+              <tr key={`${item.sku}-${i}`} className="border-b border-slate-200 last:border-0">
+                {cols.map((c) => (
+                  <td key={c.key} className={`py-1.5 px-2 ${c.key === "qty" ? "text-right font-semibold" : c.key === "sku" ? "font-medium" : c.key === "productName" ? "text-slate-600" : ""}`}>
+                    {renderCell(item, c.key)}
+                  </td>
+                ))}
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
 
-      <div className="border border-slate-300 mb-2">
-        <div className="text-[11px] font-semibold text-slate-500 px-2 pt-1.5 pb-1 border-b border-slate-300 bg-slate-50">
-          {t("寄件人 Sender Details (Pengirim)", "Sender Details (Pengirim)")}
-        </div>
-        <div className="px-2 py-1.5">
-          <div className="text-xs font-medium mb-0.5">{fields.senderName || "—"}</div>
-          <div className="text-xs text-slate-600 mb-1 leading-relaxed">{fields.senderAddress || "—"}</div>
-          <div className="text-[11px] text-slate-400">{t("邮编", "Postcode")}: {fields.postcode || "—"}</div>
-        </div>
-      </div>
-
-      <div className="border border-slate-300 mb-3">
-        <div className="text-[11px] font-semibold text-slate-500 px-2 pt-1.5 pb-1 border-b border-slate-300 bg-slate-50">
-          {t("收件人 Recipient Details (Penerima)", "Recipient Details (Penerima)")}
-        </div>
-        <div className="px-2 py-1.5">
-          <div className="text-xs font-medium">{fields.recipientName}</div>
-          <div className="text-xs text-slate-600">{fields.recipientPhone}</div>
-          <div className="text-xs text-slate-600 leading-relaxed">{fields.recipientAddress}</div>
-        </div>
-      </div>
-
-      <div className="text-xs text-slate-500">{order.sku} · {order.product} × {order.qty}</div>
-      {fields.note && (
-        <div className="mt-2 text-[11px] text-slate-500">{fields.note}</div>
-      )}
-
       <div className="mt-3 pt-2 border-t border-dashed border-slate-300 text-[10px] text-slate-400 text-center">
-        {t("请核对商品与数量后封箱 · 出货前请扫描追踪号码确认", "Please verify product and quantity before sealing · Scan tracking number before shipping")}
+        {t("仓库内部使用 · 请逐项核对SKU与数量后交付包装", "For internal warehouse use · Verify each SKU and quantity before handing off to packing")}
       </div>
     </div>
   );

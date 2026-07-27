@@ -1,7 +1,8 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Search, X, ChevronRight, AlertTriangle, CheckCircle2, Truck, Circle,
-  CheckCircle, Printer, Clock, Info,
+  CheckCircle, Printer, Clock, Info, MapPin, PackagePlus, PackageMinus, SlidersHorizontal,
+  Plus, Trash2, Warehouse as WarehouseIcon, ChevronDown,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -9,7 +10,7 @@ import {
 } from "recharts";
 import {
   PLATFORM_THEME, SALES_TREND, STATUS_STEPS, EXTRA_STATUS, ACTIONABLE_STATUS,
-  profit, fmt, statusColor, statusLabel, warehouseLabel,
+  profit, fmt, statusColor, statusLabel, warehouseLabel, supabaseClient,
 } from "./shared.jsx";
 
 /* ============================== Overview ============================== */
@@ -199,7 +200,9 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
 
   const statusChips = ["全部", ...STATUS_STEPS, ...EXTRA_STATUS];
   const allChecked = filtered.length > 0 && filtered.every((o) => selectedIds.has(o.id));
-  const selectedOrders = filtered.filter((o) => selectedIds.has(o.id));
+  // Batch-printed labels come out oldest-first (FIFO), not in click/selection
+  // order, so a warehouse batch always prints in a predictable sequence.
+  const selectedOrders = filtered.filter((o) => selectedIds.has(o.id)).sort((a, b) => a.date.localeCompare(b.date));
 
   function toggleOne(id) {
     setSelectedIds((prev) => {
@@ -660,13 +663,393 @@ export function OrderDrawer({ t, order, onClose, onPrint, onUpdateStatus }) {
 
 /* ============================== Inventory ============================== */
 
-export function Inventory({ t, inventory, stores }) {
-  const [wh, setWh] = useState("全部");
+// Reserved quantity per SKU: total qty still needed by orders that have
+// entered the warehouse pipeline but haven't shipped yet. Filtered as
+// "anything not yet at ready_ship" (rather than an explicit list of the
+// in-between stages) so it stays correct if 'picking'/'packing'/'packed'
+// ever start getting used by a future "start picking"/"start packing"
+// action — those are already valid warehouse_stage values (see the
+// migration) but no button sets them today. Computed fresh on every call,
+// not a stored counter — nothing to keep in sync, no write path, and no
+// touch to the TikTok/Shopee sync functions. Chunk + range() pagination
+// mirrors fetchOrderItemsFor/fetchPickingItemsByOrderNo elsewhere in the app.
+async function fetchReservedQtyBySku() {
+  const { data: pipelineOrders, error: ordersErr } = await supabaseClient
+    .from("orders")
+    .select("id")
+    .neq("warehouse_stage", "ready_ship")
+    .neq("order_status", "cancelled");
+  if (ordersErr || !pipelineOrders || pipelineOrders.length === 0) return {};
+
+  const orderIds = pipelineOrders.map((o) => o.id);
+  const CHUNK_SIZE = 200;
+  const PAGE_SIZE = 1000;
+  const chunks = [];
+  for (let i = 0; i < orderIds.length; i += CHUNK_SIZE) chunks.push(orderIds.slice(i, i + CHUNK_SIZE));
+
+  async function fetchChunk(chunk) {
+    const all = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabaseClient
+        .from("order_items")
+        .select("sku, qty")
+        .in("order_id", chunk)
+        .range(from, from + PAGE_SIZE - 1);
+      if (error) { console.error("fetchReservedQtyBySku chunk failed", error); break; }
+      all.push(...(data || []));
+      if (!data || data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+    return all;
+  }
+
+  const items = (await Promise.all(chunks.map(fetchChunk))).flat();
+  const bySku = {};
+  items.forEach((it) => { bySku[it.sku] = (bySku[it.sku] || 0) + (it.qty || 0); });
+  return bySku;
+}
+
+const MOVEMENT_TYPES = [
+  { key: "stock_in", zh: "入库", en: "Stock In", icon: PackagePlus },
+  { key: "stock_out", zh: "出库", en: "Stock Out", icon: PackageMinus },
+  { key: "adjustment", zh: "库存调整", en: "Adjustment", icon: SlidersHorizontal },
+];
+
+// Manual stock-in/out/adjustment form — reason is required (per "完整记录
+// 原因") since this is the one place stock can change outside an order, so
+// the ledger needs to explain why every time. Adjustment takes the counted
+// absolute quantity (matches how a physical stocktake actually works —
+// staff read a number off the shelf, they don't compute a delta), the other
+// two types take a plain positive quantity with direction implied by type.
+function StockMovementForm({ t, item, onCancel, onSave }) {
+  const [type, setType] = useState("stock_in");
+  const [warehouse, setWarehouse] = useState("A");
+  const [qty, setQty] = useState("");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const lang = t("zh", "en");
+
+  const currentQty = warehouse === "B" ? item.warehouseB : item.warehouseA;
+
+  async function handleSave() {
+    if (!reason.trim()) { setError(t("请填写原因", "Reason is required")); return; }
+    if (qty === "" || Number.isNaN(Number(qty))) { setError(t("请填写数量", "Quantity is required")); return; }
+    setSaving(true);
+    setError("");
+    const result = await onSave({
+      movementType: type,
+      warehouse,
+      qty: type !== "adjustment" ? Number(qty) : undefined,
+      targetQty: type === "adjustment" ? Number(qty) : undefined,
+      reason: reason.trim(),
+    });
+    setSaving(false);
+    if (result?.error) setError(result.error);
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
+          <div className="text-sm font-medium">{t("库存调整", "Stock Adjustment")} · {item.sku}</div>
+          <button onClick={onCancel} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          {error && (
+            <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg border bg-rose-50 text-rose-600 border-rose-200">
+              <AlertTriangle size={13} /> {error}
+            </div>
+          )}
+          <div className="flex gap-2">
+            {MOVEMENT_TYPES.map((mt) => (
+              <button
+                key={mt.key}
+                onClick={() => setType(mt.key)}
+                className={`flex-1 flex items-center justify-center gap-1 text-xs px-2 py-2 rounded-lg border ${type === mt.key ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+              >
+                <mt.icon size={13} /> {lang === "en" ? mt.en : mt.zh}
+              </button>
+            ))}
+          </div>
+          <div>
+            <label className="text-[11px] text-slate-400 mb-1 block">{t("仓库", "Warehouse")}</label>
+            <select
+              value={warehouse}
+              onChange={(e) => setWarehouse(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+            >
+              <option value="A">{t("吉隆坡仓", "KL Warehouse")}</option>
+              <option value="B">{t("柔佛仓", "Johor Warehouse")}</option>
+            </select>
+            <div className="text-[11px] text-slate-400 mt-1">{t("当前库存", "Current stock")}: {currentQty}</div>
+          </div>
+          <div>
+            <label className="text-[11px] text-slate-400 mb-1 block">
+              {type === "adjustment" ? t("盘点数量（调整为）", "Counted Quantity (set to)") : t("数量", "Quantity")}
+            </label>
+            <input
+              type="number"
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] text-slate-400 mb-1 block">{t("原因", "Reason")}</label>
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder={t("例：供应商到货 / 盘点差异 / 损坏报废", "e.g. supplier delivery / stocktake variance / damaged goods")}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+            />
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-200">
+          <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">{t("取消", "Cancel")}</button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="text-xs px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-300"
+          >
+            {saving ? t("保存中…", "Saving…") : t("确认", "Confirm")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const LEVEL_LABELS = {
+  warehouse: { zh: "仓库", en: "Warehouse" },
+  zone: { zh: "区域", en: "Zone" },
+  shelf: { zh: "货架", en: "Shelf" },
+  bin: { zh: "库位", en: "Bin" },
+};
+const NEXT_LEVEL = { warehouse: "zone", zone: "shelf", shelf: "bin" };
+
+// Resolves a bin id to its full path for display, e.g. "吉隆坡仓 > A区 > 3号架 > 01号位".
+function resolveLocationPath(locationId, allLocations) {
+  if (!locationId) return null;
+  const byId = new Map(allLocations.map((l) => [l.id, l]));
+  const parts = [];
+  let cur = byId.get(locationId);
+  while (cur) {
+    parts.unshift(cur.name);
+    cur = cur.parent_id ? byId.get(cur.parent_id) : null;
+  }
+  return parts.length ? parts.join(" > ") : null;
+}
+
+// One node in the warehouse/zone/shelf/bin tree — recurses into its own
+// children. Warehouse-level nodes (the two seeded ones) can't be renamed or
+// deleted here, only their descendants can; that's enforced by simply not
+// rendering a delete button at that level, matching how the two warehouses
+// are meant to stay in lockstep with products.warehouse_a_qty/b_qty.
+function LocationNode({ t, node, allLocations, onCreate, onDelete, depth }) {
+  const [open, setOpen] = useState(depth === 0);
+  const [adding, setAdding] = useState(false);
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const lang = t("zh", "en");
+  const nextLevel = NEXT_LEVEL[node.level];
+  const kids = allLocations.filter((l) => l.parent_id === node.id);
+
+  async function handleAdd() {
+    if (!code.trim() || !name.trim()) return;
+    const result = await onCreate({ parentId: node.id, level: nextLevel, code: code.trim(), name: name.trim() });
+    if (!result?.error) {
+      setCode("");
+      setName("");
+      setAdding(false);
+      setOpen(true);
+    }
+  }
+
+  return (
+    <div style={{ marginLeft: depth * 18 }}>
+      <div className="flex items-center gap-1.5 py-1 text-xs">
+        {kids.length > 0 ? (
+          <button onClick={() => setOpen((v) => !v)} className="text-slate-400 shrink-0">
+            {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </button>
+        ) : (
+          <span className="w-3 shrink-0" />
+        )}
+        <span className="font-medium">{node.name}</span>
+        <span className="text-[10px] text-slate-400">({node.code})</span>
+        {nextLevel && (
+          <button onClick={() => setAdding((v) => !v)} className="text-[10px] text-teal-600 flex items-center gap-0.5 hover:text-teal-700">
+            <Plus size={10} /> {t(`添加${LEVEL_LABELS[nextLevel].zh}`, `Add ${LEVEL_LABELS[nextLevel].en}`)}
+          </button>
+        )}
+        {node.level !== "warehouse" && (
+          <button onClick={() => onDelete(node.id)} className="text-slate-300 hover:text-rose-600">
+            <Trash2 size={11} />
+          </button>
+        )}
+      </div>
+      {adding && (
+        <div className="flex items-center gap-1 mb-1" style={{ marginLeft: 18 }}>
+          <input
+            placeholder={t("编号", "Code")}
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            className="w-16 px-1.5 py-0.5 text-[11px] border border-slate-200 rounded outline-none focus:border-slate-400"
+          />
+          <input
+            placeholder={t("名称", "Name")}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-28 px-1.5 py-0.5 text-[11px] border border-slate-200 rounded outline-none focus:border-slate-400"
+          />
+          <button onClick={handleAdd} className="text-[10px] px-2 py-0.5 rounded bg-slate-900 text-white">{t("确定", "OK")}</button>
+        </div>
+      )}
+      {open && kids.map((k) => (
+        <LocationNode key={k.id} t={t} node={k} allLocations={allLocations} onCreate={onCreate} onDelete={onDelete} depth={depth + 1} />
+      ))}
+    </div>
+  );
+}
+
+// Collapsible panel for building out the zone/shelf/bin tree under each of
+// the two (fixed) warehouses. Separate concern from binding a specific SKU
+// to a bin — this is where the bins get created in the first place.
+function WarehouseLocationManager({ t, warehouseLocations, onCreateLocation, onDeleteLocation }) {
+  const [open, setOpen] = useState(false);
+  const roots = warehouseLocations.filter((l) => l.level === "warehouse");
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <button onClick={() => setOpen((v) => !v)} className="w-full flex items-center justify-between text-sm font-medium">
+        <span className="flex items-center gap-1.5"><WarehouseIcon size={14} className="text-slate-500" /> {t("仓库位置管理（仓库/区域/货架/库位）", "Warehouse Location Management (Warehouse/Zone/Shelf/Bin)")}</span>
+        <span className="text-xs text-slate-400">{open ? t("收起", "Collapse") : t("展开", "Expand")}</span>
+      </button>
+      {open && (
+        <div className="mt-3 space-y-1 border-t border-slate-100 pt-3">
+          {roots.map((r) => (
+            <LocationNode key={r.id} t={t} node={r} allLocations={warehouseLocations} onCreate={onCreateLocation} onDelete={onDeleteLocation} depth={0} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Cascading warehouse -> zone -> shelf -> bin picker to bind one SKU to a
+// specific bin (products.location_id). Each level only lists children of
+// the level above; if a level has nothing yet, points the user at
+// WarehouseLocationManager instead of failing silently.
+function LocationBindForm({ t, item, allLocations, onCancel, onSave }) {
+  const existing = allLocations.find((l) => l.id === item.locationId);
+  const chain = [];
+  if (existing) {
+    const byId = new Map(allLocations.map((l) => [l.id, l]));
+    let cur = existing;
+    while (cur) { chain.unshift(cur); cur = cur.parent_id ? byId.get(cur.parent_id) : null; }
+  }
+  const [warehouseId, setWarehouseId] = useState(chain[0]?.id || "");
+  const [zoneId, setZoneId] = useState(chain[1]?.id || "");
+  const [shelfId, setShelfId] = useState(chain[2]?.id || "");
+  const [binId, setBinId] = useState(chain[3]?.id || "");
+
+  const warehouses = allLocations.filter((l) => l.level === "warehouse");
+  const zones = allLocations.filter((l) => l.level === "zone" && l.parent_id === warehouseId);
+  const shelves = allLocations.filter((l) => l.level === "shelf" && l.parent_id === zoneId);
+  const bins = allLocations.filter((l) => l.level === "bin" && l.parent_id === shelfId);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
+          <div className="text-sm font-medium">{t("绑定仓库位置", "Bind Warehouse Location")} · {item.sku}</div>
+          <button onClick={onCancel} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <select
+            value={warehouseId}
+            onChange={(e) => { setWarehouseId(e.target.value); setZoneId(""); setShelfId(""); setBinId(""); }}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+          >
+            <option value="">{t("选择仓库", "Select warehouse")}</option>
+            {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+          <select
+            value={zoneId}
+            onChange={(e) => { setZoneId(e.target.value); setShelfId(""); setBinId(""); }}
+            disabled={!warehouseId}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 disabled:bg-slate-50"
+          >
+            <option value="">{t("选择区域", "Select zone")}</option>
+            {zones.map((z) => <option key={z.id} value={z.id}>{z.name}</option>)}
+          </select>
+          <select
+            value={shelfId}
+            onChange={(e) => { setShelfId(e.target.value); setBinId(""); }}
+            disabled={!zoneId}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 disabled:bg-slate-50"
+          >
+            <option value="">{t("选择货架", "Select shelf")}</option>
+            {shelves.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <select
+            value={binId}
+            onChange={(e) => setBinId(e.target.value)}
+            disabled={!shelfId}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 disabled:bg-slate-50"
+          >
+            <option value="">{t("选择库位", "Select bin")}</option>
+            {bins.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          {warehouseId && zones.length === 0 && (
+            <div className="text-[11px] text-amber-600">{t("该仓库还没有区域，请先在上方「仓库位置管理」创建", "No zones yet — create one in Warehouse Location Management above first")}</div>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-200">
+          <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">{t("取消", "Cancel")}</button>
+          <button
+            onClick={() => onSave(binId || null)}
+            disabled={!binId}
+            className="text-xs px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-300"
+          >
+            {t("确认", "Confirm")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function Inventory({ t, inventory, stores, onUpdateLocation, onRecordMovement, warehouseLocations = [], onCreateLocation, onDeleteLocation, onBindLocation }) {
+  const [wh, setWh] = useState("全部");
+  const [reservedBySku, setReservedBySku] = useState({});
+  const [editingLocationSku, setEditingLocationSku] = useState(null);
+  const [locationDraft, setLocationDraft] = useState("");
+  const [movementItem, setMovementItem] = useState(null);
+  const lang = t("zh", "en");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchReservedQtyBySku().then((bySku) => { if (!cancelled) setReservedBySku(bySku); });
+    return () => { cancelled = true; };
+  }, [inventory]);
+
   function shopName(id) {
     return stores.find((s) => s.id === id)?.name || "—";
   }
   const whLabel = (w) => (w === "全部" ? t("全部", "All") : warehouseLabel(w, lang));
+
+  function startEditLocation(item) {
+    setEditingLocationSku(item.sku);
+    setLocationDraft(item.location || "");
+  }
+  function saveLocation(sku) {
+    onUpdateLocation?.(sku, locationDraft.trim());
+    setEditingLocationSku(null);
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex gap-2">
@@ -683,7 +1066,7 @@ export function Inventory({ t, inventory, stores }) {
 
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[720px]">
+        <table className="w-full text-sm min-w-[960px]">
           <thead>
             <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
               <th className="py-2 pr-3 font-medium">SKU</th>
@@ -691,14 +1074,20 @@ export function Inventory({ t, inventory, stores }) {
               <th className="py-2 pr-3 font-medium">{t("吉隆坡仓", "KL Warehouse")}</th>
               <th className="py-2 pr-3 font-medium">{t("柔佛仓", "Johor Warehouse")}</th>
               <th className="py-2 pr-3 font-medium">{t("总库存", "Total Stock")}</th>
+              <th className="py-2 pr-3 font-medium">{t("已锁定", "Reserved")}</th>
+              <th className="py-2 pr-3 font-medium">{t("可用库存", "Available")}</th>
+              <th className="py-2 pr-3 font-medium">{t("仓库位置", "Location")}</th>
               <th className="py-2 pr-3 font-medium">{t("平台链接", "Platform Link")}</th>
               <th className="py-2 pr-3 font-medium">{t("所属店铺", "Store")}</th>
               <th className="py-2 pr-3 font-medium">{t("状态", "Status")}</th>
+              <th className="py-2 pr-3 font-medium">{t("操作", "Actions")}</th>
             </tr>
           </thead>
           <tbody>
             {inventory.map((item) => {
               const total = item.warehouseA + item.warehouseB;
+              const reserved = reservedBySku[item.sku] || 0;
+              const available = Math.max(total - reserved, 0);
               const low = total < item.reorderPoint;
               return (
                 <tr key={item.sku} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
@@ -707,6 +1096,27 @@ export function Inventory({ t, inventory, stores }) {
                   <td className="py-2.5 pr-3 tabular-nums">{wh === "柔佛仓" ? "—" : item.warehouseA}</td>
                   <td className="py-2.5 pr-3 tabular-nums">{wh === "吉隆坡仓" ? "—" : item.warehouseB}</td>
                   <td className="py-2.5 pr-3 tabular-nums font-medium">{total}</td>
+                  <td className="py-2.5 pr-3 tabular-nums text-amber-600">{reserved > 0 ? reserved : "—"}</td>
+                  <td className="py-2.5 pr-3 tabular-nums font-medium text-emerald-700">{available}</td>
+                  <td className="py-2.5 pr-3">
+                    {editingLocationSku === item.sku ? (
+                      <input
+                        autoFocus
+                        value={locationDraft}
+                        onChange={(e) => setLocationDraft(e.target.value)}
+                        onBlur={() => saveLocation(item.sku)}
+                        onKeyDown={(e) => e.key === "Enter" && saveLocation(item.sku)}
+                        className="w-24 px-1.5 py-0.5 text-xs border border-slate-300 rounded outline-none focus:border-slate-500"
+                      />
+                    ) : (
+                      <button
+                        onClick={() => startEditLocation(item)}
+                        className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800"
+                      >
+                        <MapPin size={11} /> {item.location || t("设置位置", "Set location")}
+                      </button>
+                    )}
+                  </td>
                   <td className="py-2.5 pr-3">
                     <div className="flex gap-1">
                       <span className={`text-[10px] px-1.5 py-0.5 rounded border ${item.shopeeLinked ? "bg-orange-50 text-orange-600 border-orange-200" : "bg-slate-50 text-slate-300 border-slate-200"}`}>Shopee</span>
@@ -721,6 +1131,14 @@ export function Inventory({ t, inventory, stores }) {
                       <span className="text-xs px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-200 inline-flex items-center gap-1"><CheckCircle2 size={11} /> {t("充足", "Sufficient")}</span>
                     )}
                   </td>
+                  <td className="py-2.5 pr-3">
+                    <button
+                      onClick={() => setMovementItem(item)}
+                      className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"
+                    >
+                      <SlidersHorizontal size={11} /> {t("库存调整", "Adjust")}
+                    </button>
+                  </td>
                 </tr>
               );
             })}
@@ -728,6 +1146,19 @@ export function Inventory({ t, inventory, stores }) {
         </table>
         </div>
       </div>
+
+      {movementItem && (
+        <StockMovementForm
+          t={t}
+          item={movementItem}
+          onCancel={() => setMovementItem(null)}
+          onSave={async (values) => {
+            const result = await onRecordMovement?.({ sku: movementItem.sku, ...values });
+            if (!result?.error) setMovementItem(null);
+            return result;
+          }}
+        />
+      )}
     </div>
   );
 }

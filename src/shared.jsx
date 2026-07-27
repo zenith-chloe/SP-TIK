@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, ShoppingCart, Warehouse, DollarSign, Bot, ShieldCheck,
-  Upload, ArrowRightLeft, Store, Megaphone, Printer,
+  Upload, ArrowRightLeft, Store, Megaphone, Printer, ClipboardCheck, Tag,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -36,6 +36,9 @@ export function mapDbStore(account) {
     connectedAt: (account.created_at || "").slice(0, 10),
     status: "已连接",
     syncMode: account.token_expires_at ? "api" : "manual",
+    sellerName: account.seller_name || account.account_name || "",
+    sellerAddress: account.seller_address || "",
+    sellerPhone: account.seller_phone || "",
   };
 }
 
@@ -49,6 +52,12 @@ export function mapDbProduct(p, fallbackShopId) {
     shopeeLinked: true,
     tiktokLinked: true,
     listedShop: p.listed_shop_id || fallbackShopId,
+    location: p.location || "",
+    locationId: p.location_id || null,
+    price: Number(p.price || 0),
+    weightKg: Number(p.weight_kg || 0),
+    unit: p.unit || "",
+    imageUrl: p.image_url || null,
   };
 }
 
@@ -65,6 +74,7 @@ export function mapDbOrder(order, items) {
     customer: order.buyer_name || "—",
     phone: order.buyer_phone || "—",
     address: order.shipping_address || "—",
+    platformAccountId: order.platform_account_id || null,
     sku: first.sku || "",
     skuStatus: first.sku ? "ok" : "missing",
     product: first.product_name || "—",
@@ -81,9 +91,12 @@ export function mapDbOrder(order, items) {
     warehouse: "吉隆坡仓",
     status: DB_TO_DEMO_STATUS[order.order_status] || "待处理",
     platformStatus: order.platform_status || null,
+    warehouseStage: order.warehouse_stage || "pending",
     isCod: order.is_cod || false,
     date: (order.order_date || "").slice(0, 10),
     printCount: order.print_count || 0,
+    lastPrintedAt: order.last_printed_at || null,
+    lastPrintedBy: order.last_printed_by || null,
     noteColor: order.note_color || null,
     noteText: order.note_text || "",
   };
@@ -264,6 +277,7 @@ export const NAV = [
   { key: "overview", zh: "总览", en: "Overview", icon: LayoutDashboard },
   { key: "orders", zh: "订单管理中心", en: "Order Management", icon: ShoppingCart },
   { key: "manualimport", zh: "手动导入订单", en: "Manual Order Import", icon: Upload },
+  { key: "products", zh: "商品管理", en: "Product Master", icon: Tag },
   { key: "inventory", zh: "库存管理", en: "Inventory", icon: Warehouse },
   { key: "productmove", zh: "产品搬仓 / 搬店", en: "Stock Transfer / Shop Move", icon: ArrowRightLeft },
   { key: "stores", zh: "店铺管理", en: "Store Management", icon: Store },
@@ -271,5 +285,6 @@ export const NAV = [
   { key: "ads", zh: "广告费用", en: "Ad Spend", icon: Megaphone },
   { key: "ai", zh: "AI智能功能", en: "AI Features", icon: Bot },
   { key: "labels", zh: "标签打印", en: "Label Printing", icon: Printer },
+  { key: "warehouse", zh: "仓库", en: "Warehouse", icon: ClipboardCheck },
   { key: "roles", zh: "权限管理", en: "Roles & Permissions", icon: ShieldCheck },
 ];

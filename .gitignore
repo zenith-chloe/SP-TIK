@@ -3,3 +3,6 @@ dist/
 .env
 .env.local
 .vercel/
+
+# Manual DB backups (scripts/db-backup.sh) — contains real customer PII, never commit
+backups/

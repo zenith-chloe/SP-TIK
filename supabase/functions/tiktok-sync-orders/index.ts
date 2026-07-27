@@ -1,7 +1,18 @@
 // Pulls recent orders from TikTok Shop for one (or all) connected shop(s) and
 // upserts them into `orders` / `order_items`.
 //
-// Body (optional): { "shopId": "..." }  -- omit to sync all connected shops
+// Body (optional): { "shopId": "...", "fullSync": true }  -- omit shopId to
+// sync all connected shops; fullSync forces a full historical walk instead
+// of an incremental (update_time-based) sync.
+//
+// Full sync is resumable: each page's next_page_token is checkpointed into
+// `platform_sync_progress` right after that page's orders are written. If
+// the Edge Function gets killed mid-run (Supabase enforces a hard wall-clock
+// execution limit, independent of any caller-side timeout), the next
+// `fullSync: true` invocation picks up from the saved cursor instead of
+// restarting from page 1. Only marked `status='completed'` once TikTok stops
+// returning a next_page_token.
+//
 // Add ?debug=1 to see the raw TikTok response instead of syncing.
 //
 // Optional secret SYNC_TRIGGER_SECRET: if set, callers must send header
@@ -145,27 +156,15 @@ async function ensureShopCipher(
   return { shopCipher: shop.cipher, realShopId: shop.id };
 }
 
-async function syncOneShop(
-  creds: TikTokCredentials,
-  account: { id: string; shop_id: string; access_token: string; shop_cipher: string | null },
-) {
-  const { shopCipher } = await ensureShopCipher(creds, account);
-
-  const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
-  const searchData = await tiktokCall(
-    "POST",
-    "/order/202309/orders/search",
-    creds,
-    account.access_token,
-    { shop_cipher: shopCipher, page_size: "50", sort_field: "create_time", sort_order: "DESC" },
-    { create_time_ge: thirtyDaysAgo },
-  );
-
-  const orders = searchData.orders ?? [];
+async function upsertOrderPage(
+  // deno-lint-ignore no-explicit-any
+  pageOrders: any[],
+  account: { id: string },
+): Promise<{ syncedOrders: number; syncedItems: number }> {
   let syncedOrders = 0;
   let syncedItems = 0;
 
-  for (const o of orders) {
+  for (const o of pageOrders) {
     const { data: orderRow, error: orderErr } = await supabase
       .from("orders")
       .upsert(
@@ -247,14 +246,167 @@ async function syncOneShop(
     }
   }
 
-  await supabase.from("platform_accounts").update({ last_synced_at: new Date().toISOString() }).eq("id", account.id);
+  return { syncedOrders, syncedItems };
+}
+
+async function syncOneShop(
+  creds: TikTokCredentials,
+  account: { id: string; shop_id: string; access_token: string; shop_cipher: string | null; last_synced_at: string | null },
+  fullSync: boolean,
+) {
+  const { shopCipher } = await ensureShopCipher(creds, account);
+
+  // Full sync (explicitly requested, or this shop has never synced before):
+  // no time filter, walk every page, so every historical order/status
+  // (IN_TRANSIT/DELIVERED/COMPLETED/CANCELLED/...) gets saved, not just the
+  // newest 50. Incremental sync filters+sorts by update_time (not
+  // create_time) — an order created weeks ago that only just moved to
+  // IN_TRANSIT has an old create_time but a fresh update_time, so filtering
+  // on create_time_ge alone silently missed it even though it just changed.
+  const isFirstSync = fullSync || !account.last_synced_at;
+  const baseQuery: Record<string, string> = { shop_cipher: shopCipher, page_size: "50" };
+  const body: Record<string, unknown> = {};
+
+  if (isFirstSync) {
+    baseQuery.sort_field = "create_time";
+    baseQuery.sort_order = "DESC";
+  } else {
+    const sinceTs = Math.floor(new Date(account.last_synced_at!).getTime() / 1000);
+    body.update_time_ge = sinceTs;
+    baseQuery.sort_field = "update_time";
+    baseQuery.sort_order = "DESC";
+  }
+
+  // Resume a full sync from its saved checkpoint instead of restarting at
+  // page 1. Supabase enforces its own hard wall-clock execution limit on
+  // Edge Functions (observed: killed around ~150s, status 546) independent
+  // of any client-side timeout, so a single invocation can never be
+  // guaranteed to reach the last page for a shop with thousands of orders —
+  // this makes that survivable across many invocations instead of a bug.
+  let pageToken: string | undefined;
+  let cumulativePages = 0;
+  let cumulativeOrders = 0;
+  if (isFirstSync) {
+    const { data: progress } = await supabase
+      .from("platform_sync_progress")
+      .select("next_page_token, pages_fetched, orders_synced, status")
+      .eq("account_id", account.id)
+      .maybeSingle();
+    if (progress && progress.status === "in_progress") {
+      pageToken = progress.next_page_token ?? undefined;
+      cumulativePages = progress.pages_fetched;
+      cumulativeOrders = progress.orders_synced;
+    } else {
+      await supabase.from("platform_sync_progress").upsert(
+        {
+          account_id: account.id,
+          next_page_token: null,
+          pages_fetched: 0,
+          orders_synced: 0,
+          status: "in_progress",
+          sync_type: "full",
+          last_error: null,
+          started_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "account_id" },
+      );
+    }
+  }
+
+  // One time budget covers BOTH fetching a page and writing it — the earlier
+  // version only bounded the fetch loop, leaving the per-order DB-write loop
+  // completely unbounded, which is what let a run silently keep processing
+  // past both the pg_net caller's timeout and this budget until Supabase
+  // itself killed it. 100s leaves margin under the ~150s observed hard kill.
+  const startedAt = Date.now();
+  const TIME_BUDGET_MS = 100000;
+  const MAX_PAGES_PER_INVOCATION = 500; // sanity cap, time budget hits first in practice
+  let pageCount = 0;
+  let syncedOrders = 0;
+  let syncedItems = 0;
+  let truncated = false;
+  let reachedLastPage = false;
+
+  try {
+    do {
+      const query = pageToken ? { ...baseQuery, page_token: pageToken } : baseQuery;
+      const searchData = await tiktokCall("POST", "/order/202309/orders/search", creds, account.access_token, query, body);
+      const pageOrders = searchData.orders ?? [];
+      pageToken = searchData.next_page_token || undefined;
+      pageCount++;
+
+      const pageResult = await upsertOrderPage(pageOrders, account);
+      syncedOrders += pageResult.syncedOrders;
+      syncedItems += pageResult.syncedItems;
+
+      if (isFirstSync) {
+        cumulativePages++;
+        cumulativeOrders += pageResult.syncedOrders;
+        await supabase
+          .from("platform_sync_progress")
+          .update({
+            next_page_token: pageToken ?? null,
+            pages_fetched: cumulativePages,
+            orders_synced: cumulativeOrders,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("account_id", account.id);
+      }
+
+      if (!pageToken) {
+        reachedLastPage = true;
+        break;
+      }
+      if (pageCount >= MAX_PAGES_PER_INVOCATION || Date.now() - startedAt > TIME_BUDGET_MS) {
+        truncated = true;
+        break;
+      }
+    } while (pageToken);
+  } catch (e) {
+    if (isFirstSync) {
+      await supabase
+        .from("platform_sync_progress")
+        .update({ last_error: (e as Error).message, updated_at: new Date().toISOString() })
+        .eq("account_id", account.id);
+    }
+    throw e;
+  }
+
+  if (isFirstSync) {
+    if (reachedLastPage) {
+      await supabase
+        .from("platform_sync_progress")
+        .update({ status: "completed", updated_at: new Date().toISOString() })
+        .eq("account_id", account.id);
+      await supabase.from("platform_accounts").update({ last_synced_at: new Date().toISOString() }).eq("id", account.id);
+    }
+    // else: left status='in_progress' with the checkpointed cursor, picked up by the next fullSync:true call.
+  } else if (!truncated) {
+    // Incremental sync only advances last_synced_at if it wasn't cut short,
+    // so the next run's update_time_ge window doesn't skip anything.
+    await supabase.from("platform_accounts").update({ last_synced_at: new Date().toISOString() }).eq("id", account.id);
+  }
+
   await supabase.from("sync_logs").insert({
     action: "tiktok_sync_shop",
-    status: "success",
-    message: `shop ${account.shop_id}: ${syncedOrders} orders, ${syncedItems} items`,
+    status: truncated ? "partial" : "success",
+    message: `shop ${account.shop_id}: +${syncedOrders} orders, +${syncedItems} items this run, ${pageCount} page(s) this run, mode=${isFirstSync ? "full" : "incremental"}` +
+      (isFirstSync ? ` — cumulative ${cumulativeOrders} orders / ${cumulativePages} pages, ${reachedLastPage ? "COMPLETE" : "in progress, resumable"}` : "") +
+      (truncated ? " — stopped by time budget, will resume next invocation" : ""),
   });
 
-  return { shopId: account.shop_id, syncedOrders, syncedItems };
+  return {
+    shopId: account.shop_id,
+    syncedOrders,
+    syncedItems,
+    pages: pageCount,
+    mode: isFirstSync ? "full" : "incremental",
+    truncated,
+    fullSyncDone: isFirstSync ? reachedLastPage : undefined,
+    fullSyncCumulativeOrders: isFirstSync ? cumulativeOrders : undefined,
+    fullSyncCumulativePages: isFirstSync ? cumulativePages : undefined,
+  };
 }
 
 Deno.serve(async (req: Request) => {
@@ -277,16 +429,18 @@ Deno.serve(async (req: Request) => {
   }
 
   let shopId: string | undefined;
+  let fullSync = false;
   try {
     const body = await req.json();
     shopId = body?.shopId;
+    fullSync = body?.fullSync === true;
   } catch {
     // no body - sync all shops
   }
 
   let query = supabase
     .from("platform_accounts")
-    .select("id, shop_id, access_token, shop_cipher")
+    .select("id, shop_id, access_token, shop_cipher, last_synced_at")
     .eq("platform", "tiktok")
     .eq("status", "connected")
     .not("access_token", "is", null);
@@ -345,7 +499,7 @@ Deno.serve(async (req: Request) => {
   const results = [];
   for (const account of accounts) {
     try {
-      results.push(await syncOneShop(creds, account));
+      results.push(await syncOneShop(creds, account, fullSync));
     } catch (e) {
       await supabase.from("sync_logs").insert({
         action: "tiktok_sync_shop",
