@@ -90,6 +90,12 @@ export function mapDbOrder(order, items) {
     courier: order.courier || "—",
     warehouse: "吉隆坡仓",
     status: DB_TO_DEMO_STATUS[order.order_status] || "待处理",
+    // Raw DB order_status (pending/processing/shipped/returned/cancelled),
+    // kept alongside the collapsed `status` label above — DB_TO_DEMO_STATUS
+    // maps both pending and processing to the same "待处理" label, so this
+    // is the only way the UI can actually tell them apart (needed for the
+    // Confirm Process button, which should only show/act on true 'pending').
+    orderStatus: order.order_status || "pending",
     platformStatus: order.platform_status || null,
     warehouseStage: order.warehouse_stage || "pending",
     isCod: order.is_cod || false,
@@ -275,7 +281,11 @@ export const PLATFORM_THEME = {
 
 export const NAV = [
   { key: "overview", zh: "总览", en: "Overview", icon: LayoutDashboard },
-  { key: "orders", zh: "订单管理中心", en: "Order Management", icon: ShoppingCart },
+  // "订单管理中心" — merged 2026-07-28 (per a reference screenshot) into one
+  // page: the status-card dashboard (formerly a separate "orderCenter" tab)
+  // now renders inside the Orders component itself, above its existing
+  // platform tabs/filters/list. This nav entry is that same single page.
+  { key: "orders", zh: "订单管理中心", en: "Order Management Center", icon: ShoppingCart },
   { key: "manualimport", zh: "手动导入订单", en: "Manual Order Import", icon: Upload },
   { key: "products", zh: "商品管理", en: "Product Master", icon: Tag },
   { key: "inventory", zh: "库存管理", en: "Inventory", icon: Warehouse },

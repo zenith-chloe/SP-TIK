@@ -142,6 +142,26 @@ export default function App() {
   const [tab, setTab] = useState("overview");
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [printOrders, setPrintOrders] = useState(null);
+  // true when print was triggered from the Orders page (or its drawer) — no
+  // design/edit access, always the plain locked platform order slip. false
+  // when triggered from Label Printing (or Warehouse's picking list), which
+  // keeps full template switching + the design overrides panel.
+  const [printLocked, setPrintLocked] = useState(false);
+  // Seeds PrintSlip's per-print overrides when reopened to reprint a
+  // historical order from 打印记录 (PrintHistoryPanel) — { [order.id]: { sku, note } }.
+  // Empty for every normal print path (Orders/Label Printing/Warehouse).
+  const [printInitialOverrides, setPrintInitialOverrides] = useState({});
+  function openLockedPrint(orders) { setPrintOrders(orders); setPrintLocked(true); setPrintInitialOverrides({}); }
+  function openDesignPrint(orders) { setPrintOrders(orders); setPrintLocked(false); setPrintInitialOverrides({}); }
+  // order/locked/overridesForOrder come from a print_history row — see
+  // PrintHistoryPanel's fetchOrderForReprint, which resolves the historical
+  // order_id back to a live, freshly-fetched order (never a stored PII
+  // snapshot — print_history itself never stored recipient info).
+  function reprintFromHistory(order, locked, overridesForOrder) {
+    setPrintOrders([order]);
+    setPrintLocked(locked);
+    setPrintInitialOverrides({ [order.id]: overridesForOrder || {} });
+  }
   const [lang, setLang] = useState("zh"); // "zh" | "en"
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const t = (zh, en) => (lang === "en" ? en : zh);
@@ -553,24 +573,39 @@ export default function App() {
       .then(({ error }) => error && console.error("updateOrderNote failed", error));
   }
 
-  // Printing a shipping label is the ERP-internal signal that an order has
-  // moved from "待处理" into fulfillment: bumps print_count, flips
-  // order_status pending -> processing, and advances warehouse_stage to
-  // 'printed'. Stock is NOT deducted here — printing a label doesn't mean
-  // the item has actually left the shelf yet, so the real deduction happens
-  // in markPacked (picked -> ready_ship), the point where packing is
-  // actually done. See markPacked for the deductStockForPrintedItem call.
-  async function handlePrintConfirm(orderNos) {
+  // Printing a shipping label bumps print_count and advances warehouse_stage
+  // to 'printed' — it does NOT touch order_status. Matches Shopee Seller
+  // Centre: printing a To-Process order keeps it at To Process; only an
+  // explicit Confirm Process action (see confirmProcess below) moves it to
+  // Processed. This used to also flip order_status pending -> processing on
+  // print, which was wrong — fixed 2026-07-28 per explicit report. Stock is
+  // NOT deducted here either — printing a label doesn't mean the item has
+  // actually left the shelf yet, so the real deduction happens in
+  // markPacked (picked -> ready_ship), the point where packing is actually
+  // done. See markPacked for the deductStockForPrintedItem call.
+  async function handlePrintConfirm(orderNos, templateDataByOrderId) {
     const { data: dbOrders, error: fetchErr } = await supabaseClient
       .from("orders")
       .select("id, order_no, platform, order_status, platform_status, print_count, warehouse_stage")
       .in("order_no", orderNos);
     if (fetchErr || !dbOrders || dbOrders.length === 0) return;
 
-    const toProcessingIds = dbOrders.filter((o) => o.order_status === "pending").map((o) => o.id);
-    if (toProcessingIds.length > 0) {
-      supabaseClient.from("orders").update({ order_status: "processing" }).in("id", toProcessingIds)
-        .then(({ error }) => error && console.error("print: order_status -> processing failed", error));
+    // Print history — one row per order actually printed, independent of
+    // the order_status/warehouse_stage/print_count transitions below (never
+    // blocks or gets blocked by them). template_data intentionally excludes
+    // recipient PII (see print_history migration comment); templateDataByOrderId
+    // is keyed by the frontend order.id, which is order_no, same as orderNos.
+    if (templateDataByOrderId) {
+      supabaseClient
+        .from("print_history")
+        .insert(
+          dbOrders.map((o) => ({
+            order_id: o.id,
+            platform: o.platform,
+            template_data: templateDataByOrderId[o.order_no] || {},
+          })),
+        )
+        .then(({ error }) => error && console.error("print_history insert failed", error));
     }
 
     const printedAt = new Date().toISOString();
@@ -614,6 +649,29 @@ export default function App() {
     );
 
     dbOrders.forEach((o) => syncFulfillmentToPlatform(o));
+  }
+
+  // Confirm Process — the only thing that actually moves order_status from
+  // pending to processing now (see handlePrintConfirm above, which no
+  // longer does this). Matches Shopee Seller Centre's explicit "Confirm
+  // Process" button. Only orders still at 'pending' are touched — calling
+  // this on an already-processing order is a silent no-op, same convention
+  // as markPicked/markPacked. Doesn't touch warehouse_stage, print_count,
+  // or stock — entirely independent of printing, on purpose.
+  async function confirmProcess(orderNos) {
+    const { data: dbOrders, error } = await supabaseClient
+      .from("orders")
+      .select("id, order_no")
+      .in("order_no", orderNos)
+      .eq("order_status", "pending");
+    if (error || !dbOrders || dbOrders.length === 0) return;
+
+    const ids = dbOrders.map((o) => o.id);
+    const { error: updateErr } = await supabaseClient.from("orders").update({ order_status: "processing" }).in("id", ids);
+    if (updateErr) { console.error("confirmProcess failed", updateErr); return; }
+
+    const orderNoSet = new Set(dbOrders.map((o) => o.order_no));
+    setOrders((prev) => prev.map((o) => (orderNoSet.has(o.id) ? { ...o, orderStatus: "processing" } : o)));
   }
 
   // Batch warehouse actions (Warehouse page) — take order_no values, same
@@ -804,7 +862,7 @@ export default function App() {
         <div className="p-3 md:p-6">
           {tab === "overview" && <Overview t={t} orders={orders} inventory={inventory} stores={stores} onOpenOrder={setSelectedOrder} goTo={setTab} />}
           {tab === "orders" && (
-            <Orders t={t} orders={orders} stores={stores} onOpenOrder={setSelectedOrder} onPrint={setPrintOrders} onUpdateStatus={updateOrderStatus} onUpdateNote={updateOrderNote} goTo={setTab} />
+            <Orders t={t} orders={orders} stores={stores} onOpenOrder={setSelectedOrder} onPrint={openLockedPrint} onConfirmProcess={confirmProcess} onUpdateStatus={updateOrderStatus} onUpdateNote={updateOrderNote} goTo={setTab} />
           )}
           {tab === "manualimport" && <ManualImport t={t} stores={stores} inventory={inventory} onImport={importOrders} />}
           {tab === "products" && <ProductMaster t={t} inventory={inventory} onCreate={createProduct} onUpdate={updateProductMaster} onDelete={deleteProduct} />}
@@ -835,17 +893,25 @@ export default function App() {
           {tab === "finance" && <Finance t={t} orders={orders} />}
           {tab === "ads" && <AdsSpend t={t} />}
           {tab === "ai" && <AIPanel t={t} orders={orders} inventory={inventory} />}
-          {tab === "labels" && <LabelPrinting t={t} orders={orders} stores={stores} onPrint={setPrintOrders} onUpdateSellerInfo={updateStoreSellerInfo} />}
-          {tab === "warehouse" && <Warehouse t={t} orders={orders} onPrint={setPrintOrders} onMarkPicked={markPicked} onMarkPacked={markPacked} />}
+          {tab === "labels" && <LabelPrinting t={t} orders={orders} stores={stores} onPrint={openDesignPrint} onReprint={reprintFromHistory} onUpdateSellerInfo={updateStoreSellerInfo} />}
+          {tab === "warehouse" && <Warehouse t={t} orders={orders} onPrint={openDesignPrint} onMarkPicked={markPicked} onMarkPacked={markPacked} />}
           {tab === "roles" && <Roles t={t} />}
         </div>
       </main>
 
       {selectedOrder && (
-        <OrderDrawer t={t} order={selectedOrder} onClose={() => setSelectedOrder(null)} onPrint={(o) => setPrintOrders([o])} onUpdateStatus={updateOrderStatus} />
+        <OrderDrawer t={t} order={selectedOrder} onClose={() => setSelectedOrder(null)} onPrint={(o) => openLockedPrint([o])} onUpdateStatus={updateOrderStatus} />
       )}
       {printOrders && printOrders.length > 0 && (
-        <PrintSlip t={t} orders={printOrders} stores={stores} onClose={() => setPrintOrders(null)} onConfirmPrint={() => handlePrintConfirm(printOrders.map((o) => o.id))} />
+        <PrintSlip
+          t={t}
+          orders={printOrders}
+          stores={stores}
+          locked={printLocked}
+          initialOverrides={printInitialOverrides}
+          onClose={() => { setPrintOrders(null); setPrintInitialOverrides({}); }}
+          onConfirmPrint={(templateDataByOrderId) => handlePrintConfirm(printOrders.map((o) => o.id), templateDataByOrderId)}
+        />
       )}
     </div>
   );
