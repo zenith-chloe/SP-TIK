@@ -6,13 +6,14 @@ import { QRCodeSVG } from "qrcode.react";
 import {
   Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Info, TrendingUp,
   DollarSign, Sparkles, Bot, Send, Users, Megaphone, Printer, X, Settings, Package, GripVertical, Plus,
+  SlidersHorizontal, History, Eye,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import {
   PRODUCTS, PLATFORM_THEME, ROLES, AD_CAMPAIGNS, AD_ROAS_THRESHOLD,
-  profit, fmt, statusLabel, warehouseLabel, supabaseClient,
+  profit, fmt, statusLabel, warehouseLabel, supabaseClient, mapDbOrder,
 } from "./shared.jsx";
 import { KPICard as KPICardImpl } from "./pagesOverviewOrders.jsx";
 
@@ -592,6 +593,8 @@ const SHIPPING_TOGGLABLE_FIELDS = [
   { key: "senderPhone", zh: "寄件人电话", en: "Sender Phone" },
   { key: "senderAddress", zh: "寄件地址", en: "Sender Address" },
   { key: "postcode", zh: "邮编", en: "Postcode" },
+  { key: "image", zh: "产品图片", en: "Product Photo" },
+  { key: "sku", zh: "SKU", en: "SKU" },
   { key: "note", zh: "备注", en: "Note" },
 ];
 const PICKING_TOGGLABLE_FIELDS = [
@@ -729,17 +732,337 @@ function TemplateFieldSettingsPanel({ t }) {
   );
 }
 
+const DESIGN_POSITION_OPTIONS = [
+  { value: "top", zh: "顶部", en: "Top" },
+  { value: "productRow", zh: "中部（默认）", en: "Middle (default)" },
+  { value: "bottom", zh: "底部", en: "Bottom" },
+];
+const BARCODE_POSITION_OPTIONS = [
+  { value: "top", zh: "顶部（默认，紧邻快递单号）", en: "Top (default, next to tracking no.)" },
+  { value: "bottom", zh: "底部", en: "Bottom" },
+];
+const DESIGN_SIZE_OPTIONS = [
+  { value: "small", zh: "小", en: "Small" },
+  { value: "medium", zh: "中（默认）", en: "Medium (default)" },
+  { value: "large", zh: "大", en: "Large" },
+];
+
+function DesignSelect({ label, value, options, onChange }) {
+  return (
+    <label className="flex items-center gap-1.5 text-[11px] text-slate-500">
+      {label}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="px-2 py-1 text-[11px] border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+      >
+        {options.map((o) => <option key={o.value} value={o.value}>{o.zh}{o.en ? ` / ${o.en}` : ""}</option>)}
+      </select>
+    </label>
+  );
+}
+
+// 标签设计 — size/position for image, SKU, a template-level custom text
+// block, and barcode position (see ShippingLabelCard's `layoutConfig` prop
+// and the DESIGN_ONLY_FIELDS/slot rendering there). Show/hide for these same
+// elements stays owned by TemplateFieldSettingsPanel's enabled_fields below
+// — this panel is purely "where/how big", never "whether".
+//
+// customText's actual text content lives here (template-level, always the
+// same on every label using this template) — different from the per-print
+// SKU/note overrides in LabelEditPanel, which staff type at print time.
+function LabelDesignPanel({ t }) {
+  const [layoutConfig, setLayoutConfig] = useState(null); // null = loading
+
+  useEffect(() => {
+    let cancelled = false;
+    supabaseClient
+      .from("label_template_settings")
+      .select("layout_config")
+      .eq("template_type", "shipping")
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        setLayoutConfig(error || !data ? {} : data.layout_config || {});
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  function updateElement(key, patch) {
+    const next = { ...layoutConfig, [key]: { ...layoutConfig[key], ...patch } };
+    setLayoutConfig(next);
+    supabaseClient
+      .from("label_template_settings")
+      .update({ layout_config: next, updated_at: new Date().toISOString() })
+      .eq("template_type", "shipping")
+      .then(({ error }) => error && console.error("LabelDesignPanel save failed", error));
+  }
+
+  if (layoutConfig === null) return <div className="text-xs text-slate-400">{t("加载中…", "Loading…")}</div>;
+
+  const image = layoutConfig.image || {};
+  const sku = layoutConfig.sku || {};
+  const customText = layoutConfig.customText || {};
+  const barcode = layoutConfig.barcode || {};
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
+      <div className="text-sm font-medium flex items-center gap-1.5">
+        <SlidersHorizontal size={14} className="text-slate-500" /> {t("标签设计", "Label Design")}
+      </div>
+      <div className="text-xs text-slate-400 -mt-2">
+        {t(
+          "只影响打印标签的显示效果，不会修改产品或订单数据库。显示/隐藏在下方「模板字段设置」中管理。",
+          "Only affects how the printed label looks — never changes product/order data in the database. Show/hide is managed in Template Field Settings below.",
+        )}
+      </div>
+
+      <div className="border-t border-slate-100 pt-3 flex items-center justify-between flex-wrap gap-2">
+        <div className="text-xs font-medium text-slate-600 w-24 shrink-0">{t("产品图片", "Product Photo")}</div>
+        <div className="flex items-center gap-3">
+          <DesignSelect label={t("大小", "Size")} value={image.size || "medium"} options={DESIGN_SIZE_OPTIONS} onChange={(v) => updateElement("image", { size: v })} />
+          <DesignSelect label={t("位置", "Position")} value={image.position || "productRow"} options={DESIGN_POSITION_OPTIONS} onChange={(v) => updateElement("image", { position: v })} />
+        </div>
+      </div>
+
+      <div className="border-t border-slate-100 pt-3 flex items-center justify-between flex-wrap gap-2">
+        <div className="text-xs font-medium text-slate-600 w-24 shrink-0">SKU</div>
+        <div className="flex items-center gap-3">
+          <DesignSelect label={t("大小", "Size")} value={sku.size || "medium"} options={DESIGN_SIZE_OPTIONS} onChange={(v) => updateElement("sku", { size: v })} />
+          <DesignSelect label={t("位置", "Position")} value={sku.position || "productRow"} options={DESIGN_POSITION_OPTIONS} onChange={(v) => updateElement("sku", { position: v })} />
+        </div>
+      </div>
+
+      <div className="border-t border-slate-100 pt-3 space-y-2">
+        <div className="text-xs font-medium text-slate-600">{t("自定义文字", "Custom Text")}</div>
+        <input
+          value={customText.text || ""}
+          onChange={(e) => updateElement("customText", { text: e.target.value })}
+          placeholder={t("固定显示在标签上的文字，例如感谢语", "Fixed text shown on every label, e.g. a thank-you note")}
+          className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+        />
+        <div className="flex items-center gap-3">
+          <DesignSelect label={t("大小", "Size")} value={customText.size || "medium"} options={DESIGN_SIZE_OPTIONS} onChange={(v) => updateElement("customText", { size: v })} />
+          <DesignSelect label={t("位置", "Position")} value={customText.position || "bottom"} options={DESIGN_POSITION_OPTIONS} onChange={(v) => updateElement("customText", { position: v })} />
+        </div>
+      </div>
+
+      <div className="border-t border-slate-100 pt-3 flex items-center justify-between flex-wrap gap-2">
+        <div className="text-xs font-medium text-slate-600 w-24 shrink-0">{t("条码位置", "Barcode Position")}</div>
+        <DesignSelect label="" value={barcode.position || "top"} options={BARCODE_POSITION_OPTIONS} onChange={(v) => updateElement("barcode", { position: v })} />
+      </div>
+    </div>
+  );
+}
+
 function LabelSettings({ t, stores, onUpdateSellerInfo }) {
   return (
     <div className="space-y-4">
       <SellerSettingsPanel t={t} stores={stores} onUpdateSellerInfo={onUpdateSellerInfo} />
+      <LabelDesignPanel t={t} />
       <TemplateFieldSettingsPanel t={t} />
     </div>
   );
 }
 
-export function LabelPrinting({ t, orders, stores, onPrint, onUpdateSellerInfo }) {
-  const [view, setView] = useState("print"); // "print" | "settings"
+// Resolves a print_history row's order_id (the real orders.id uuid) back to
+// a live order — used by both "查看预览" and "重新打印". Deliberately always
+// fetches fresh from `orders`/`order_items` rather than trusting anything
+// stored in print_history: recipient/product info is never snapshotted
+// there (see the print_history migration comment), so a reprint/preview
+// always reflects current, correct data, with only the print-specific
+// customization (sku override/note) replayed from history.
+const REPRINT_ORDER_COLUMNS = "id, order_no, platform, platform_account_id, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, platform_status, warehouse_stage, is_cod, shipping_fee, order_date, print_count, last_printed_at, last_printed_by, note_color, note_text";
+async function fetchOrderForReprint(orderId) {
+  const { data: orderRow, error: orderErr } = await supabaseClient
+    .from("orders")
+    .select(REPRINT_ORDER_COLUMNS)
+    .eq("id", orderId)
+    .maybeSingle();
+  if (orderErr || !orderRow) return null;
+  const { data: items } = await supabaseClient
+    .from("order_items")
+    .select("order_id, sku, product_name, variation, qty, unit_price, image_url")
+    .eq("order_id", orderId);
+  return { order: mapDbOrder(orderRow, items || []), items: items || [] };
+}
+
+// Read-only reconstruction of a historical print, for 查看预览 — fetches the
+// order fresh (see fetchOrderForReprint) and renders the same card component
+// used for real printing, but with no print button and no edit access.
+function HistoryPreviewModal({ t, stores, historyRow, onClose }) {
+  // undefined = not fetched yet, null = fetched but the order no longer
+  // exists, object = resolved { order, items }. Distinct from `null` on
+  // purpose — otherwise "still loading" and "order not found" are
+  // indistinguishable and the wrong message shows.
+  const [resolved, setResolved] = useState(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchOrderForReprint(historyRow.order_id).then((r) => { if (!cancelled) setResolved(r); });
+    return () => { cancelled = true; };
+  }, [historyRow.order_id]);
+
+  const td = historyRow.template_data || {};
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
+          <div className="text-sm font-medium">{t("历史打印预览", "Historical Print Preview")}</div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto bg-slate-100 p-4 flex justify-center">
+          {!resolved ? (
+            <div className="text-xs text-slate-400 py-10">{resolved === undefined ? t("加载中…", "Loading…") : t("该订单已不存在", "This order no longer exists")}</div>
+          ) : td.template === "picking" ? (
+            <WarehousePickingCard t={t} order={resolved.order} items={resolved.items} enabledFields={null} />
+          ) : (
+            <ShippingLabelCard
+              t={t}
+              order={resolved.order}
+              fields={{ ...labelFields(resolved.order, stores), ...(td.locked ? {} : { sku: td.sku, note: td.note }) }}
+              enabledFields={null}
+              layoutConfig={td.locked ? {} : td.layoutConfig}
+              locked={!!td.locked}
+              items={resolved.items}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 打印记录 — one row per order actually printed (see handlePrintConfirm's
+// print_history insert), auto-expiring after 30 days (cron cleanup on the
+// DB side, migration `print_history`). Embeds orders(order_no) via the
+// order_id foreign key so this never needs the frontend's order.id (which
+// is order_no, not the real uuid PK print_history.order_id points to).
+// No edit or delete here — the only mutations this panel triggers are
+// "查看预览" (read-only) and "重新打印" (a genuine new print, going through
+// the normal onReprint -> PrintSlip -> handlePrintConfirm path, which will
+// itself add a new print_history row). The history rows themselves are
+// never editable/deletable from the UI — the only deletion path is the
+// scheduled cleanup, on purpose (this is a record of what happened).
+function PrintHistoryPanel({ t, stores, onReprint }) {
+  const [rows, setRows] = useState(null); // null = loading
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all"); // "all" | "locked" | "design"
+  const [previewRow, setPreviewRow] = useState(null);
+  const [reprintingId, setReprintingId] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    supabaseClient
+      .from("print_history")
+      .select("id, order_id, platform, template_data, printed_at, expire_at, orders(order_no)")
+      .order("printed_at", { ascending: false })
+      .limit(200)
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) console.error("PrintHistoryPanel fetch failed", error);
+        setRows(error || !data ? [] : data);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const lang = t("zh-CN", "en-MY");
+  const filtered = (rows || [])
+    .filter((r) => !query.trim() || (r.orders?.order_no || "").toLowerCase().includes(query.toLowerCase()))
+    .filter((r) => typeFilter === "all" || (typeFilter === "locked" ? r.template_data?.locked : !r.template_data?.locked));
+
+  async function handleReprint(r) {
+    setReprintingId(r.id);
+    const resolved = await fetchOrderForReprint(r.order_id);
+    setReprintingId(null);
+    if (!resolved) { console.error("reprint: order no longer exists", r.order_id); return; }
+    const td = r.template_data || {};
+    onReprint?.(resolved.order, !!td.locked, td.locked ? {} : { sku: td.sku, note: td.note });
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="text-sm font-medium mb-1 flex items-center gap-1.5">
+        <History size={14} className="text-slate-500" /> {t("打印记录", "Print History")}
+      </div>
+      <div className="text-xs text-slate-400 mb-3">
+        {t("每次打印自动保存，保留 30 天后自动清除，不会影响订单数据", "Every print is logged automatically, kept for 30 days then auto-deleted — never affects order data")}
+      </div>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder={t("按订单编号筛选", "Filter by order no.")}
+        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 mb-2"
+      />
+      <div className="flex items-center gap-1.5 mb-3">
+        {[
+          { value: "all", zh: "全部", en: "All" },
+          { value: "locked", zh: "平台订单打印单", en: "Platform Order Slip" },
+          { value: "design", zh: "标签打印", en: "Label Printing" },
+        ].map((f) => (
+          <button
+            key={f.value}
+            onClick={() => setTypeFilter(f.value)}
+            className={`text-[11px] px-2.5 py-1 rounded-full border ${typeFilter === f.value ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+          >
+            {t(f.zh, f.en)}
+          </button>
+        ))}
+      </div>
+      {rows === null ? (
+        <div className="text-xs text-slate-400">{t("加载中…", "Loading…")}</div>
+      ) : filtered.length === 0 ? (
+        <div className="text-xs text-slate-400 text-center py-6">{t("暂无打印记录", "No print history yet")}</div>
+      ) : (
+        <div className="border border-slate-100 rounded-lg divide-y divide-slate-100 max-h-96 overflow-y-auto">
+          {filtered.map((r) => (
+            <div key={r.id} className="px-3 py-2 text-xs flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium truncate">{r.orders?.order_no || "—"}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ${r.template_data?.locked ? "bg-amber-50 text-amber-700 border border-amber-200" : "bg-sky-50 text-sky-700 border border-sky-200"}`}>
+                    {r.template_data?.locked ? t("平台订单打印单", "Platform Order Slip") : t("标签打印", "Label Printing")}
+                  </span>
+                </div>
+                <div className="text-slate-400 truncate">
+                  {r.platform}
+                  {r.template_data?.template ? ` · ${r.template_data.template}` : ""}
+                  {r.template_data?.sku ? ` · SKU: ${r.template_data.sku}` : ""}
+                </div>
+              </div>
+              <div className="text-right text-slate-400 shrink-0 flex items-center gap-2">
+                <div>
+                  <div>{new Date(r.printed_at).toLocaleString(lang)}</div>
+                  <div>{t("到期", "Expires")} {new Date(r.expire_at).toLocaleDateString(lang)}</div>
+                </div>
+                <button
+                  onClick={() => setPreviewRow(r)}
+                  title={t("查看预览", "View Preview")}
+                  className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"
+                >
+                  <Eye size={12} />
+                </button>
+                <button
+                  onClick={() => handleReprint(r)}
+                  disabled={reprintingId === r.id}
+                  title={t("重新打印", "Reprint")}
+                  className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  <Printer size={12} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {previewRow && <HistoryPreviewModal t={t} stores={stores} historyRow={previewRow} onClose={() => setPreviewRow(null)} />}
+    </div>
+  );
+}
+
+export function LabelPrinting({ t, orders, stores, onPrint, onReprint, onUpdateSellerInfo }) {
+  const [view, setView] = useState("print"); // "print" | "design" | "history"
   const [printQuery, setPrintQuery] = useState("");
   const [printSelectedIds, setPrintSelectedIds] = useState(() => new Set());
   const printMatches = printQuery.trim()
@@ -779,15 +1102,23 @@ export function LabelPrinting({ t, orders, stores, onPrint, onUpdateSellerInfo }
           <Printer size={12} /> {t("标签打印", "Label Printing")}
         </button>
         <button
-          onClick={() => setView("settings")}
-          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border ${view === "settings" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+          onClick={() => setView("design")}
+          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border ${view === "design" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
         >
-          <Settings size={12} /> {t("标签设置", "Label Settings")}
+          <SlidersHorizontal size={12} /> {t("标签设计", "Label Design")}
+        </button>
+        <button
+          onClick={() => setView("history")}
+          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border ${view === "history" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+        >
+          <History size={12} /> {t("打印记录", "Print History")}
         </button>
       </div>
 
-      {view === "settings" ? (
+      {view === "design" ? (
         <LabelSettings t={t} stores={stores} onUpdateSellerInfo={onUpdateSellerInfo} />
+      ) : view === "history" ? (
+        <PrintHistoryPanel t={t} stores={stores} onReprint={onReprint} />
       ) : (
         <div className="bg-white border border-slate-200 rounded-xl p-4">
           <div className="text-sm font-medium mb-3 flex items-center gap-1.5"><Printer size={14} className="text-slate-500"/> {t("标签打印", "Label Printing")}</div>
@@ -1073,8 +1404,15 @@ export function AdsSpend({ t }) {
 // Seller/sender values come from the order's originating store (system
 // settings maintained in 标签设置 → Seller Info), auto-selected by
 // order.platformAccountId — never a hardcoded name and never hand-edited at
-// print time. Customer/recipient fields are always read straight from the
-// order, never editable, anywhere in the print flow.
+// print time. Customer/recipient fields (and orderId, the real platform
+// order number) are always read straight from the order, never editable,
+// anywhere in the print flow — see PLATFORM_LOCKED_FIELDS below.
+//
+// `sku`/`note` are base values only — PrintSlip's `overrides` state (keyed
+// by order.id) may replace them per print run for staff-facing label
+// content. This never writes back to order_items/orders; it's a cosmetic,
+// per-print-session override only, matching the same pattern as everything
+// else on this screen (nothing here persists to the DB).
 function labelFields(order, stores) {
   const store = (stores || []).find((s) => s.id === order.platformAccountId);
   return {
@@ -1088,9 +1426,28 @@ function labelFields(order, stores) {
     recipientName: order.customer,
     recipientPhone: order.phone,
     recipientAddress: order.address,
+    productImage: order.productImage || null,
+    sku: order.sku || "",
     note: "",
   };
 }
+
+// Platform-synced fields that must never be editable on the print screen,
+// regardless of future changes here — recipient identity and the real
+// platform order number (orderId is always order.order_no, the same value
+// TikTok/Shopee use, never a separate internal id) must stay exactly what
+// synced from the platform.
+const PLATFORM_LOCKED_FIELDS = ["orderId", "recipientName", "recipientPhone", "recipientAddress"];
+const LOCKED_FIELD_LABELS = {
+  orderId: { zh: "平台订单号", en: "Platform order no." },
+  recipientName: { zh: "收件人", en: "Recipient" },
+  recipientPhone: { zh: "收件人电话", en: "Recipient phone" },
+  recipientAddress: { zh: "收件地址", en: "Recipient address" },
+};
+
+// The only per-print-run editable fields — everything else on the label is
+// either locked (see above) or a toggle-only visibility setting.
+const OVERRIDABLE_FIELDS = ["sku", "note"];
 
 // Fetches full order_items (image/sku/product name/qty) for the 仓库拣货单
 // template — PrintSlip's `orders` prop only carries mapDbOrder's single-item
@@ -1121,7 +1478,7 @@ async function fetchPickingItemsByOrderNo(orderNos) {
     while (true) {
       const { data, error } = await supabaseClient
         .from("order_items")
-        .select("order_id, sku, product_name, qty, image_url")
+        .select("order_id, sku, product_name, variation, qty, image_url")
         .in("order_id", chunk)
         .range(from, from + PAGE_SIZE - 1);
       if (error) {
@@ -1145,12 +1502,39 @@ async function fetchPickingItemsByOrderNo(orderNos) {
   return byOrderNo;
 }
 
-export function PrintSlip({ t, orders, stores, onClose, onConfirmPrint }) {
-  const [activeIdx, setActiveIdx] = useState(0);
-  const [template, setTemplate] = useState("shipping"); // "shipping" | "picking"
+// `locked` is true when opened from the Orders page (or its drawer) — no
+// template switching, no design overrides panel, and ShippingLabelCard
+// itself ignores image/sku/customText/note entirely regardless of what's
+// configured in 标签设计. Always the plain platform order slip. `locked` is
+// false from Label Printing (and Warehouse, which still needs the picking
+// template) — full template switching + design overrides, unchanged.
+// `initialOverrides` seeds the overrides state — used only when reopening
+// this modal to reprint a historical order from 打印记录 (PrintHistoryPanel),
+// so the reprint starts pre-filled with whatever sku/note were used last
+// time, instead of blank. Normal prints (Orders/Label Printing search) don't
+// pass this, so it defaults to empty exactly like before.
+export function PrintSlip({ t, orders, stores, onClose, onConfirmPrint, locked = false, initialOverrides = {} }) {
+  const [template, setTemplate] = useState("shipping"); // "shipping" | "picking" — locked always stays "shipping"
   const [pickingItemsByOrderNo, setPickingItemsByOrderNo] = useState({});
   const [enabledFieldsByTemplate, setEnabledFieldsByTemplate] = useState({ shipping: null, picking: null }); // null = not loaded yet (show everything)
+  const [layoutConfig, setLayoutConfig] = useState({}); // shipping template's size/position config (标签设计) — see LabelDesignPanel
+  // Per-print-run label content edits, keyed by order.id — { [orderId]: { sku, note } }.
+  // Local component state only, cleared when this modal closes. Never sent
+  // to Supabase: this is cosmetic label content, not order/product data, so
+  // it deliberately doesn't touch order_items.sku or anything else in the
+  // DB. Only OVERRIDABLE_FIELDS keys are ever written here — see the edit
+  // panel below, which only exposes inputs for those two fields.
+  const [overrides, setOverrides] = useState(() => initialOverrides);
   const lang = t("zh", "en");
+
+  function setOverride(orderId, key, value) {
+    if (!OVERRIDABLE_FIELDS.includes(key)) return; // defense in depth — see PLATFORM_LOCKED_FIELDS
+    setOverrides((prev) => ({ ...prev, [orderId]: { ...prev[orderId], [key]: value } }));
+  }
+
+  function fieldsFor(order) {
+    return { ...labelFields(order, stores), ...overrides[order.id] };
+  }
 
   // 仓库拣货单 needs every order_item (not just mapDbOrder's single-item
   // summary), fetched once per batch of orders opened for printing.
@@ -1174,12 +1558,14 @@ export function PrintSlip({ t, orders, stores, onClose, onConfirmPrint }) {
     let cancelled = false;
     supabaseClient
       .from("label_template_settings")
-      .select("template_type, enabled_fields")
+      .select("template_type, enabled_fields, layout_config")
       .then(({ data, error }) => {
         if (cancelled || error || !data) return;
         const byType = {};
         data.forEach((row) => { byType[row.template_type] = row.enabled_fields || []; });
         setEnabledFieldsByTemplate({ shipping: byType.shipping || [], picking: byType.picking || [] });
+        const shippingRow = data.find((row) => row.template_type === "shipping");
+        setLayoutConfig(shippingRow?.layout_config || {});
       });
     return () => { cancelled = true; };
   }, []);
@@ -1191,14 +1577,25 @@ export function PrintSlip({ t, orders, stores, onClose, onConfirmPrint }) {
   // TikTok sync — is entirely owned by onConfirmPrint (handlePrintConfirm in
   // erp-mvp-demo.jsx) and fires the same way no matter which template was
   // visually printed. Nothing here changes that.
+  //
+  // template_data (→ print_history, one row per order) deliberately excludes
+  // recipient PII — order_id already links back to the real order for that.
+  // Only the print-specific customization is captured: which template, the
+  // resolved sku/note (post-override), and which layout was active. Locked
+  // prints just record { template: "shipping", locked: true } since there's
+  // no customization to capture.
   function handlePrint() {
     window.print();
-    onConfirmPrint?.();
+    const templateDataByOrderId = {};
+    orders.forEach((order) => {
+      templateDataByOrderId[order.id] = locked
+        ? { template: "shipping", locked: true }
+        : template === "shipping"
+        ? { template, locked: false, sku: fieldsFor(order).sku, note: fieldsFor(order).note, layoutConfig }
+        : { template, locked: false, itemCount: (pickingItemsByOrderNo[order.id] || []).length };
+    });
+    onConfirmPrint?.(templateDataByOrderId);
   }
-
-  const activeOrder = orders[activeIdx] || orders[0];
-  const activeFields = labelFields(activeOrder, stores);
-  const activeItems = pickingItemsByOrderNo[activeOrder?.id] || [];
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4">
@@ -1220,61 +1617,77 @@ export function PrintSlip({ t, orders, stores, onClose, onConfirmPrint }) {
           </div>
         </div>
 
-        <div className="no-print flex items-center gap-2 px-5 py-2.5 border-b border-slate-200 bg-slate-50">
-          <span className="text-[11px] text-slate-400">{t("模板", "Template")}</span>
-          <button
-            onClick={() => setTemplate("shipping")}
-            className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border ${template === "shipping" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
-          >
-            <Printer size={11} /> {t("平台物流面单", "Platform Shipping Label")}
-          </button>
-          <button
-            onClick={() => setTemplate("picking")}
-            className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border ${template === "picking" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
-          >
-            <Package size={11} /> {t("仓库拣货单", "Warehouse Picking List")}
-          </button>
-        </div>
-
-        {activeOrder?.printCount > 0 && (
-          <div className="no-print flex items-center gap-2 px-5 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-xs">
-            <AlertTriangle size={13} className="shrink-0" />
-            <span>
-              {t(
-                `此订单已打印过 ${activeOrder.printCount} 次，请确认是否需要重复打印`,
-                `This order has already been printed ${activeOrder.printCount} time(s) — confirm before printing again`,
-              )}
-              {activeOrder.lastPrintedAt && (
-                <span className="text-amber-600">
-                  {t(" · 上次打印：", " · Last printed: ")}
-                  {new Date(activeOrder.lastPrintedAt).toLocaleString(lang === "en" ? "en-MY" : "zh-CN")}
-                  {activeOrder.lastPrintedBy ? ` (${activeOrder.lastPrintedBy})` : ""}
-                </span>
-              )}
-            </span>
+        {locked ? (
+          <div className="no-print flex items-center gap-2 px-5 py-2.5 border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+            <Printer size={13} /> {t("平台订单打印单", "Platform Order Slip")}
+          </div>
+        ) : (
+          <div className="no-print flex items-center gap-2 px-5 py-2.5 border-b border-slate-200 bg-slate-50">
+            <span className="text-[11px] text-slate-400">{t("模板", "Template")}</span>
+            <button
+              onClick={() => setTemplate("shipping")}
+              className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border ${template === "shipping" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+            >
+              <Printer size={11} /> {t("平台物流面单", "Platform Shipping Label")}
+            </button>
+            <button
+              onClick={() => setTemplate("picking")}
+              className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border ${template === "picking" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
+            >
+              <Package size={11} /> {t("仓库拣货单", "Warehouse Picking List")}
+            </button>
           </div>
         )}
 
-        <div className="no-print flex-1 overflow-y-auto bg-slate-100 p-4 flex flex-col items-center gap-3">
-          {orders.length > 1 && (
-            <div className="flex gap-1.5 flex-wrap justify-center">
-              {orders.map((o, i) => (
-                <button
-                  key={o.id}
-                  onClick={() => setActiveIdx(i)}
-                  className={`text-[11px] px-2.5 py-1 rounded-full border ${i === activeIdx ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200"}`}
-                >
-                  {i + 1}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="shadow-sm">
-            {template === "shipping" ? (
-              <ShippingLabelCard t={t} order={activeOrder} fields={activeFields} enabledFields={shippingEnabled} />
-            ) : (
-              <WarehousePickingCard t={t} order={activeOrder} items={activeItems} enabledFields={pickingEnabled} />
-            )}
+        {/* Stacked, scrollable preview — every order in the batch renders at
+            once (TikTok/Shopee-style continuous print preview), not a
+            single "active" card behind a 1/2/3 switcher. Works the same way
+            at 3 orders or 100: scroll wheel, no clicking through pages. A
+            clear dashed divider separates each order; the print-count
+            warning (previously one banner tied to "the active order") is
+            now shown per-card, only for orders that actually need it. */}
+        <div className="no-print flex-1 overflow-y-auto bg-slate-100 p-4">
+          <div className="flex flex-col items-center">
+            {orders.map((order, idx) => {
+              const orderFields = fieldsFor(order);
+              const orderItems = pickingItemsByOrderNo[order.id] || [];
+              return (
+                <div key={order.id} className="w-full flex flex-col items-center">
+                  {idx > 0 && <div className="w-full max-w-2xl my-5 border-t-2 border-dashed border-slate-300" />}
+                  <div className="w-full max-w-2xl flex items-center justify-between px-1 mb-2">
+                    <span className="text-xs font-medium text-slate-500">#{idx + 1} · {order.id}</span>
+                    {order.printCount > 0 && (
+                      <span className="flex items-center gap-1 text-[11px] text-amber-700" title={t("请确认是否需要重复打印", "Confirm before printing again")}>
+                        <AlertTriangle size={12} className="shrink-0" />
+                        {t(`已打印 ${order.printCount} 次`, `Printed ${order.printCount}x`)}
+                        {order.lastPrintedAt && (
+                          <span className="text-amber-600">
+                            {" · "}{new Date(order.lastPrintedAt).toLocaleString(lang === "en" ? "en-MY" : "zh-CN")}
+                          </span>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-start gap-4">
+                    <div className="shadow-sm">
+                      {template === "shipping" ? (
+                        <ShippingLabelCard t={t} order={order} fields={orderFields} enabledFields={shippingEnabled} layoutConfig={layoutConfig} locked={locked} items={orderItems} pageIndex={idx + 1} pageTotal={orders.length} />
+                      ) : (
+                        <WarehousePickingCard t={t} order={order} items={orderItems} enabledFields={pickingEnabled} />
+                      )}
+                    </div>
+                    {template === "shipping" && !locked && (
+                      <LabelEditPanel
+                        t={t}
+                        order={order}
+                        fields={orderFields}
+                        onChange={(key, value) => setOverride(order.id, key, value)}
+                      />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -1288,8 +1701,13 @@ export function PrintSlip({ t, orders, stores, onClose, onConfirmPrint }) {
                 key={order.id}
                 t={t}
                 order={order}
-                fields={labelFields(order, stores)}
+                fields={fieldsFor(order)}
                 enabledFields={shippingEnabled}
+                layoutConfig={layoutConfig}
+                locked={locked}
+                items={pickingItemsByOrderNo[order.id] || []}
+                pageIndex={idx + 1}
+                pageTotal={orders.length}
                 isLast={idx === orders.length - 1}
               />
             ) : (
@@ -1304,6 +1722,65 @@ export function PrintSlip({ t, orders, stores, onClose, onConfirmPrint }) {
             ),
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Per-print editable fields for the active shipping label — SKU and custom
+// content only (OVERRIDABLE_FIELDS). Platform-synced fields (recipient
+// name/phone/address, the real platform order number) are never rendered
+// here at all, on purpose — there's no input for them, so they can't be
+// hand-edited from this screen no matter what. Edits are scoped to the
+// current PrintSlip session only (see `overrides` in PrintSlip) — nothing
+// here is saved to Supabase.
+function LabelEditPanel({ t, order, fields, onChange }) {
+  return (
+    <div className="no-print bg-white border border-slate-200 rounded-lg p-3 w-64 shrink-0 space-y-3">
+      <div className="text-xs font-medium text-slate-700">{t("标签内容编辑", "Edit Label Content")}</div>
+      <div className="text-[11px] text-slate-400 -mt-2">
+        {t("仅影响本次打印，不会修改订单数据", "Only affects this print run — does not change order data")}
+      </div>
+
+      <div>
+        <label className="text-[11px] text-slate-400 mb-1 block">{t("产品图片", "Product Photo")}</label>
+        {fields.productImage ? (
+          <img src={fields.productImage} alt={fields.sku || order.product} className="h-16 w-16 object-cover rounded border border-slate-200" />
+        ) : (
+          <div className="h-16 w-16 rounded border border-dashed border-slate-200 flex items-center justify-center text-[10px] text-slate-300">
+            {t("无图片", "No photo")}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <label className="text-[11px] text-slate-400 mb-1 block">SKU</label>
+        <input
+          value={fields.sku}
+          onChange={(e) => onChange("sku", e.target.value)}
+          placeholder={t("输入 SKU", "Enter SKU")}
+          className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+        />
+      </div>
+
+      <div>
+        <label className="text-[11px] text-slate-400 mb-1 block">{t("自定义标签内容", "Custom Label Content")}</label>
+        <textarea
+          value={fields.note}
+          onChange={(e) => onChange("note", e.target.value)}
+          rows={3}
+          placeholder={t("在标签上显示的备注文字", "Note text shown on the label")}
+          className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400 resize-none"
+        />
+      </div>
+
+      {/* Locked, read-only — driven by PLATFORM_LOCKED_FIELDS so this list can
+          never drift from what setOverride() actually refuses to touch */}
+      <div className="pt-2 border-t border-slate-100 space-y-1">
+        <div className="text-[11px] text-slate-400">{t("以下字段与平台同步，不可修改", "Synced from platform — locked")}</div>
+        {PLATFORM_LOCKED_FIELDS.map((key) => (
+          <div key={key} className="text-[11px] text-slate-500">{LOCKED_FIELD_LABELS[key][t("zh", "en")]}: {fields[key]}</div>
+        ))}
       </div>
     </div>
   );
@@ -1340,10 +1817,22 @@ function Barcode({ value }) {
 // `logoUrl` slots below render nothing until real, authorized image files
 // are supplied, and fall back to a plain text wordmark so the label still
 // works without them.
-function ShippingLabelCard({ t, order, fields, enabledFields, isLast }) {
+// Design-only fields — never rendered when locked (Orders-page print),
+// regardless of enabledFields/layoutConfig. This is the single point that
+// enforces "订单页面打印按钮不进入标签设计": everything else on the card
+// (courier/tracking/weight/sender/date) predates the design feature and
+// still respects the admin's normal field toggles either way.
+const DESIGN_ONLY_FIELDS = ["image", "sku", "customText", "note"];
+const IMAGE_SIZE_CLASSES = { small: "h-6 w-6", medium: "h-9 w-9", large: "h-14 w-14" };
+const TEXT_SIZE_CLASSES = { small: "text-[9px]", medium: "text-[10px]", large: "text-xs" };
+
+function ShippingLabelCard({ t, order, fields, enabledFields, layoutConfig, locked, items, pageIndex, pageTotal, isLast }) {
   const theme = PLATFORM_THEME[order.platform];
   const trackingValue = order.tracking && order.tracking !== "—" ? order.tracking : fields.orderId;
-  const isVisible = (key) => !enabledFields || enabledFields.includes(key);
+  const isVisible = (key) => {
+    if (locked && DESIGN_ONLY_FIELDS.includes(key)) return false;
+    return !enabledFields || enabledFields.includes(key);
+  };
   const orderedSubset = (keys) => (enabledFields ? enabledFields.filter((k) => keys.includes(k)) : keys);
 
   const orderDetailKeys = orderedSubset(["shipByDate", "weight"]);
@@ -1352,6 +1841,49 @@ function ShippingLabelCard({ t, order, fields, enabledFields, isLast }) {
   // Supabase Storage or a static import) — left null so nothing is fabricated.
   const platformLogoUrl = null;
   const courierLogoUrl = null;
+
+  // 标签设计's size/position config for image/sku/customText/barcode — see
+  // LabelDesignPanel. "position" is one of a fixed set of slots that match
+  // this card's actual stacked-section layout (top / productRow / bottom),
+  // not free pixel coordinates — the card is sectioned, not a canvas.
+  const cfg = layoutConfig || {};
+  const imageCfg = cfg.image || {};
+  const skuCfg = cfg.sku || {};
+  const customTextCfg = cfg.customText || {};
+  const barcodePosition = cfg.barcode?.position || "top";
+
+  function renderImageBlock() {
+    if (!isVisible("image") || !fields.productImage) return null;
+    const sizeClass = IMAGE_SIZE_CLASSES[imageCfg.size] || IMAGE_SIZE_CLASSES.medium;
+    return <img key="image" src={fields.productImage} alt={fields.sku} className={`${sizeClass} object-cover rounded border border-slate-200 shrink-0`} />;
+  }
+  function renderSkuBlock() {
+    if (!isVisible("sku") || !fields.sku) return null;
+    const sizeClass = TEXT_SIZE_CLASSES[skuCfg.size] || TEXT_SIZE_CLASSES.medium;
+    return (
+      <div key="sku" className={`${sizeClass} text-slate-600`}>
+        <span className="text-slate-400">SKU: </span>
+        <span className="font-semibold">{fields.sku}</span>
+      </div>
+    );
+  }
+  function renderCustomTextBlock() {
+    if (!isVisible("customText") || !customTextCfg.text) return null;
+    const sizeClass = TEXT_SIZE_CLASSES[customTextCfg.size] || TEXT_SIZE_CLASSES.medium;
+    return <div key="customText" className={`${sizeClass} text-slate-600`}>{customTextCfg.text}</div>;
+  }
+  // Groups whichever of image/sku/customText are configured for this slot —
+  // each element's own `position` decides which slot it lands in, so they
+  // don't have to move together even though they can share a slot.
+  function renderSlot(slot) {
+    const blocks = [
+      (imageCfg.position || "productRow") === slot && renderImageBlock(),
+      (skuCfg.position || "productRow") === slot && renderSkuBlock(),
+      (customTextCfg.position || "bottom") === slot && renderCustomTextBlock(),
+    ].filter(Boolean);
+    if (blocks.length === 0) return null;
+    return <div className="flex items-center gap-2 border border-slate-300 mb-1.5 px-2 py-1.5">{blocks}</div>;
+  }
 
   function renderSenderRow(key) {
     if (key === "senderName") return <div key={key} className="font-semibold">{fields.senderName || "—"}</div>;
@@ -1373,12 +1905,34 @@ function ShippingLabelCard({ t, order, fields, enabledFields, isLast }) {
         ) : (
           <span className={`text-base font-extrabold ${theme.text}`}>{order.platform}</span>
         )}
-        {order.isCod && (
-          <span className="text-[10px] font-bold text-white bg-rose-600 px-2 py-0.5 rounded">{t("到货付款 COD", "COD")}</span>
-        )}
+        <div className="flex items-center gap-1.5">
+          {/* Batch-print page number, e.g. "Page 2/5" — helps warehouse staff
+              match a printed sheet back to its place in a multi-order batch. */}
+          {pageTotal > 1 && (
+            <span className="text-[10px] font-medium text-slate-500">{t(`第 ${pageIndex}/${pageTotal} 张`, `Page ${pageIndex}/${pageTotal}`)}</span>
+          )}
+          {/* Payment method — same top-right corner the old COD-only badge
+              lived in (matches the reference label's badge cluster next to
+              the courier logo). Reads straight from orders.is_cod, the only
+              payment-related field that actually exists — there is no
+              payment_method column, so non-COD orders show a generic
+              "Online Payment" label, not a specific method (that data was
+              never synced from the platform). Print display only. */}
+          <div className="flex flex-col items-end leading-tight">
+            <span className="text-[9px] text-slate-400">{t("付款方式 Payment", "Payment Method")}:</span>
+            <span className={`text-[10px] font-bold ${order.isCod ? "text-rose-600" : "text-slate-700"}`}>
+              {order.isCod ? "COD" : t("线上支付 Online Payment", "Online Payment")}
+            </span>
+          </div>
+        </div>
       </div>
 
-      {/* Courier + tracking barcode */}
+      {/* "top" slot — image/SKU/customText configured to render here (标签设计) */}
+      {renderSlot("top")}
+
+      {/* Courier + tracking barcode — barcode itself moves to the "bottom"
+          block below if 条码位置/barcodePosition is "bottom"; locked prints
+          always keep it here regardless of layoutConfig */}
       <div className="border border-slate-300 mb-1.5 px-2 py-1.5">
         <div className="flex items-center justify-between mb-1">
           {courierLogoUrl ? (
@@ -1388,8 +1942,12 @@ function ShippingLabelCard({ t, order, fields, enabledFields, isLast }) {
           )}
           {isVisible("weight") && <span className="text-[10px] text-slate-500">{fields.weight ? `${fields.weight} kg` : ""}</span>}
         </div>
-        <Barcode value={trackingValue} />
-        <div className="text-center text-[10px] text-slate-500 tracking-wide">{trackingValue}</div>
+        {(locked || barcodePosition === "top") && (
+          <>
+            <Barcode value={trackingValue} />
+            <div className="text-center text-[10px] text-slate-500 tracking-wide">{trackingValue}</div>
+          </>
+        )}
       </div>
 
       {/* TO — recipient, always shown, never editable/locked to the order */}
@@ -1414,7 +1972,14 @@ function ShippingLabelCard({ t, order, fields, enabledFields, isLast }) {
         </div>
       )}
 
-      {/* Order ID + QR */}
+      {/* "productRow" slot — image/sku/customText default here (design mode only) */}
+      {renderSlot("productRow")}
+
+      {/* QR — order ID text always shows here, locked or not (reverted back
+          to how it always worked; the standalone PICK LIST block that used
+          to move this text away has been removed per the real TikTok Shop
+          reference the user provided — see the product table below, which
+          replaces it at the bottom of the card instead). */}
       <div className="flex items-center justify-between border border-slate-300 px-2 py-1.5 mb-1.5">
         <div>
           <div className="text-[10px] text-slate-400">{t("订单编号 Order ID", "Order ID")}</div>
@@ -1430,8 +1995,54 @@ function ShippingLabelCard({ t, order, fields, enabledFields, isLast }) {
         <div className="text-[10px] text-slate-500 mb-1">{fields.note}</div>
       )}
 
+      {/* "bottom" slot — image/sku/customText configured to render here */}
+      {renderSlot("bottom")}
+
+      {!locked && barcodePosition === "bottom" && (
+        <div className="border border-slate-300 mb-1.5 px-2 py-1.5">
+          <Barcode value={trackingValue} />
+          <div className="text-center text-[10px] text-slate-500 tracking-wide">{trackingValue}</div>
+        </div>
+      )}
+
+      {/* Product table — locked (平台订单打印单) only, restored to the bottom of
+          the card to match the real TikTok Shop label's own layout (product
+          details sit below Sender/Receiver/barcode, not mid-card). Columns
+          mirror the reference photo exactly: Product Name | SKU | Seller SKU
+          | Qty. TikTok's "SKU" column there is actually the variant label
+          (e.g. "MATT RED") and "Seller SKU" is the merchant's real SKU code
+          (e.g. "SGV-VISOREX/MATT-RED") — order_items already has both as
+          separate columns (variation / sku), so this maps directly with no
+          new field and no schema change, just selecting `variation` too
+          (fetchPickingItemsByOrderNo). Read-only, no image column — image
+          stays a design-only field, untouched by this. */}
+      {locked && items && items.length > 0 && (
+        <div className="border border-slate-900 mb-1.5">
+          <table className="w-full text-[9px] border-collapse">
+            <thead>
+              <tr className="bg-slate-900 text-white">
+                <td className="px-1.5 py-1 font-semibold">Product Name</td>
+                <td className="px-1.5 py-1 font-semibold border-l border-slate-700">SKU</td>
+                <td className="px-1.5 py-1 font-semibold border-l border-slate-700">Seller SKU</td>
+                <td className="px-1.5 py-1 font-semibold border-l border-slate-700 text-right">Qty</td>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it, i) => (
+                <tr key={i} className="border-t border-slate-300">
+                  <td className="px-1.5 py-1 align-top">{it.product_name || "—"}</td>
+                  <td className="px-1.5 py-1 align-top border-l border-slate-200">{it.variation || "—"}</td>
+                  <td className="px-1.5 py-1 align-top border-l border-slate-200">{it.sku || "—"}</td>
+                  <td className="px-1.5 py-1 align-top border-l border-slate-200 text-right">{it.qty}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <div className="mt-auto pt-1.5 border-t border-dashed border-slate-300 text-[9px] text-slate-400 text-center">
-        {t("出货前请扫描追踪号码确认 · 商品明细请见仓库拣货单", "Scan tracking number to confirm before shipping · See warehouse picking list for item details")}
+        {t("出货前请扫描追踪号码确认", "Scan tracking number to confirm before shipping")}
       </div>
     </div>
   );

@@ -3,13 +3,14 @@ import {
   Search, X, ChevronRight, AlertTriangle, CheckCircle2, Truck, Circle,
   CheckCircle, Printer, Clock, Info, MapPin, PackagePlus, PackageMinus, SlidersHorizontal,
   Plus, Trash2, Warehouse as WarehouseIcon, ChevronDown,
+  Package, CreditCard, ShoppingCart, RotateCcw, XCircle,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
 } from "recharts";
 import {
-  PLATFORM_THEME, SALES_TREND, STATUS_STEPS, EXTRA_STATUS, ACTIONABLE_STATUS,
+  PLATFORM_THEME, SALES_TREND, STATUS_STEPS, ACTIONABLE_STATUS,
   profit, fmt, statusColor, statusLabel, warehouseLabel, supabaseClient,
 } from "./shared.jsx";
 
@@ -147,11 +148,76 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
   );
 }
 
-/* ============================== Orders (订单管理中心) ============================== */
+/* ============================== Order status cards ============================== */
+
+// Status-card row shown at the top of Orders (订单管理中心) — merged in
+// 2026-07-28 from what used to be a separate "orderCenter" dashboard tab,
+// per a reference screenshot that shows both in one page. Each `match`
+// predicate reads platformStatus/orderStatus, both already present on every
+// mapped order (see mapDbOrder in shared.jsx) — no new fetch, no schema
+// change, same predicates as before the merge.
+//
+// 投递失败 will show 0 today: the real TikTok/Shopee platform_status string
+// that would populate it has never appeared in this system's synced data
+// (checked live — 7,355 real orders) — 0 is an honest count of what's
+// actually there, not a bug. (待取货 used to be in this same boat via its
+// own platformStatus==='AWAITING_COLLECTION' check — as of 2026-07-29 its
+// card reads print_count>0 instead, real ERP data, so it's no longer
+// permanently zero; see ORDER_STATUS_LABELS.toPickup below.)
+//
+// Single source of truth for every status name shown anywhere in this page
+// (2026-07-29) — the status cards above and the filter chips below had
+// drifted (an extra "出货" chip with no card counterpart; earlier passes had
+// also left "包装"/leftover demo vocabulary around). Both the card grid and
+// the chip row now read their zh/en text from here, so the two can't drift
+// apart again. Old demo-status words (待处理/已处理/包装/出货) are gone from
+// display entirely — 待发货 and 待取货 are what those two used to be called,
+// nothing new; 出货 had no equivalent among these 9 names and is dropped
+// (its real order_status='shipped' data still exists in the DB, it's just
+// no longer surfaced by any chip in this row — flagged to the user).
+const ORDER_STATUS_LABELS = {
+  all: { zh: "全部", en: "All" },
+  unpaid: { zh: "未付款", en: "Unpaid" },
+  toShip: { zh: "待发货", en: "To Ship" }, // = 原 ERP 待处理 (__not_shipped__) — chip logic unchanged, display-name-only; card's `match` was aligned to this same logic (2026-07-29) after a live audit found it had been using platformStatus==='AWAITING_SHIPMENT' instead, overcounting by exactly the orders already printed (printCount>0) — see ORDER_CENTER_CARDS below
+  toPickup: { zh: "待取货", en: "To Pickup" }, // = 原 ERP 已处理 (__printed__/print_count>0) — real platform AWAITING_COLLECTION data has never appeared (checked live), so this stays on the real ERP-internal state per "ERP没有对应状态，不强行制造"
+  inTransit: { zh: "运输中", en: "In Transit" }, // = real platformStatus === "IN_TRANSIT" (2026-07-29: was the dead o.status==="物流中")
+  delivered: { zh: "已送达", en: "Delivered" }, // = real platformStatus IN ("DELIVERED","COMPLETED") (2026-07-29: was the dead o.status==="已签收")
+  failed: { zh: "投递失败", en: "Delivery Failed" }, // no real data yet
+  returned: { zh: "退货/退款", en: "Return/Refund" }, // = o.status === "退款中"
+  cancelled: { zh: "已取消", en: "Cancelled" }, // = o.status === "已取消"
+};
+
+// Card border is neutral gray by default; icon/number colors are permanent
+// and never change (untouched by selection state). Each card's `filterValue`
+// matches the status chip row's values below purely so the card can pick up
+// the same unified purple highlight the chips use when that exact status is
+// selected — a visual link only, not a click target (cards still have no
+// onClick, still can't change the filter themselves). 未付款/投递失败 have no
+// filterValue (same as their disabled chip counterparts) so they can never
+// highlight.
+const ORDER_CENTER_CARDS = [
+  { key: "all", ...ORDER_STATUS_LABELS.all, filterValue: "全部", iconBg: "bg-amber-100", iconColor: "text-amber-600", numberColor: "text-amber-600", icon: Package, match: () => true },
+  { key: "unpaid", ...ORDER_STATUS_LABELS.unpaid, iconBg: "bg-pink-100", iconColor: "text-pink-600", numberColor: "text-pink-600", icon: CreditCard, match: (o) => o.platformStatus === "UNPAID" },
+  { key: "toShip", ...ORDER_STATUS_LABELS.toShip, filterValue: "__not_shipped__", iconBg: "bg-red-100", iconColor: "text-red-600", numberColor: "text-red-600", icon: PackagePlus, match: (o) => o.status === "待处理" && o.platformStatus !== "UNPAID" && !((o.printCount || 0) > 0) },
+  { key: "toPickup", ...ORDER_STATUS_LABELS.toPickup, filterValue: "__printed__", iconBg: "bg-blue-100", iconColor: "text-blue-600", numberColor: "text-blue-600", icon: ShoppingCart, match: (o) => (o.printCount || 0) > 0 },
+  { key: "inTransit", ...ORDER_STATUS_LABELS.inTransit, filterValue: "__in_transit__", iconBg: "bg-purple-100", iconColor: "text-purple-600", numberColor: "text-purple-600", icon: Truck, match: (o) => o.platformStatus === "IN_TRANSIT" },
+  { key: "delivered", ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__", iconBg: "bg-green-100", iconColor: "text-green-600", numberColor: "text-green-600", icon: CheckCircle, match: (o) => o.platformStatus === "DELIVERED" || o.platformStatus === "COMPLETED" },
+  { key: "returned", ...ORDER_STATUS_LABELS.returned, filterValue: "退款中", iconBg: "bg-rose-100", iconColor: "text-rose-600", numberColor: "text-rose-600", icon: RotateCcw, match: (o) => o.orderStatus === "returned" },
+];
+
+// 8th grid slot: 投递失败 (top, gray, no filterValue — never highlights) +
+// 已取消 (bottom, orange, filterValue "已取消" — highlights the whole shared
+// outer border, same as any other card, when that chip is selected).
+const FAILED_CANCELLED_SPLIT_CARD = {
+  top: { ...ORDER_STATUS_LABELS.failed, iconBg: "bg-slate-100", iconColor: "text-slate-500", numberColor: "text-slate-500", icon: AlertTriangle, match: (o) => o.platformStatus === "FAILED_DELIVERY" || o.platformStatus === "UNDELIVERED" },
+  bottom: { ...ORDER_STATUS_LABELS.cancelled, filterValue: "已取消", iconBg: "bg-orange-100", iconColor: "text-orange-600", numberColor: "text-orange-600", icon: XCircle, match: (o) => o.orderStatus === "cancelled" },
+};
+
+/* ============================== Orders (订单列表) ============================== */
 
 const NOTE_COLORS = { red: "#ef4444", yellow: "#eab308", purple: "#a855f7" };
 
-export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus, onUpdateNote, goTo }) {
+export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProcess, onUpdateStatus, onUpdateNote, goTo }) {
   const [activePlatform, setActivePlatform] = useState("Shopee");
   const [statusFilter, setStatusFilter] = useState("全部");
   const [q, setQ] = useState("");
@@ -162,13 +228,36 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
   const [noteDraftColor, setNoteDraftColor] = useState(null);
   const theme = PLATFORM_THEME[activePlatform];
   const lang = t("zh", "en");
-  const chipLabel = (s) => (s === "全部" ? t("全部", "All") : statusLabel(s, lang));
-  const chipActiveClass = (s) => {
-    if (s === "全部") return "border-amber-400 ring-1 ring-amber-400 bg-amber-50 text-amber-700";
-    if (s === "待处理") return "border-rose-400 ring-1 ring-rose-400 bg-rose-50 text-rose-700";
-    if (s === "已签收") return "border-emerald-400 ring-1 ring-emerald-400 bg-emerald-50 text-emerald-700";
-    return "border-sky-400 ring-1 ring-sky-400 bg-sky-50 text-sky-700";
-  };
+  // Status-chip row — text sourced from the same `ORDER_STATUS_LABELS` the
+  // cards above use, so the two rows can't drift apart. Exactly the 9 names
+  // shown on the cards, same order. As of 2026-07-29: 运输中/已送达 now filter
+  // by the same real `platformStatus` field their cards already used (see
+  // `filtered`'s `__in_transit__`/`__delivered__` branches above) instead of
+  // the two dead demo-status values they used to point at — every card's
+  // count and its matching chip's filter now agree because both read the
+  // exact same condition. 待发货 stays on the original 待处理-derived logic
+  // (display-name-only rename, per explicit instruction not to touch it);
+  // 待取货 stays on print_count>0 (real ERP data — the platform's own
+  // AWAITING_COLLECTION has never appeared in any real synced order, so per
+  // "如果ERP没有对应状态，不强行制造" this was left alone, and the card next
+  // to it was changed to match instead — see ORDER_CENTER_CARDS above).
+  const STATUS_CHIPS = [
+    { ...ORDER_STATUS_LABELS.all, filterValue: "全部" },
+    { ...ORDER_STATUS_LABELS.unpaid, disabled: true },
+    { ...ORDER_STATUS_LABELS.toShip, filterValue: "__not_shipped__" },
+    { ...ORDER_STATUS_LABELS.toPickup, filterValue: "__printed__" },
+    { ...ORDER_STATUS_LABELS.inTransit, filterValue: "__in_transit__" },
+    { ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__" },
+    { ...ORDER_STATUS_LABELS.failed, disabled: true },
+    { ...ORDER_STATUS_LABELS.returned, filterValue: "退款中" },
+    { ...ORDER_STATUS_LABELS.cancelled, filterValue: "已取消" },
+  ];
+  // Unified active style (2026-07-29) — every chip uses the exact same
+  // purple highlight when selected, regardless of which status it is; no
+  // more per-chip color (there used to be amber/rose/emerald/sky depending
+  // on status). This is deliberately independent of the status cards' colors
+  // above — a pure filter-UI interaction convention, not a status taxonomy.
+  const CHIP_ACTIVE_CLASS = "border-purple-400 ring-1 ring-purple-400 bg-purple-50 text-purple-700";
 
   // 还没交给物流 = 官方平台的 "To Ship"：待处理里已付款的部分（不含未付款 UNPAID，平台的 To Ship 不算未付款单）
   const NOT_YET_SHIPPED = ["待处理"];
@@ -179,9 +268,6 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
   const all = useMemo(() => orders.filter((o) => o.platform === activePlatform), [orders, activePlatform]);
   const revenue = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + o.unitPrice * o.qty, 0);
   const netProfit = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
-  const pending = all.filter(isNotYetShipped).length;
-  const processed = all.filter((o) => (o.printCount || 0) > 0).length;
-  const delivered = all.filter((o) => o.status === "已签收").length;
 
   const filtered = useMemo(() => {
     return all.filter((o) => {
@@ -189,6 +275,22 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
         if (!isNotYetShipped(o)) return false;
       } else if (statusFilter === "__printed__") {
         if (!((o.printCount || 0) > 0)) return false;
+      } else if (statusFilter === "__in_transit__") {
+        // 运输中 (2026-07-29): was o.status === "物流中", a demo-status value
+        // DB_TO_DEMO_STATUS never actually produces for any real order — the
+        // 运输中 card next to this chip was already reading real data via
+        // platformStatus, so the chip is now pointed at the same real field
+        // instead of the dead one, per explicit instruction to connect real
+        // platform state where the DB genuinely has it.
+        if (o.platformStatus !== "IN_TRANSIT") return false;
+      } else if (statusFilter === "__delivered__") {
+        // 已送达 (2026-07-29): was o.status === "已签收", which is even less
+        // real than 物流中 — DB_TO_DEMO_STATUS never produces it either, and
+        // it only ever existed as a transient local-only value set by the
+        // OrderDrawer's "确认接收" button (which itself persists order_status
+        // as 'shipped', not anything that maps back to 已签收). Same fix:
+        // point at the real platformStatus field the card already uses.
+        if (!(o.platformStatus === "DELIVERED" || o.platformStatus === "COMPLETED")) return false;
       } else if (statusFilter !== "全部" && o.status !== statusFilter) {
         return false;
       }
@@ -198,7 +300,6 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
     });
   }, [all, statusFilter, dateFilter, q]);
 
-  const statusChips = ["全部", ...STATUS_STEPS, ...EXTRA_STATUS];
   const allChecked = filtered.length > 0 && filtered.every((o) => selectedIds.has(o.id));
   // Batch-printed labels come out oldest-first (FIFO), not in click/selection
   // order, so a warehouse batch always prints in a predictable sequence.
@@ -270,38 +371,67 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
           <div className="text-xs text-white/90 tabular-nums">{t("营收", "Revenue")} RM {fmt(revenue)} · {t("净利润", "Net Profit")} RM {fmt(netProfit)}</div>
         </div>
 
-        <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-5 gap-3 text-xs`}>
-          <button
-            onClick={() => setStatusFilter("__not_shipped__")}
-            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "__not_shipped__" ? "border-rose-400 ring-1 ring-rose-400" : "border-slate-200"}`}
-          >
-            <div className="text-slate-400">{t("待处理", "Pending")}</div>
-            <div className="text-base font-semibold text-rose-600 tabular-nums">{pending}</div>
-          </button>
-          <button
-            onClick={() => setStatusFilter("__printed__")}
-            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "__printed__" ? "border-sky-400 ring-1 ring-sky-400" : "border-slate-200"}`}
-          >
-            <div className="text-slate-400">{t("已处理", "Processed")}</div>
-            <div className="text-base font-semibold text-sky-600 tabular-nums">{processed}</div>
-          </button>
-          <button
-            onClick={() => setStatusFilter("已签收")}
-            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "已签收" ? "border-emerald-400 ring-1 ring-emerald-400" : "border-slate-200"}`}
-          >
-            <div className="text-slate-400">{t("已签收", "Delivered")}</div>
-            <div className="text-base font-semibold text-emerald-600 tabular-nums">{delivered}</div>
-          </button>
-          <button
-            onClick={() => setStatusFilter("全部")}
-            className={`bg-white rounded-lg border px-3 py-2 text-left ${statusFilter === "全部" ? "border-amber-400 ring-1 ring-amber-400" : "border-slate-200"}`}
-          >
-            <div className="text-slate-400">{t("总订单", "Total Orders")}</div>
-            <div className="text-base font-semibold text-amber-600 tabular-nums">{all.length}</div>
-          </button>
-          <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
-            <div className="text-slate-400">{t("净利润 (RM)", "Net Profit (RM)")}</div>
-            <div className="text-base font-semibold text-indigo-600 tabular-nums">{fmt(netProfit)}</div>
+        {/* Status-card grid — merged in from the former standalone "订单管理中心"
+            dashboard tab (2026-07-28, per reference screenshot), 4 cols x 2
+            rows, scoped to the currently-active platform (`all`, already
+            filtered above). Clicking a card (2026-07-29) sets the exact same
+            `statusFilter` its matching chip below does — same `filterValue`,
+            same `setStatusFilter` call, so results are guaranteed identical
+            to clicking the chip, not a separate filter path. Only cards with
+            a `filterValue` are clickable (未付款/投递失败 have none — no real
+            status to reuse, so they stay plain, per "不要重新定义状态，只复用
+            现在已经确认好的 mapping"). Border goes purple when active — same
+            unified purple the chip row uses; icon/number colors and label
+            text never change either way. */}
+        <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-4 gap-3`}>
+          {ORDER_CENTER_CARDS.map((card) => {
+            const count = all.filter(card.match).length;
+            const Icon = card.icon;
+            const clickable = card.filterValue !== undefined;
+            const active = clickable && statusFilter === card.filterValue;
+            const CardTag = clickable ? "button" : "div";
+            return (
+              <CardTag
+                key={card.key}
+                type={clickable ? "button" : undefined}
+                onClick={clickable ? () => setStatusFilter(card.filterValue) : undefined}
+                className={`bg-white rounded-lg border-2 ${active ? "border-purple-400" : "border-slate-200"} px-3 py-3 flex flex-col items-center justify-center gap-1.5 ${clickable ? "cursor-pointer hover:border-slate-300" : ""}`}
+              >
+                <div className={`h-8 w-8 rounded-full flex items-center justify-center ${card.iconBg}`}>
+                  <Icon size={14} className={card.iconColor} />
+                </div>
+                <div className="text-xs text-slate-500">{t(card.zh, card.en)}</div>
+                <div className={`text-lg font-bold tabular-nums ${card.numberColor}`}>{count}</div>
+              </CardTag>
+            );
+          })}
+          {/* 8th slot: 投递失败 + 已取消 in one card — same outer rounded/
+              background as the other 7, each half reusing the same icon-
+              then-label-then-number vertical stack (just smaller) so it reads
+              as one unified stat card. Only the 已取消 half is clickable (same
+              filterValue its chip uses); 投递失败 has no filterValue, stays
+              plain. The shared outer border goes purple when 已取消 is active. */}
+          <div className={`bg-white rounded-lg border-2 ${statusFilter === "已取消" ? "border-purple-400" : "border-slate-200"} flex flex-col divide-y divide-slate-100`}>
+            {[FAILED_CANCELLED_SPLIT_CARD.top, FAILED_CANCELLED_SPLIT_CARD.bottom].map((half) => {
+              const count = all.filter(half.match).length;
+              const Icon = half.icon;
+              const clickable = half.filterValue !== undefined;
+              const HalfTag = clickable ? "button" : "div";
+              return (
+                <HalfTag
+                  key={half.zh}
+                  type={clickable ? "button" : undefined}
+                  onClick={clickable ? () => setStatusFilter(half.filterValue) : undefined}
+                  className={`flex-1 w-full flex flex-col items-center justify-center gap-1 py-1.5 ${clickable ? "cursor-pointer hover:bg-slate-50" : ""}`}
+                >
+                  <div className={`h-6 w-6 rounded-full flex items-center justify-center ${half.iconBg}`}>
+                    <Icon size={12} className={half.iconColor} />
+                  </div>
+                  <div className="text-[11px] text-slate-500 leading-none">{t(half.zh, half.en)}</div>
+                  <div className={`text-sm font-bold tabular-nums leading-none ${half.numberColor}`}>{count}</div>
+                </HalfTag>
+              );
+            })}
           </div>
         </div>
 
@@ -332,29 +462,29 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
             </div>
           </div>
           <div className="flex flex-wrap gap-1.5 mt-2 pb-3">
-            {statusChips.flatMap((s) => {
-              const filterValue = s === "待处理" ? "__not_shipped__" : s;
-              const active = statusFilter === filterValue;
-              const chip = (
+            {STATUS_CHIPS.map((chip) => {
+              if (chip.disabled) {
+                return (
+                  <button
+                    key={chip.zh}
+                    disabled
+                    title={t("该状态目前没有对应的真实筛选数据，UI 位置已保留，暂不可点击", "No real filter data for this status yet — slot reserved, not clickable")}
+                    className="px-2.5 py-1 text-[11px] rounded-full border bg-white text-slate-500 border-slate-200"
+                  >
+                    {t(chip.zh, chip.en)}
+                  </button>
+                );
+              }
+              const active = statusFilter === chip.filterValue;
+              return (
                 <button
-                  key={s}
-                  onClick={() => setStatusFilter(filterValue)}
-                  className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${active ? chipActiveClass(s) : "bg-white text-slate-500 border-slate-200"}`}
+                  key={chip.zh}
+                  onClick={() => setStatusFilter(chip.filterValue)}
+                  className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${active ? CHIP_ACTIVE_CLASS : "bg-white text-slate-500 border-slate-200"}`}
                 >
-                  {chipLabel(s)}
+                  {t(chip.zh, chip.en)}
                 </button>
               );
-              if (s !== "待处理") return [chip];
-              return [
-                chip,
-                <button
-                  key="__printed__"
-                  onClick={() => setStatusFilter("__printed__")}
-                  className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${statusFilter === "__printed__" ? "border-sky-400 ring-1 ring-sky-400 bg-sky-50 text-sky-700" : "bg-white text-slate-500 border-slate-200"}`}
-                >
-                  {t("已处理", "Processed")}
-                </button>,
-              ];
             })}
           </div>
         </div>
@@ -365,14 +495,29 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
             {t(`全选本页（${filtered.length} 笔）`, `Select all on this page (${filtered.length})`)}
           </label>
           <span className="text-xs text-slate-400">{t(`已选 ${selectedOrders.length} 笔`, `${selectedOrders.length} selected`)}</span>
+          {(() => {
+            const selectedPending = selectedOrders.filter((o) => o.orderStatus === "pending");
+            return (
+              <button
+                onClick={() => selectedPending.length > 0 && onConfirmProcess(selectedPending.map((o) => o.id))}
+                disabled={selectedPending.length === 0}
+                title={t("将已选订单从待处理推进到已处理，与打印无关", "Moves selected orders from To Process to Processed — independent of printing")}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ml-auto ${
+                  selectedPending.length > 0 ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                }`}
+              >
+                <CheckCircle2 size={13} /> {t(`确认处理（${selectedPending.length}）`, `Confirm Process (${selectedPending.length})`)}
+              </button>
+            );
+          })()}
           <button
             onClick={() => selectedOrders.length > 0 && onPrint(selectedOrders)}
             disabled={selectedOrders.length === 0}
-            className={`ml-auto flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
+            className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
               selectedOrders.length > 0 ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-400 cursor-not-allowed"
             }`}
           >
-            <Printer size={13} /> {t(`批量打印发货单（${selectedOrders.length}）`, `Batch print shipping labels (${selectedOrders.length})`)}
+            <Printer size={13} /> {t(`批量打印订单单（${selectedOrders.length}）`, `Batch print order slips (${selectedOrders.length})`)}
           </button>
         </div>
 
@@ -406,9 +551,18 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onUpdateStatus
                     </button>
                   </>
                 )}
+                {o.orderStatus === "pending" && (
+                  <button
+                    onClick={() => onConfirmProcess([o.id])}
+                    title={t("确认处理：推进到已处理，与打印无关", "Confirm Process — moves to Processed, independent of printing")}
+                    className="flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                  >
+                    <CheckCircle2 size={11} /> {t("确认处理", "Confirm Process")}
+                  </button>
+                )}
                 <button
                   onClick={() => onPrint([o])}
-                  title={t("打印发货单", "Print shipping label")}
+                  title={t("打印订单单", "Print order slip")}
                   className="flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-full border border-slate-200 text-slate-500 hover:bg-slate-100"
                 >
                   <Printer size={11} /> {t("打印", "Print")}
@@ -561,7 +715,7 @@ export function OrderDrawer({ t, order, onClose, onPrint, onUpdateStatus }) {
               onClick={() => onPrint(order)}
               className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
             >
-              <Printer size={13} /> {t("打印发货单", "Print Shipping Label")}
+              <Printer size={13} /> {t("打印订单单", "Print Order Slip")}
             </button>
             <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
               <X size={18} />
