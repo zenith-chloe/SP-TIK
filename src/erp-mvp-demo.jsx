@@ -764,7 +764,16 @@ export default function App() {
           .print-slip-shipping { page: shipping-label; }
           body * { visibility: hidden; }
           .print-slip, .print-slip * { visibility: visible; }
-          .print-slip { position: fixed; inset: 0; width: 100%; }
+          /* !important is required here, not stylistic: PrintSlip renders
+             this div with an inline style (position:absolute; left:-9999px)
+             to keep it off-screen during normal viewing. Inline styles beat
+             any class selector regardless of @media context, so without
+             !important this rule never actually overrides that inline
+             left:-9999px at print time — the content silently prints
+             9999px off the page, producing a blank Chrome print preview.
+             Found via a real production report (打印预览显示正常，点击打印后
+             Chrome 预览为空). */
+          .print-slip { position: fixed !important; inset: 0 !important; width: 100% !important; }
           .no-print { display: none !important; }
         }
       `}</style>
