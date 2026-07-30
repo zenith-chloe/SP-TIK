@@ -594,6 +594,7 @@ The 2026-07-28 batch (`20260728000001`–`...006`) came out of a data-integrity 
     - z-index raised `z-20` → `z-[80]`, above every existing layer (sidebar `z-50`, PrintSlip `z-[60]`, HistoryPreviewModal `z-[70]`).
     - Coordinate capture from the trigger's `getBoundingClientRect()` (item 53) kept — the portal'd popup still positions `fixed` at those viewport-clamped coordinates. Note data flow (`noteDraft*`/`onUpdateNote`/`note_color`/`note_text`) untouched, same scope as item 53.
     - `npx vite build` clean; dev console clean; this session's preview only reached the login screen this time (no active session), so the real-UI confirmation again rests on the user's own click-through **after this actually deploys** — the step that was skipped last round.
+    - Committed as `f217190` on branch `fix-note-popup-portal` (stacked on top of item 53's `776e90d`, since PR #2 was still unmerged) → **PR #3** (`mergeStateStatus: CLEAN`). PR #3's diff includes both commits — recommended in the PR description that PR #2 be closed in favor of this one rather than merging both, to avoid two open PRs touching the same code; not closed automatically, left for the user to action.
 
 ---
 
