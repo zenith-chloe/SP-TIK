@@ -226,6 +226,16 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   const [noteEditingId, setNoteEditingId] = useState(null);
   const [noteDraftText, setNoteDraftText] = useState("");
   const [noteDraftColor, setNoteDraftColor] = useState(null);
+  // Screen coordinates for the note popup, computed when it opens — see the
+  // trigger button below. Display-only fix for a real bug: the popup used
+  // to be `position: absolute` inside the scrollable order list, so for any
+  // row near the bottom of the visible scroll area, its Save button was
+  // clipped by the list's own scroll boundary. `position: fixed` at
+  // measured, viewport-clamped coordinates escapes that clipping entirely,
+  // regardless of scroll position. Doesn't touch noteDraftText/
+  // noteDraftColor/onUpdateNote or note_color/note_text — purely where the
+  // popup renders on screen.
+  const [notePopupPos, setNotePopupPos] = useState(null);
   const theme = PLATFORM_THEME[activePlatform];
   const lang = t("zh", "en");
   // Status-chip row — text sourced from the same `ORDER_STATUS_LABELS` the
@@ -580,18 +590,30 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                     e.stopPropagation();
                     if (noteEditingId === o.id) {
                       setNoteEditingId(null);
+                      setNotePopupPos(null);
                     } else {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const POPUP_WIDTH = 224; // w-56
+                      const POPUP_HEIGHT = 150; // approx, with room to spare
                       setNoteEditingId(o.id);
                       setNoteDraftText(o.noteText || "");
                       setNoteDraftColor(o.noteColor || null);
+                      setNotePopupPos({
+                        top: Math.min(rect.bottom + 4, window.innerHeight - POPUP_HEIGHT - 8),
+                        left: Math.min(rect.left, window.innerWidth - POPUP_WIDTH - 8),
+                      });
                     }
                   }}
                   title={o.noteText || t("添加备注", "Add note")}
                   className="h-4 w-4 rounded-full border border-slate-300"
                   style={o.noteColor ? { backgroundColor: NOTE_COLORS[o.noteColor], borderColor: NOTE_COLORS[o.noteColor] } : undefined}
                 />
-                {noteEditingId === o.id && (
-                  <div className="absolute z-20 top-6 left-0 w-56 bg-white border-2 border-red-500 rounded-lg shadow-lg p-2.5" onClick={(e) => e.stopPropagation()}>
+                {noteEditingId === o.id && notePopupPos && (
+                  <div
+                    className="fixed z-20 w-56 bg-white border-2 border-red-500 rounded-lg shadow-lg p-2.5"
+                    style={{ top: notePopupPos.top, left: notePopupPos.left }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <div className="flex gap-2 mb-2">
                       {Object.entries(NOTE_COLORS).map(([key, hex]) => (
                         <button
@@ -618,7 +640,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                       className="w-full text-xs border border-slate-200 rounded-lg p-1.5 outline-none focus:border-teal-400"
                     />
                     <button
-                      onClick={() => { onUpdateNote(o.id, noteDraftColor, noteDraftText); setNoteEditingId(null); }}
+                      onClick={() => { onUpdateNote(o.id, noteDraftColor, noteDraftText); setNoteEditingId(null); setNotePopupPos(null); }}
                       className="mt-2 w-full text-xs py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
                     >
                       {t("保存", "Save")}
