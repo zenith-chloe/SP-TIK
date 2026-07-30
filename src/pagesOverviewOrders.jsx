@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { createPortal } from "react-dom";
 import {
   Search, X, ChevronRight, AlertTriangle, CheckCircle2, Truck, Circle,
   CheckCircle, Printer, Clock, Info, MapPin, PackagePlus, PackageMinus, SlidersHorizontal,
@@ -608,9 +609,17 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                   className="h-4 w-4 rounded-full border border-slate-300"
                   style={o.noteColor ? { backgroundColor: NOTE_COLORS[o.noteColor], borderColor: NOTE_COLORS[o.noteColor] } : undefined}
                 />
-                {noteEditingId === o.id && notePopupPos && (
+                {/* Rendered via portal into document.body — the popup used to be
+                    clipped by the scrollable order list even as position:fixed
+                    (real production report). A portal removes it from the list's
+                    DOM subtree entirely, so no ancestor overflow/transform/
+                    stacking context can clip or cover it; z-[80] sits above
+                    every existing layer (sidebar z-50, PrintSlip z-[60],
+                    HistoryPreviewModal z-[70]). Coordinates still come from the
+                    trigger's getBoundingClientRect, viewport-clamped. */}
+                {noteEditingId === o.id && notePopupPos && createPortal(
                   <div
-                    className="fixed z-20 w-56 bg-white border-2 border-red-500 rounded-lg shadow-lg p-2.5"
+                    className="fixed z-[80] w-56 bg-white border-2 border-red-500 rounded-lg shadow-lg p-2.5"
                     style={{ top: notePopupPos.top, left: notePopupPos.left }}
                     onClick={(e) => e.stopPropagation()}
                   >
@@ -645,7 +654,8 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                     >
                       {t("保存", "Save")}
                     </button>
-                  </div>
+                  </div>,
+                  document.body,
                 )}
               </div>
 
