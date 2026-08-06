@@ -4,7 +4,8 @@ import {
   Search, X, ChevronRight, AlertTriangle, CheckCircle2, Truck, Circle,
   CheckCircle, Printer, Clock, Info, MapPin, PackagePlus, PackageMinus, SlidersHorizontal,
   Plus, Trash2, Warehouse as WarehouseIcon, ChevronDown,
-  Package, CreditCard, ShoppingCart, RotateCcw, XCircle,
+  Package, CreditCard, ShoppingCart, RotateCcw, XCircle, PackageOpen, PackageCheck,
+  ShoppingBag, Music2, Send,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -13,6 +14,7 @@ import {
 import {
   PLATFORM_THEME, SALES_TREND, STATUS_STEPS, ACTIONABLE_STATUS,
   profit, fmt, statusColor, statusLabel, warehouseLabel, supabaseClient,
+  mapDbStockMovement, MOVEMENT_TYPE_LABELS, DEMO_TO_DB_PLATFORM,
 } from "./shared.jsx";
 
 /* ============================== Overview ============================== */
@@ -179,10 +181,10 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
 const ORDER_STATUS_LABELS = {
   all: { zh: "全部", en: "All" },
   unpaid: { zh: "未付款", en: "Unpaid" },
-  toShip: { zh: "待发货", en: "To Ship" }, // = 原 ERP 待处理 (__not_shipped__) — chip logic unchanged, display-name-only; card's `match` was aligned to this same logic (2026-07-29) after a live audit found it had been using platformStatus==='AWAITING_SHIPMENT' instead, overcounting by exactly the orders already printed (printCount>0) — see ORDER_CENTER_CARDS below
-  toPickup: { zh: "待取货", en: "To Pickup" }, // = 原 ERP 已处理 (__printed__/print_count>0) — real platform AWAITING_COLLECTION data has never appeared (checked live), so this stays on the real ERP-internal state per "ERP没有对应状态，不强行制造"
+  toShip: { zh: "待发货", en: "To Ship" }, // = real platformStatus === "AWAITING_SHIPMENT" (2026-08-03: switched off print_count — TikTok's own status doesn't distinguish "printed" from "not printed", both are AWAITING_SHIPMENT, so splitting on print_count was an ERP-invented distinction that drifted from the platform's real count)
+  toPickup: { zh: "待取货", en: "To Pickup" }, // = real platformStatus === "AWAITING_COLLECTION" (2026-08-03: this value has never appeared in synced TikTok data — Seller Center's "Awaiting collection" isn't exposed by the order search API this ERP syncs from — so this card is expected to read 0 until/unless TikTok starts returning it, which matches Seller Center's own count)
   inTransit: { zh: "运输中", en: "In Transit" }, // = real platformStatus === "IN_TRANSIT" (2026-07-29: was the dead o.status==="物流中")
-  delivered: { zh: "已送达", en: "Delivered" }, // = real platformStatus IN ("DELIVERED","COMPLETED") (2026-07-29: was the dead o.status==="已签收")
+  delivered: { zh: "已送达", en: "Delivered" }, // = real platformStatus === "DELIVERED" only (2026-08-05: dropped COMPLETED — verified live against TikTok's own API total_count per status: DELIVERED=408, COMPLETED=5653, these are two distinct Seller Center buckets, not one; COMPLETED orders still show under 全部, just no longer inflate this card)
   failed: { zh: "投递失败", en: "Delivery Failed" }, // no real data yet
   returned: { zh: "退货/退款", en: "Return/Refund" }, // = o.status === "退款中"
   cancelled: { zh: "已取消", en: "Cancelled" }, // = o.status === "已取消"
@@ -198,12 +200,10 @@ const ORDER_STATUS_LABELS = {
 // highlight.
 const ORDER_CENTER_CARDS = [
   { key: "all", ...ORDER_STATUS_LABELS.all, filterValue: "全部", iconBg: "bg-amber-100", iconColor: "text-amber-600", numberColor: "text-amber-600", icon: Package, match: () => true },
-  { key: "unpaid", ...ORDER_STATUS_LABELS.unpaid, iconBg: "bg-pink-100", iconColor: "text-pink-600", numberColor: "text-pink-600", icon: CreditCard, match: (o) => o.platformStatus === "UNPAID" },
-  { key: "toShip", ...ORDER_STATUS_LABELS.toShip, filterValue: "__not_shipped__", iconBg: "bg-red-100", iconColor: "text-red-600", numberColor: "text-red-600", icon: PackagePlus, match: (o) => o.status === "待处理" && o.platformStatus !== "UNPAID" && !((o.printCount || 0) > 0) },
-  { key: "toPickup", ...ORDER_STATUS_LABELS.toPickup, filterValue: "__printed__", iconBg: "bg-blue-100", iconColor: "text-blue-600", numberColor: "text-blue-600", icon: ShoppingCart, match: (o) => (o.printCount || 0) > 0 },
+  { key: "toShip", ...ORDER_STATUS_LABELS.toShip, filterValue: "__to_ship__", iconBg: "bg-red-100", iconColor: "text-red-600", numberColor: "text-red-600", icon: PackagePlus, match: (o) => o.platformStatus === "AWAITING_SHIPMENT" },
+  { key: "toPickup", ...ORDER_STATUS_LABELS.toPickup, filterValue: "__to_pickup__", iconBg: "bg-blue-100", iconColor: "text-blue-600", numberColor: "text-blue-600", icon: ShoppingCart, match: (o) => o.platformStatus === "AWAITING_COLLECTION" },
   { key: "inTransit", ...ORDER_STATUS_LABELS.inTransit, filterValue: "__in_transit__", iconBg: "bg-purple-100", iconColor: "text-purple-600", numberColor: "text-purple-600", icon: Truck, match: (o) => o.platformStatus === "IN_TRANSIT" },
-  { key: "delivered", ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__", iconBg: "bg-green-100", iconColor: "text-green-600", numberColor: "text-green-600", icon: CheckCircle, match: (o) => o.platformStatus === "DELIVERED" || o.platformStatus === "COMPLETED" },
-  { key: "returned", ...ORDER_STATUS_LABELS.returned, filterValue: "退款中", iconBg: "bg-rose-100", iconColor: "text-rose-600", numberColor: "text-rose-600", icon: RotateCcw, match: (o) => o.orderStatus === "returned" },
+  { key: "delivered", ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__", iconBg: "bg-green-100", iconColor: "text-green-600", numberColor: "text-green-600", icon: CheckCircle, match: (o) => o.platformStatus === "DELIVERED" },
 ];
 
 // 8th grid slot: 投递失败 (top, gray, no filterValue — never highlights) +
@@ -214,15 +214,36 @@ const FAILED_CANCELLED_SPLIT_CARD = {
   bottom: { ...ORDER_STATUS_LABELS.cancelled, filterValue: "已取消", iconBg: "bg-orange-100", iconColor: "text-orange-600", numberColor: "text-orange-600", icon: XCircle, match: (o) => o.orderStatus === "cancelled" },
 };
 
+// Merged into one shared card frame (2026-08-05, UI-only): 未付款 (top, no
+// filterValue — was never clickable, unchanged) + 退货/退款 (bottom,
+// filterValue "退款中", was already clickable) — same layout pattern as
+// FAILED_CANCELLED_SPLIT_CARD above, same underlying cardCounts/match, just
+// grouped into one box instead of two separate grid cells.
+const UNPAID_RETURNED_SPLIT_CARD = {
+  top: { ...ORDER_STATUS_LABELS.unpaid, iconBg: "bg-pink-100", iconColor: "text-pink-600", numberColor: "text-pink-600", icon: CreditCard, match: (o) => o.platformStatus === "UNPAID" },
+  bottom: { ...ORDER_STATUS_LABELS.returned, filterValue: "退款中", iconBg: "bg-rose-100", iconColor: "text-rose-600", numberColor: "text-rose-600", icon: RotateCcw, match: (o) => o.orderStatus === "returned" },
+};
+
 /* ============================== Orders (订单列表) ============================== */
 
 const NOTE_COLORS = { red: "#ef4444", yellow: "#eab308", purple: "#a855f7" };
 
-export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProcess, onUpdateStatus, onUpdateNote, goTo }) {
+export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProcess, onUpdateStatus, onUpdateNote, onMarkPicked, onMarkPacked, goTo }) {
   const [activePlatform, setActivePlatform] = useState("Shopee");
+  const [activeStore, setActiveStore] = useState(null); // null = 该平台全部店铺
   const [statusFilter, setStatusFilter] = useState("全部");
+  // Status-card counts, fetched independently of the (capped) `orders` prop
+  // via `{count:"exact",head:true}` queries — zero row data transferred,
+  // just numbers — so cards reflect the true full-table count even though
+  // `orders` itself (loaded once in erp-mvp-demo.jsx, unchanged by this)
+  // only holds the most recent 5000 rows. Re-fetched on platform/store
+  // switch only, not on every render. Falls back to counting the in-memory
+  // `all` array (old behavior) while a platform's counts haven't loaded yet.
+  const [cardCounts, setCardCounts] = useState({});
   const [q, setQ] = useState("");
+  const [searchField, setSearchField] = useState("orderNo");
   const [dateFilter, setDateFilter] = useState("");
+  const [dateMode, setDateMode] = useState("all"); // "all" | "today" | "7d" | "30d" | "custom"
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [noteEditingId, setNoteEditingId] = useState(null);
   const [noteDraftText, setNoteDraftText] = useState("");
@@ -237,6 +258,57 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   // noteDraftColor/onUpdateNote or note_color/note_text — purely where the
   // popup renders on screen.
   const [notePopupPos, setNotePopupPos] = useState(null);
+  // "确认发货" batch-bar button — TikTok-only, 待发货 view only (see the
+  // activePlatform/statusFilter gates on 拣货完成/包装完成 below, which stay
+  // untouched for Shopee and every other view). Reuses the exact same
+  // onMarkPicked/onMarkPacked handlers and the exact same
+  // tiktok-ship-package-test Edge Function calls already validated
+  // standalone — no backend/API/lookup/sync changes, only this entry point.
+  const [shipConfirmOpen, setShipConfirmOpen] = useState(false);
+  const [shipBatchStatus, setShipBatchStatus] = useState("idle"); // idle|loading|done
+
+  // targetOrders passed in from the button's onClick closure. Sequence per
+  // order: pick -> pack (both no-ops if already done, per their own
+  // existing warehouse_stage gating) -> lookup -> ship -> batch-print
+  // whichever succeeded, once, at the end.
+  async function runShipBatch(targetOrders) {
+    setShipConfirmOpen(false);
+    setShipBatchStatus("loading");
+    const shipped = [];
+    for (const order of targetOrders) {
+      await onMarkPicked([order.id]);
+      await onMarkPacked([order.id]);
+      const { data: lookup, error: lookupErr } = await supabaseClient.functions.invoke("tiktok-ship-package-test", { body: { action: "lookup", orderNo: order.id } });
+      if (lookupErr || !lookup?.found || !lookup.packageId) continue;
+      const { data: shipResult, error: shipErr } = await supabaseClient.functions.invoke("tiktok-ship-package-test", {
+        body: {
+          action: "ship",
+          orderNo: order.id,
+          packageId: lookup.packageId,
+          shippingProviderId: lookup.shippingProviderId,
+          // Auto-generated: TikTok-managed-logistics orders (shipping_type
+          // "TIKTOK") — the already-tested Ship Package call has succeeded
+          // with a placeholder value every time, no manual input needed.
+          trackingNumber: `AUTO-${order.id}-${Date.now()}`,
+        },
+      });
+      if (!shipErr && shipResult?.success) shipped.push(order);
+    }
+    setShipBatchStatus("done");
+    if (shipped.length > 0) onPrint(shipped);
+  }
+  // Hides 拣货完成/包装完成 only where they're guaranteed to have zero effect:
+  // TikTok's 待发货 (replaced by "确认发货", which already calls
+  // onMarkPicked+onMarkPacked itself) and 运输中/已送达/已取消 — those three
+  // are excluded from `actionableOrders` (below, same filter both buttons
+  // use) by platformStatus/status, so the buttons can never act on anything
+  // there regardless of data state. Kept everywhere else (全部/待取货/退款/
+  // Shopee's own 待发货): 全部 is the primary place pick/pack normally
+  // happens, and 待取货/退款 can legitimately hold orders shipped outside
+  // ERP whose warehouse_stage was never advanced — hiding there would
+  // remove real function.
+  const hidePickPack = (activePlatform === "TikTok Shop" && statusFilter === "__to_ship__")
+    || statusFilter === "__in_transit__" || statusFilter === "__delivered__" || statusFilter === "已取消";
   const theme = PLATFORM_THEME[activePlatform];
   const lang = t("zh", "en");
   // Status-chip row — text sourced from the same `ORDER_STATUS_LABELS` the
@@ -255,8 +327,8 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   const STATUS_CHIPS = [
     { ...ORDER_STATUS_LABELS.all, filterValue: "全部" },
     { ...ORDER_STATUS_LABELS.unpaid, disabled: true },
-    { ...ORDER_STATUS_LABELS.toShip, filterValue: "__not_shipped__" },
-    { ...ORDER_STATUS_LABELS.toPickup, filterValue: "__printed__" },
+    { ...ORDER_STATUS_LABELS.toShip, filterValue: "__to_ship__" },
+    { ...ORDER_STATUS_LABELS.toPickup, filterValue: "__to_pickup__" },
     { ...ORDER_STATUS_LABELS.inTransit, filterValue: "__in_transit__" },
     { ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__" },
     { ...ORDER_STATUS_LABELS.failed, disabled: true },
@@ -270,22 +342,80 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   // above — a pure filter-UI interaction convention, not a status taxonomy.
   const CHIP_ACTIVE_CLASS = "border-purple-400 ring-1 ring-purple-400 bg-purple-50 text-purple-700";
 
-  // 还没交给物流 = 官方平台的 "To Ship"：待处理里已付款的部分（不含未付款 UNPAID，平台的 To Ship 不算未付款单）
-  const NOT_YET_SHIPPED = ["待处理"];
-  const isNotYetShipped = (o) => NOT_YET_SHIPPED.includes(o.status) && o.platformStatus !== "UNPAID" && !(o.printCount > 0);
   const platformStores = stores.filter((s) => s.platform === activePlatform);
   const allManual = platformStores.length > 0 && platformStores.every((s) => s.syncMode === "manual");
 
-  const all = useMemo(() => orders.filter((o) => o.platform === activePlatform), [orders, activePlatform]);
+  const all = useMemo(
+    () => orders.filter((o) => o.platform === activePlatform && (!activeStore || o.platformAccountId === activeStore)),
+    [orders, activePlatform, activeStore],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const dbPlatform = DEMO_TO_DB_PLATFORM[activePlatform];
+    if (!dbPlatform) return;
+    function base() {
+      let q = supabaseClient.from("orders").select("id", { count: "exact", head: true }).eq("platform", dbPlatform);
+      if (activeStore) q = q.eq("platform_account_id", activeStore);
+      return q;
+    }
+    Promise.all([
+      base(),
+      base().eq("platform_status", "UNPAID"),
+      base().eq("platform_status", "AWAITING_SHIPMENT"),
+      base().eq("platform_status", "AWAITING_COLLECTION"),
+      base().eq("platform_status", "IN_TRANSIT"),
+      // 已送达 counts DELIVERED only — verified live against TikTok's own
+      // API total_count per status (DELIVERED=408, COMPLETED=5653): these
+      // are two distinct Seller Center buckets, not one. COMPLETED orders
+      // aren't dropped, they just no longer inflate this specific card.
+      base().eq("platform_status", "DELIVERED"),
+      base().eq("order_status", "returned"),
+      base().eq("platform_status", "FAILED_DELIVERY"),
+      base().eq("platform_status", "UNDELIVERED"),
+      base().eq("order_status", "cancelled"),
+      // 今天取消: no dedicated "cancelled_at" column exists (not adding one
+      // per explicit instruction), so this uses the existing `updated_at`
+      // as the closest available signal — the moment ERP's own sync last
+      // wrote this row, which for a cancelled order is effectively when ERP
+      // recorded the cancellation.
+      base().eq("order_status", "cancelled").gte("updated_at", `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`),
+    ]).then(([all_, unpaid, toShip, toPickup, inTransit, delivered, returned, failedA, failedB, cancelled_, cancelledToday]) => {
+      if (cancelled) return;
+      setCardCounts({
+        all: all_.count ?? 0,
+        unpaid: unpaid.count ?? 0,
+        toShip: toShip.count ?? 0,
+        toPickup: toPickup.count ?? 0,
+        inTransit: inTransit.count ?? 0,
+        delivered: delivered.count ?? 0,
+        returned: returned.count ?? 0,
+        failed: (failedA.count ?? 0) + (failedB.count ?? 0),
+        cancelled: cancelled_.count ?? 0,
+        cancelledToday: cancelledToday.count ?? 0,
+      });
+    });
+    return () => { cancelled = true; };
+  }, [activePlatform, activeStore]);
+
   const revenue = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + o.unitPrice * o.qty, 0);
   const netProfit = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
 
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const date7dAgoStr = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+  const date30dAgoStr = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+
   const filtered = useMemo(() => {
     return all.filter((o) => {
-      if (statusFilter === "__not_shipped__") {
-        if (!isNotYetShipped(o)) return false;
-      } else if (statusFilter === "__printed__") {
-        if (!((o.printCount || 0) > 0)) return false;
+      if (statusFilter === "__to_ship__") {
+        // 待发货 (2026-08-03): switched from ERP-invented print_count logic
+        // to TikTok's real order status — matches Seller Center 1:1 now.
+        if (o.platformStatus !== "AWAITING_SHIPMENT") return false;
+      } else if (statusFilter === "__to_pickup__") {
+        // 待取货 (2026-08-03): real platformStatus === "AWAITING_COLLECTION".
+        // This value has never appeared in synced TikTok data, so this card
+        // reads 0 — same as Seller Center's own count, not a bug.
+        if (o.platformStatus !== "AWAITING_COLLECTION") return false;
       } else if (statusFilter === "__in_transit__") {
         // 运输中 (2026-07-29): was o.status === "物流中", a demo-status value
         // DB_TO_DEMO_STATUS never actually produces for any real order — the
@@ -301,15 +431,37 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         // OrderDrawer's "确认接收" button (which itself persists order_status
         // as 'shipped', not anything that maps back to 已签收). Same fix:
         // point at the real platformStatus field the card already uses.
-        if (!(o.platformStatus === "DELIVERED" || o.platformStatus === "COMPLETED")) return false;
+        if (o.platformStatus !== "DELIVERED") return false;
       } else if (statusFilter !== "全部" && o.status !== statusFilter) {
         return false;
       }
-      if (dateFilter && o.date !== dateFilter) return false;
-      if (q && !(o.id.toLowerCase().includes(q.toLowerCase()) || o.customer.includes(q) || (o.sku || "").toLowerCase().includes(q.toLowerCase()))) return false;
+      if (dateMode === "custom") {
+        if (dateFilter && o.date !== dateFilter) return false;
+      } else if (dateMode === "today") {
+        if (o.date !== todayStr) return false;
+      } else if (dateMode === "7d") {
+        if (o.date < date7dAgoStr || o.date > todayStr) return false;
+      } else if (dateMode === "30d") {
+        if (o.date < date30dAgoStr || o.date > todayStr) return false;
+      }
+      if (q.trim()) {
+        const needle = q.trim().toLowerCase();
+        const haystack = (
+          searchField === "orderNo" ? o.id :
+          searchField === "sku" ? o.sku :
+          searchField === "product" ? o.product :
+          searchField === "variation" ? o.variation :
+          searchField === "sellerSku" ? o.sku :
+          searchField === "tracking" ? o.tracking :
+          searchField === "package" ? o.tracking :
+          searchField === "customer" ? o.customer :
+          searchField === "note" ? o.noteText : o.id
+        ) || "";
+        if (!haystack.toLowerCase().includes(needle)) return false;
+      }
       return true;
     });
-  }, [all, statusFilter, dateFilter, q]);
+  }, [all, statusFilter, dateMode, dateFilter, q, searchField]);
 
   const allChecked = filtered.length > 0 && filtered.every((o) => selectedIds.has(o.id));
   // Batch-printed labels come out oldest-first (FIFO), not in click/selection
@@ -357,19 +509,57 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         {["Shopee", "TikTok Shop"].map((pf) => {
           const pfTheme = PLATFORM_THEME[pf];
           const active = activePlatform === pf;
+          const PfLogo = pf === "Shopee" ? ShoppingBag : Music2;
           return (
             <button
               key={pf}
-              onClick={() => { setActivePlatform(pf); setStatusFilter("全部"); setSelectedIds(new Set()); }}
+              onClick={() => { setActivePlatform(pf); setActiveStore(null); setStatusFilter("全部"); setSelectedIds(new Set()); }}
               className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                 active ? `${pfTheme.headerBg} text-white` : "text-slate-500 hover:bg-slate-50"
               }`}
             >
-              <span className={`h-2 w-2 rounded-full ${active ? "bg-white/80" : pfTheme.dot}`} />
-              {pf}
+              <PfLogo size={16} className={active ? "text-white" : pf === "Shopee" ? "text-orange-500" : "text-slate-700"} />
+              <span>{pf}</span>
             </button>
           );
         })}
+      </div>
+
+      {/* 店铺卡片行 — 平台按钮不再绑定单一店铺，改成平台下面列出该平台所有店铺，
+          每张卡片独立可点，点击后再按 platformAccountId 过滤订单列表（activeStore）。
+          没有真实已连接店铺时显示占位卡片（不可点，仅供 UI 预览）。 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => setActiveStore(null)}
+          className={`text-xs px-3 py-2 rounded-lg border ${
+            activeStore === null ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+          }`}
+        >
+          {t("全部店铺", "All Stores")}
+        </button>
+        {platformStores.length > 0
+          ? platformStores.map((s) => {
+              const storeOrderCount = orders.filter((o) => o.platform === activePlatform && o.platformAccountId === s.id).length;
+              const isActive = activeStore === s.id;
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => setActiveStore(s.id)}
+                  className={`text-left text-xs px-3 py-2 rounded-lg border ${
+                    isActive ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="font-medium">{s.name}</div>
+                  <div className={isActive ? "text-white/80" : "text-slate-400"}>{t(`订单数量：${storeOrderCount}`, `Orders: ${storeOrderCount}`)}</div>
+                </button>
+              );
+            })
+          : ["示例店铺 A", "示例店铺 B"].map((name) => (
+              <div key={name} className="text-left text-xs px-3 py-2 rounded-lg border border-dashed border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed">
+                <div className="font-medium">{name}（{t("示例", "sample")}）</div>
+                <div>{t("订单数量：0", "Orders: 0")}</div>
+              </div>
+            ))}
       </div>
 
       <div className={`rounded-xl border ${theme.border} overflow-hidden bg-white`}>
@@ -396,7 +586,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
             text never change either way. */}
         <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-4 gap-3`}>
           {ORDER_CENTER_CARDS.map((card) => {
-            const count = all.filter(card.match).length;
+            const count = cardCounts[card.key] ?? all.filter(card.match).length;
             const Icon = card.icon;
             const clickable = card.filterValue !== undefined;
             const active = clickable && statusFilter === card.filterValue;
@@ -412,7 +602,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                   <Icon size={14} className={card.iconColor} />
                 </div>
                 <div className="text-xs text-slate-500">{t(card.zh, card.en)}</div>
-                <div className={`text-lg font-bold tabular-nums ${card.numberColor}`}>{count}</div>
+                {card.key !== "all" && <div className={`text-lg font-bold tabular-nums ${card.numberColor}`}>{count}</div>}
               </CardTag>
             );
           })}
@@ -424,7 +614,34 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
               plain. The shared outer border goes purple when 已取消 is active. */}
           <div className={`bg-white rounded-lg border-2 ${statusFilter === "已取消" ? "border-purple-400" : "border-slate-200"} flex flex-col divide-y divide-slate-100`}>
             {[FAILED_CANCELLED_SPLIT_CARD.top, FAILED_CANCELLED_SPLIT_CARD.bottom].map((half) => {
-              const count = all.filter(half.match).length;
+              const count = (half.filterValue === "已取消" ? cardCounts.cancelledToday : cardCounts.failed) ?? all.filter(half.match).length;
+              const Icon = half.icon;
+              const clickable = half.filterValue !== undefined;
+              const HalfTag = clickable ? "button" : "div";
+              return (
+                <HalfTag
+                  key={half.zh}
+                  type={clickable ? "button" : undefined}
+                  onClick={clickable ? () => setStatusFilter(half.filterValue) : undefined}
+                  className={`flex-1 w-full flex flex-col items-center justify-center gap-1 py-1.5 ${clickable ? "cursor-pointer hover:bg-slate-50" : ""}`}
+                >
+                  <div className={`h-6 w-6 rounded-full flex items-center justify-center ${half.iconBg}`}>
+                    <Icon size={12} className={half.iconColor} />
+                  </div>
+                  <div className="text-[11px] text-slate-500 leading-none">{t(half.zh, half.en)}</div>
+                  <div className={`text-sm font-bold tabular-nums leading-none ${half.filterValue === "已取消" ? "text-red-600" : half.numberColor}`}>{count}</div>
+                </HalfTag>
+              );
+            })}
+          </div>
+
+          {/* 未付款 + 退货/退款, same shared-frame pattern as the split card
+              above — same data (cardCounts.unpaid / cardCounts.returned),
+              same click behavior (未付款 stays non-clickable, 退货/退款 keeps
+              its existing filterValue "退款中"), just grouped into one box. */}
+          <div className={`bg-white rounded-lg border-2 ${statusFilter === "退款中" ? "border-purple-400" : "border-slate-200"} flex flex-col divide-y divide-slate-100`}>
+            {[UNPAID_RETURNED_SPLIT_CARD.top, UNPAID_RETURNED_SPLIT_CARD.bottom].map((half) => {
+              const count = (half.filterValue === "退款中" ? cardCounts.returned : cardCounts.unpaid) ?? all.filter(half.match).length;
               const Icon = half.icon;
               const clickable = half.filterValue !== undefined;
               const HalfTag = clickable ? "button" : "div";
@@ -448,27 +665,50 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
 
         <div className="px-5 pt-3">
           <div className="flex gap-2">
+            <select
+              value={searchField}
+              onChange={(e) => setSearchField(e.target.value)}
+              className="text-sm border border-slate-200 rounded-lg outline-none text-slate-600 px-2 bg-white shrink-0"
+            >
+              <option value="orderNo">{t("订单号", "Order No.")}</option>
+              <option value="sku">{t("店铺SKU", "Store SKU")}</option>
+              <option value="product">{t("产品名称", "Product Name")}</option>
+              <option value="variation">{t("商品 Variation", "Variation")}</option>
+              <option value="sellerSku">{t("Seller SKU", "Seller SKU")}</option>
+              <option value="tracking">{t("运单号", "Tracking No.")}</option>
+              <option value="package">{t("包裹号", "Package No.")}</option>
+              <option value="customer">{t("买家名称", "Buyer Name")}</option>
+              <option value="note">{t("备注", "Note")}</option>
+            </select>
             <div className="relative flex-1">
-              <Search size={13} className="absolute left-2.5 top-2.5 text-slate-400" />
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder={t(`在 ${activePlatform} 内搜索订单编号 / 客户 / SKU`, `Search order no. / customer / SKU in ${activePlatform}`)}
-                className={`w-full pl-8 pr-2 py-2 text-xs border border-slate-200 rounded-lg outline-none ${theme.ring}`}
+                placeholder={t(`在 ${activePlatform} 内搜索`, `Search in ${activePlatform}`)}
+                className={`w-full pl-9 pr-3 py-3 text-sm border border-slate-200 rounded-lg outline-none ${theme.ring}`}
               />
             </div>
-            <div className="flex items-center gap-1.5 border border-slate-200 rounded-lg px-2.5">
+            <div className="flex items-center gap-1.5 border border-slate-200 rounded-lg px-2.5 shrink-0">
               <Clock size={13} className="text-slate-400 shrink-0" />
-              <input
-                type="date"
-                value={dateFilter}
-                onChange={(e) => setDateFilter(e.target.value)}
-                className="text-xs outline-none text-slate-600 py-2"
-              />
-              {dateFilter && (
-                <button onClick={() => setDateFilter("")} className="text-slate-400 hover:text-slate-600 shrink-0">
-                  <X size={13} />
-                </button>
+              <select
+                value={dateMode}
+                onChange={(e) => setDateMode(e.target.value)}
+                className="text-xs outline-none text-slate-600 py-2 bg-white"
+              >
+                <option value="all">{t("全部时间", "All Time")}</option>
+                <option value="today">{t("今天", "Today")}</option>
+                <option value="7d">{t("7天", "7 Days")}</option>
+                <option value="30d">{t("30天", "30 Days")}</option>
+                <option value="custom">{t("自定义日期", "Custom Date")}</option>
+              </select>
+              {dateMode === "custom" && (
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={(e) => setDateFilter(e.target.value)}
+                  className="text-xs outline-none text-slate-600 py-2"
+                />
               )}
             </div>
           </div>
@@ -506,36 +746,103 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
             {t(`全选本页（${filtered.length} 笔）`, `Select all on this page (${filtered.length})`)}
           </label>
           <span className="text-xs text-slate-400">{t(`已选 ${selectedOrders.length} 笔`, `${selectedOrders.length} selected`)}</span>
-          {(() => {
-            const selectedPending = selectedOrders.filter((o) => o.orderStatus === "pending");
+          {onMarkPicked && !hidePickPack && (() => {
+            // 已取消/未付款订单不能拣货/包装/打印 — 只影响这三个按钮的可操作对象，不改 selectedOrders 本身。
+            const actionableOrders = selectedOrders.filter((o) => o.status !== "已取消" && o.platformStatus !== "UNPAID" && o.platformStatus !== "IN_TRANSIT" && o.platformStatus !== "DELIVERED" && o.platformStatus !== "COMPLETED");
+            const selectedPickable = actionableOrders.filter((o) => (o.warehouseStage || "pending") === "pending");
+            // 全部 mixes every status together — 拣货完成 stays visible but
+            // inert there, same treatment as the print buttons; still fully
+            // functional in every specific status view (待取货/退款/etc).
+            const pickDisabled = statusFilter === "全部" || selectedPickable.length === 0;
             return (
               <button
-                onClick={() => selectedPending.length > 0 && onConfirmProcess(selectedPending.map((o) => o.id))}
-                disabled={selectedPending.length === 0}
-                title={t("将已选订单从待处理推进到已处理，与打印无关", "Moves selected orders from To Process to Processed — independent of printing")}
+                onClick={() => statusFilter !== "全部" && selectedPickable.length > 0 && onMarkPicked(selectedPickable.map((o) => o.id))}
+                disabled={pickDisabled}
+                title={statusFilter === "全部" ? t("请先筛选具体订单状态再拣货", "Filter to a specific status before marking picked") : t("拣货完成，打印前必须先完成拣货", "Mark picked — required before printing")}
                 className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ml-auto ${
-                  selectedPending.length > 0 ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                  !pickDisabled ? "bg-amber-500 text-white hover:bg-amber-600" : "bg-slate-200 text-slate-400 cursor-not-allowed"
                 }`}
               >
-                <CheckCircle2 size={13} /> {t(`确认处理（${selectedPending.length}）`, `Confirm Process (${selectedPending.length})`)}
+                <PackageOpen size={13} /> {t(`拣货完成（${selectedPickable.length}）`, `Mark Picked (${selectedPickable.length})`)}
               </button>
             );
           })()}
-          <button
-            onClick={() => selectedOrders.length > 0 && onPrint(selectedOrders)}
-            disabled={selectedOrders.length === 0}
-            className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
-              selectedOrders.length > 0 ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-400 cursor-not-allowed"
-            }`}
-          >
-            <Printer size={13} /> {t(`批量打印订单单（${selectedOrders.length}）`, `Batch print order slips (${selectedOrders.length})`)}
-          </button>
+          {onMarkPacked && !hidePickPack && (() => {
+            const actionableOrders = selectedOrders.filter((o) => o.status !== "已取消" && o.platformStatus !== "UNPAID" && o.platformStatus !== "IN_TRANSIT" && o.platformStatus !== "DELIVERED" && o.platformStatus !== "COMPLETED");
+            const selectedPackable = actionableOrders.filter((o) => o.warehouseStage === "picked");
+            return (
+              <button
+                onClick={() => selectedPackable.length > 0 && onMarkPacked(selectedPackable.map((o) => o.id))}
+                disabled={selectedPackable.length === 0}
+                title={t("包装完成，打印前必须先完成包装（此步骤会扣减库存）", "Mark packed — required before printing (deducts stock)")}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
+                  selectedPackable.length > 0 ? "bg-indigo-500 text-white hover:bg-indigo-600" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                }`}
+              >
+                <PackageCheck size={13} /> {t(`包装完成（${selectedPackable.length}）`, `Mark Packed (${selectedPackable.length})`)}
+              </button>
+            );
+          })()}
+          {(() => {
+            // 已取消/未付款订单不能打印。待发货 (__to_ship__) 视图下打印额外要求拣货+包装完成；
+            // 其他视图下的打印行为不变（除了已取消/未付款这两类被排除）。
+            const actionableOrders = selectedOrders.filter((o) => o.status !== "已取消" && o.platformStatus !== "UNPAID" && o.platformStatus !== "IN_TRANSIT" && o.platformStatus !== "DELIVERED" && o.platformStatus !== "COMPLETED");
+            const printGated = statusFilter === "__to_ship__";
+            const printBlocked = printGated && actionableOrders.some((o) => o.warehouseStage !== "ready_ship");
+            // 全部 mixes every status/warehouse_stage together, so batch
+            // printing is disabled there — real printing only allowed from
+            // a specific status view (待发货/待取货/etc). Display-only: no
+            // change to what gets printed or how, in any other view.
+            const printDisabled = statusFilter === "全部" || actionableOrders.length === 0 || printBlocked;
+            return (
+              <button
+                onClick={() => statusFilter !== "全部" && actionableOrders.length > 0 && !printBlocked && onPrint(actionableOrders)}
+                disabled={printDisabled}
+                title={statusFilter === "全部" ? t("请先筛选具体订单状态再打印", "Filter to a specific status before printing") : printBlocked ? t("待发货订单需先完成拣货+包装才能打印", "To-ship orders must be picked + packed before printing") : undefined}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
+                  !printDisabled ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                }`}
+              >
+                <Printer size={13} /> {t(`批量打印订单单（${actionableOrders.length}）`, `Batch print order slips (${actionableOrders.length})`)}
+              </button>
+            );
+          })()}
+          {activePlatform === "TikTok Shop" && (() => {
+            const shippable = selectedOrders.filter((o) => o.platform === "TikTok Shop" && o.platformStatus === "AWAITING_SHIPMENT");
+            return (
+              <button
+                onClick={() => shippable.length > 0 && setShipConfirmOpen(true)}
+                disabled={shippable.length === 0 || shipBatchStatus === "loading"}
+                title={t("确认发货：真实调用TikTok发货API，不可撤销", "Confirm ship — calls the real TikTok ship API, cannot be undone")}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
+                  shippable.length > 0 && shipBatchStatus !== "loading" ? "bg-red-600 text-white hover:bg-red-700" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                }`}
+              >
+                <Send size={13} /> {shipBatchStatus === "loading" ? t("处理中…", "Processing…") : t(`确认发货（${shippable.length}）`, `Confirm Ship (${shippable.length})`)}
+              </button>
+            );
+          })()}
         </div>
+
+        {shipConfirmOpen && (() => {
+          const shippable = selectedOrders.filter((o) => o.platform === "TikTok Shop" && o.platformStatus === "AWAITING_SHIPMENT");
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" onClick={() => setShipConfirmOpen(false)}>
+              <div className="bg-white rounded-xl shadow-xl p-5 w-72" onClick={(e) => e.stopPropagation()}>
+                <div className="text-sm font-semibold mb-3">{t("打印", "Print")}</div>
+                <div className="flex gap-2">
+                  <button onClick={() => runShipBatch(shippable)} className="flex-1 py-2 rounded-lg bg-red-600 text-white text-sm">{t("打印", "Print")}</button>
+                  <button onClick={() => setShipConfirmOpen(false)} className="flex-1 py-2 rounded-lg border border-slate-200 text-sm">{t("取消", "Cancel")}</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         <div className="border-t border-slate-100 divide-y divide-slate-100">
           {filtered.length === 0 && <div className="px-5 py-6 text-xs text-slate-400 text-center">{t("没有符合条件的订单", "No orders match the current filters")}</div>}
           {filtered.map((o) => (
-            <div key={o.id} className="w-full px-5 py-3 hover:bg-slate-50 flex items-start gap-3">
+            <div key={o.id} className="w-full px-5 py-3 hover:bg-slate-50 flex flex-wrap items-start gap-3">
               <input
                 type="checkbox"
                 checked={selectedIds.has(o.id)}
@@ -572,9 +879,12 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                   </button>
                 )}
                 <button
-                  onClick={() => onPrint([o])}
-                  title={t("打印订单单", "Print order slip")}
-                  className="flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-full border border-slate-200 text-slate-500 hover:bg-slate-100"
+                  onClick={() => statusFilter !== "全部" && onPrint([o])}
+                  disabled={statusFilter === "全部"}
+                  title={statusFilter === "全部" ? t("请先筛选具体订单状态再打印", "Filter to a specific status before printing") : t("打印订单单", "Print order slip")}
+                  className={`flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-full border ${
+                    statusFilter === "全部" ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-100"
+                  }`}
                 >
                   <Printer size={11} /> {t("打印", "Print")}
                 </button>
@@ -717,7 +1027,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
 
 /* ============================== Order drawer (shared) ============================== */
 
-export function OrderDrawer({ t, order, onClose, onPrint, onUpdateStatus }) {
+export function OrderDrawer({ t, order, onClose, onPrint, onUpdateStatus, onRequestCancel }) {
   const isCancelled = order.status === "已取消" || order.status === "退款中";
   const stepIdx = STATUS_STEPS.indexOf(order.status);
   const p = profit(order);
@@ -786,6 +1096,24 @@ export function OrderDrawer({ t, order, onClose, onPrint, onUpdateStatus }) {
             <div className="flex items-center gap-2 text-rose-600 text-sm bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">
               <AlertTriangle size={15} /> {t(`此订单已${order.status}`, `This order is already ${statusLabel(order.status, lang)}`)}
             </div>
+          )}
+
+          {onRequestCancel && (order.platform === "Shopee" || order.platform === "TikTok") && (
+            order.cancelStage ? (
+              <div className="flex items-center gap-2 text-amber-700 text-xs bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                <AlertTriangle size={13} /> {order.cancelStage === "requested" ? t("取消申请中，待确认取消", "Cancellation requested, pending confirmation") : t("此订单已取消", "This order has been cancelled")}
+              </div>
+            ) : (
+              <button
+                onClick={() => {
+                  const reason = window.prompt(t("请输入取消原因", "Enter cancellation reason"));
+                  if (reason && reason.trim()) onRequestCancel(order.id, reason.trim());
+                }}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50"
+              >
+                <AlertTriangle size={13} /> {t("申请取消订单", "Request Order Cancellation")}
+              </button>
+            )
           )}
 
           {actionable && (
@@ -894,6 +1222,20 @@ async function fetchReservedQtyBySku() {
   const bySku = {};
   items.forEach((it) => { bySku[it.sku] = (bySku[it.sku] || 0) + (it.qty || 0); });
   return bySku;
+}
+
+async function fetchStockMovements({ sku, warehouse, movementType } = {}) {
+  let query = supabaseClient
+    .from("stock_movements")
+    .select("id, sku, warehouse, movement_type, qty_change, qty_deducted, stock_before, stock_after, reason, staff_email, order_id, purchase_order_id, purchase_order_item_id, created_at, purchase_orders(po_no)")
+    .order("created_at", { ascending: false })
+    .limit(500);
+  if (sku) query = query.eq("sku", sku);
+  if (warehouse) query = query.eq("warehouse", warehouse);
+  if (movementType) query = query.eq("movement_type", movementType);
+  const { data, error } = await query;
+  if (error) { console.error("fetchStockMovements failed", error); return []; }
+  return (data || []).map((m) => ({ ...mapDbStockMovement(m), poNo: m.purchase_orders?.po_no || null }));
 }
 
 const MOVEMENT_TYPES = [
@@ -1209,12 +1551,19 @@ function LocationBindForm({ t, item, allLocations, onCancel, onSave }) {
 }
 
 export function Inventory({ t, inventory, stores, onUpdateLocation, onRecordMovement, warehouseLocations = [], onCreateLocation, onDeleteLocation, onBindLocation }) {
+  const [view, setView] = useState("stock"); // "stock" | "ledger"
+  const [ledgerInitialSku, setLedgerInitialSku] = useState("");
   const [wh, setWh] = useState("全部");
   const [reservedBySku, setReservedBySku] = useState({});
   const [editingLocationSku, setEditingLocationSku] = useState(null);
   const [locationDraft, setLocationDraft] = useState("");
   const [movementItem, setMovementItem] = useState(null);
   const lang = t("zh", "en");
+
+  function openLedgerFor(sku) {
+    setLedgerInitialSku(sku);
+    setView("ledger");
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -1238,6 +1587,23 @@ export function Inventory({ t, inventory, stores, onUpdateLocation, onRecordMove
 
   return (
     <div className="space-y-4">
+      <div className="flex gap-2 border-b border-slate-200 pb-2">
+        {[["stock", t("库存查询", "Stock Query")], ["ledger", t("库存流水", "Stock Ledger")], ["stocktake", t("盘点", "Stocktake")]].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setView(key)}
+            className={`px-3 py-1.5 text-sm rounded-lg ${view === key ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "ledger" && <StockLedgerView t={t} inventory={inventory} initialSku={ledgerInitialSku} />}
+      {view === "stocktake" && <StocktakeView t={t} inventory={inventory} onRecordMovement={onRecordMovement} />}
+
+      {view === "stock" && (
+      <>
       <div className="flex gap-2">
         {["全部", "吉隆坡仓", "柔佛仓"].map((w) => (
           <button
@@ -1318,12 +1684,20 @@ export function Inventory({ t, inventory, stores, onUpdateLocation, onRecordMove
                     )}
                   </td>
                   <td className="py-2.5 pr-3">
-                    <button
-                      onClick={() => setMovementItem(item)}
-                      className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"
-                    >
-                      <SlidersHorizontal size={11} /> {t("库存调整", "Adjust")}
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => setMovementItem(item)}
+                        className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"
+                      >
+                        <SlidersHorizontal size={11} /> {t("库存调整", "Adjust")}
+                      </button>
+                      <button
+                        onClick={() => openLedgerFor(item.sku)}
+                        className="text-xs px-2 py-1 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"
+                      >
+                        {t("查看流水", "View Ledger")}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -1345,6 +1719,202 @@ export function Inventory({ t, inventory, stores, onUpdateLocation, onRecordMove
           }}
         />
       )}
+      </>
+      )}
+    </div>
+  );
+}
+
+function StockLedgerView({ t, inventory, initialSku = "" }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [skuFilter, setSkuFilter] = useState(initialSku);
+  const [warehouseFilter, setWarehouseFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const lang = t("zh", "en");
+
+  useEffect(() => { setSkuFilter(initialSku); }, [initialSku]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchStockMovements({ sku: skuFilter || undefined, warehouse: warehouseFilter || undefined, movementType: typeFilter || undefined })
+      .then((data) => { if (!cancelled) { setRows(data); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, [skuFilter, warehouseFilter, typeFilter]);
+
+  function typeLabel(row) {
+    if (row.movementType === "stock_in" && row.purchaseOrderId) {
+      return `${t("PO收货", "PO Receiving")}${row.poNo ? ` (${row.poNo})` : ""}`;
+    }
+    const l = MOVEMENT_TYPE_LABELS[row.movementType];
+    return l ? t(l.zh, l.en) : row.movementType;
+  }
+
+  function skuName(sku) {
+    return inventory.find((p) => p.sku === sku)?.name || "";
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={skuFilter}
+          onChange={(e) => setSkuFilter(e.target.value)}
+          placeholder={t("搜索 SKU", "Search SKU")}
+          className="px-3 py-1.5 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 max-w-[200px]"
+        />
+        <select value={warehouseFilter} onChange={(e) => setWarehouseFilter(e.target.value)} className="px-3 py-1.5 text-sm border border-slate-200 rounded-lg outline-none bg-white text-slate-600">
+          <option value="">{t("全部仓库", "All Warehouses")}</option>
+          <option value="A">{t("吉隆坡仓", "KL Warehouse")}</option>
+          <option value="B">{t("柔佛仓", "Johor Warehouse")}</option>
+        </select>
+        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="px-3 py-1.5 text-sm border border-slate-200 rounded-lg outline-none bg-white text-slate-600">
+          <option value="">{t("全部类型", "All Types")}</option>
+          {Object.entries(MOVEMENT_TYPE_LABELS).map(([key, l]) => (
+            <option key={key} value={key}>{t(l.zh, l.en)}</option>
+          ))}
+        </select>
+      </div>
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[900px]">
+            <thead>
+              <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+                <th className="py-2 pr-3 font-medium">{t("时间", "Time")}</th>
+                <th className="py-2 pr-3 font-medium">SKU</th>
+                <th className="py-2 pr-3 font-medium">{t("商品名称", "Product Name")}</th>
+                <th className="py-2 pr-3 font-medium">{t("类型", "Type")}</th>
+                <th className="py-2 pr-3 font-medium">{t("仓库", "Warehouse")}</th>
+                <th className="py-2 pr-3 font-medium">{t("数量变化", "Qty Change")}</th>
+                <th className="py-2 pr-3 font-medium">{t("变动后", "After")}</th>
+                <th className="py-2 pr-3 font-medium">{t("原因/备注", "Reason")}</th>
+                <th className="py-2 pr-3 font-medium">{t("经手人", "Staff")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                  <td className="py-2 pr-3 text-xs text-slate-400 whitespace-nowrap">{new Date(row.createdAt).toLocaleString(lang === "en" ? "en-MY" : "zh-CN")}</td>
+                  <td className="py-2 pr-3 font-medium">{row.sku}</td>
+                  <td className="py-2 pr-3 text-slate-500">{skuName(row.sku)}</td>
+                  <td className="py-2 pr-3">{typeLabel(row)}</td>
+                  <td className="py-2 pr-3 text-slate-500">{row.warehouse ? warehouseLabel(row.warehouse, lang) : "—"}</td>
+                  <td className={`py-2 pr-3 tabular-nums font-medium ${row.qtyChange < 0 ? "text-rose-600" : "text-emerald-600"}`}>{row.qtyChange > 0 ? `+${row.qtyChange}` : row.qtyChange}</td>
+                  <td className="py-2 pr-3 tabular-nums">{row.stockAfter ?? "—"}</td>
+                  <td className="py-2 pr-3 text-slate-500">{row.reason || "—"}</td>
+                  <td className="py-2 pr-3 text-xs text-slate-400">{row.staffEmail || "—"}</td>
+                </tr>
+              ))}
+              {!loading && rows.length === 0 && (
+                <tr><td colSpan={9} className="py-6 text-center text-slate-400 text-xs">{t("没有符合条件的库存记录", "No matching stock movements")}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StocktakeView({ t, inventory, onRecordMovement }) {
+  const [warehouse, setWarehouse] = useState("A");
+  const [counts, setCounts] = useState({});
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState(null);
+
+  function setCount(sku, value) {
+    setCounts((prev) => ({ ...prev, [sku]: value }));
+  }
+
+  const rows = inventory.map((item) => {
+    const systemQty = warehouse === "B" ? item.warehouseB : item.warehouseA;
+    const countedRaw = counts[item.sku];
+    const counted = countedRaw === undefined || countedRaw === "" ? null : Number(countedRaw);
+    const variance = counted === null ? null : counted - systemQty;
+    return { sku: item.sku, name: item.name, systemQty, counted, variance };
+  });
+
+  // Only submit rows staff actually typed a count into, and only if it
+  // differs from the system qty — a matching count is a no-op, not worth a
+  // ledger entry (mirrors "don't create noise records" from Purchase Order).
+  const changedRows = rows.filter((r) => r.counted !== null && r.variance !== 0);
+
+  async function handleSubmit() {
+    setSubmitting(true);
+    let done = 0, failed = 0;
+    for (const row of changedRows) {
+      const res = await onRecordMovement?.({ sku: row.sku, movementType: "adjustment", warehouse, targetQty: row.counted, reason: t("盘点", "Stocktake") });
+      if (res?.error) failed++; else done++;
+    }
+    setSubmitting(false);
+    setResult({ done, failed });
+    setCounts({});
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <label className="text-sm text-slate-500">{t("盘点仓库", "Stocktake Warehouse")}</label>
+        <select
+          value={warehouse}
+          onChange={(e) => { setWarehouse(e.target.value); setCounts({}); setResult(null); }}
+          className="px-3 py-1.5 text-sm border border-slate-200 rounded-lg outline-none bg-white text-slate-600"
+        >
+          <option value="A">{t("吉隆坡仓", "KL Warehouse")}</option>
+          <option value="B">{t("柔佛仓", "Johor Warehouse")}</option>
+        </select>
+        <button
+          onClick={handleSubmit}
+          disabled={submitting || changedRows.length === 0}
+          className={`ml-auto text-sm px-4 py-2 rounded-lg ${changedRows.length > 0 ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
+        >
+          {submitting ? t("提交中…", "Submitting…") : t(`确认盘点（${changedRows.length} 项有差异）`, `Confirm Stocktake (${changedRows.length} variance)`)}
+        </button>
+      </div>
+
+      {result && (
+        <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg border bg-emerald-50 text-emerald-700 border-emerald-200">
+          {t(`已提交 ${result.done} 项`, `${result.done} submitted`)}{result.failed > 0 ? t(`，${result.failed} 项失败`, `, ${result.failed} failed`) : ""}
+        </div>
+      )}
+
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[700px]">
+            <thead>
+              <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+                <th className="py-2 pr-3 font-medium">SKU</th>
+                <th className="py-2 pr-3 font-medium">{t("商品名称", "Product Name")}</th>
+                <th className="py-2 pr-3 font-medium">{t("系统库存", "System Qty")}</th>
+                <th className="py-2 pr-3 font-medium">{t("实盘数量", "Counted Qty")}</th>
+                <th className="py-2 pr-3 font-medium">{t("差异", "Variance")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.sku} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                  <td className="py-2 pr-3 font-medium">{row.sku}</td>
+                  <td className="py-2 pr-3 text-slate-500">{row.name}</td>
+                  <td className="py-2 pr-3 tabular-nums">{row.systemQty}</td>
+                  <td className="py-2 pr-3">
+                    <input
+                      type="number"
+                      value={counts[row.sku] ?? ""}
+                      onChange={(e) => setCount(row.sku, e.target.value)}
+                      placeholder="—"
+                      className="w-20 px-2 py-1 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+                    />
+                  </td>
+                  <td className={`py-2 pr-3 tabular-nums font-medium ${row.variance > 0 ? "text-emerald-600" : row.variance < 0 ? "text-rose-600" : "text-slate-300"}`}>
+                    {row.variance === null ? "—" : (row.variance > 0 ? `+${row.variance}` : row.variance)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Warehouse, Store, ArrowRightLeft, AlertTriangle, CheckCircle2, LogIn,
-  Link2, Plus, Zap, FileSpreadsheet, Info, X, RefreshCw,
+  Link2, Plus, Zap, FileSpreadsheet, ShoppingBag, Music2,
 } from "lucide-react";
-import { PLATFORM_THEME, warehouseLabel } from "./shared.jsx";
+import { PLATFORM_THEME, warehouseLabel, SUPABASE_URL } from "./shared.jsx";
 
 const WAREHOUSES = ["吉隆坡仓", "柔佛仓"];
 
@@ -300,10 +300,93 @@ function ShopMoveForm({ t, inventory, stores, onMoveShop }) {
 
 /* ============================== Store management (店铺管理) ============================== */
 
-export function StoreManagement({ t, stores, onConnect, onSetSyncMode }) {
+// Shared by StoreManagement (店铺管理) and AutoImportHub's "使用平台账号登录连接"
+// card — one component, two entry points, per explicit instruction to reuse
+// rather than duplicate.
+export function PlatformLoginConnect({ t, stores, onRefresh }) {
+  const storeCountRef = useRef(stores.length);
+  const pollRef = useRef(null);
+  const focusHandlerRef = useRef(null);
+  useEffect(() => { storeCountRef.current = stores.length; }, [stores]);
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (focusHandlerRef.current) window.removeEventListener("focus", focusHandlerRef.current);
+  }, []);
+
+  // -auth-callback runs server-side in the OAuth tab, so it can't directly
+  // signal this tab. The browser refocusing this tab (user closed/switched
+  // back from the OAuth tab) is the trigger instead: fire loadRealData once
+  // immediately, then a short backup poll (5s x up to 3) in case the first
+  // read landed before the callback finished writing — stops as soon as the
+  // store count actually grows.
+  function armRefreshOnReturn() {
+    if (focusHandlerRef.current) window.removeEventListener("focus", focusHandlerRef.current);
+    if (pollRef.current) clearInterval(pollRef.current);
+
+    function onFocus() {
+      window.removeEventListener("focus", onFocus);
+      focusHandlerRef.current = null;
+      const before = storeCountRef.current;
+      onRefresh?.();
+      let attempts = 0;
+      pollRef.current = setInterval(() => {
+        if (storeCountRef.current > before) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          return;
+        }
+        attempts += 1;
+        onRefresh?.();
+        if (attempts >= 3) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      }, 5000);
+    }
+    focusHandlerRef.current = onFocus;
+    window.addEventListener("focus", onFocus);
+  }
+
+  // Sends the browser to the real OAuth authorize flow (tiktok-auth-start /
+  // shopee-auth-start), same as clicking a "Connect with X" button anywhere
+  // else. Opened in a new tab so this page stays open.
+  function startOAuth(fnName) {
+    window.open(`${SUPABASE_URL}/functions/v1/${fnName}`, "_blank");
+    armRefreshOnReturn();
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="text-sm font-medium mb-3 flex items-center gap-1.5">
+        <LogIn size={14} className="text-teal-500" /> {t("使用平台账号登录连接", "Connect via Platform Login")}
+      </div>
+      <div className="text-xs text-slate-400 mb-3">
+        {t(
+          "点击后会在新标签页跳转到平台的登录/授权页面，完成授权后关闭该标签页，回到这里即可看到新连接的店铺（最多等待约20秒自动刷新）。",
+          "Clicking opens a new tab for the platform's login/authorize page. After authorizing, close that tab and come back here — the new store shows up automatically (auto-refreshes within ~20s).",
+        )}
+      </div>
+      <div className="flex gap-2">
+        <button
+          onClick={() => startOAuth("shopee-auth-start")}
+          className="flex-1 flex items-center justify-center gap-2 text-sm px-4 py-2.5 rounded-lg border border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100"
+        >
+          <LogIn size={15} /> {t("使用 Shopee 登录连接", "Connect with Shopee Login")}
+        </button>
+        <button
+          onClick={() => startOAuth("tiktok-auth-start")}
+          className="flex-1 flex items-center justify-center gap-2 text-sm px-4 py-2.5 rounded-lg border border-slate-400 bg-slate-50 text-slate-700 hover:bg-slate-100"
+        >
+          <LogIn size={15} /> {t("使用 TikTok Shop 登录连接", "Connect with TikTok Shop Login")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function StoreManagement({ t, stores, onConnect, onSetSyncMode, onRefresh }) {
   const [name, setName] = useState("");
   const [platform, setPlatform] = useState("Shopee");
-  const [oauthPlatform, setOauthPlatform] = useState(null); // null | "Shopee" | "TikTok Shop"
 
   function handleConnect() {
     if (!name.trim()) return;
@@ -313,46 +396,6 @@ export function StoreManagement({ t, stores, onConnect, onSetSyncMode }) {
 
   return (
     <div className="space-y-4">
-      <div className="bg-white border border-slate-200 rounded-xl p-4">
-        <div className="text-sm font-medium mb-3 flex items-center gap-1.5">
-          <LogIn size={14} className="text-teal-500" /> {t("使用平台账号登录连接（预览效果）", "Connect via Platform Login (Preview)")}
-        </div>
-        <div className="text-xs text-slate-400 mb-3">
-          {t(
-            "以后拿到 Shopee / TikTok Shop 的官方 API 之后，正式版会是这个体验：点一下按钮，跳转去平台登录、授权，完成后自动开始实时同步。下面可以先点一下看看这个流程大概长什么样——",
-            "Once official Shopee / TikTok Shop API access is granted, the real version will work like this: click the button, log in and authorize on the platform, then it auto-syncs in real time. You can preview roughly what that flow looks like below — ",
-          )}
-          <span className="text-amber-600 font-medium">{t("这是UI预览，不会真的连到你的账号", "this is a UI preview and won't actually connect to your account")}</span>
-          {t("，因为还没有正式 API Key 和后端支持。", ", since production API keys and backend support aren't set up yet.")}
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setOauthPlatform("Shopee")}
-            className="flex-1 flex items-center justify-center gap-2 text-sm px-4 py-2.5 rounded-lg border border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100"
-          >
-            <LogIn size={15} /> {t("使用 Shopee 登录连接", "Connect with Shopee Login")}
-          </button>
-          <button
-            onClick={() => setOauthPlatform("TikTok Shop")}
-            className="flex-1 flex items-center justify-center gap-2 text-sm px-4 py-2.5 rounded-lg border border-slate-400 bg-slate-50 text-slate-700 hover:bg-slate-100"
-          >
-            <LogIn size={15} /> {t("使用 TikTok Shop 登录连接", "Connect with TikTok Shop Login")}
-          </button>
-        </div>
-      </div>
-
-      {oauthPlatform && (
-        <OAuthConnectModal
-          t={t}
-          platform={oauthPlatform}
-          onClose={() => setOauthPlatform(null)}
-          onConnected={(shopNames) => {
-            shopNames.forEach((n) => onConnect(n, oauthPlatform, "api"));
-            setOauthPlatform(null);
-          }}
-        />
-      )}
-
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="text-sm font-medium mb-3 flex items-center gap-1.5">
           <Link2 size={14} className="text-teal-500" /> {t("手动连接新店铺（现阶段实际使用的方式）", "Manually Connect a New Store (current real workflow)")}
@@ -396,21 +439,23 @@ export function StoreManagement({ t, stores, onConnect, onSetSyncMode }) {
       {["Shopee", "TikTok Shop"].map((pf) => {
         const theme = PLATFORM_THEME[pf];
         const list = stores.filter((s) => s.platform === pf);
+        const PfLogo = pf === "Shopee" ? ShoppingBag : Music2;
         return (
           <div key={pf} className={`rounded-xl border ${theme.border} overflow-hidden bg-white`}>
             <div className={`${theme.headerBg} text-white px-5 py-3 flex items-center justify-between`}>
               <span className="text-sm font-medium flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-white/80" /> {pf}
+                <PfLogo size={14} className="text-white" /> {pf}
               </span>
               <span className="text-[11px] bg-white/20 px-2 py-0.5 rounded-full">{t(`${list.length} 个已连接店铺`, `${list.length} store(s) connected`)}</span>
             </div>
             {list.length === 0 && <div className="text-xs text-slate-400 text-center py-6">{t(`尚未连接任何 ${pf} 店铺`, `No ${pf} stores connected yet`)}</div>}
             {list.length > 0 && (
               <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[560px]">
+              <table className="w-full text-sm min-w-[640px]">
                 <thead>
                   <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
                     <th className="py-2 pr-3 pl-5 font-medium">{t("店铺名称", "Store Name")}</th>
+                    <th className="py-2 pr-3 font-medium">Shop ID</th>
                     <th className="py-2 pr-3 font-medium">{t("连接时间", "Connected At")}</th>
                     <th className="py-2 pr-3 font-medium">{t("数据同步方式", "Sync Method")}</th>
                     <th className="py-2 pr-3 pr-5 font-medium">{t("状态", "Status")}</th>
@@ -419,7 +464,10 @@ export function StoreManagement({ t, stores, onConnect, onSetSyncMode }) {
                 <tbody>
                   {list.map((s) => (
                     <tr key={s.id} className="border-b border-slate-100 last:border-0">
-                      <td className="py-2.5 pr-3 pl-5 font-medium">{s.name}</td>
+                      <td className="py-2.5 pr-3 pl-5 font-medium flex items-center gap-1.5">
+                        <PfLogo size={13} className={pf === "Shopee" ? "text-orange-500" : "text-slate-700"} /> {s.name}
+                      </td>
+                      <td className="py-2.5 pr-3 text-slate-400">{s.shopId || "—"}</td>
                       <td className="py-2.5 pr-3 text-slate-500 tabular-nums">{s.connectedAt}</td>
                       <td className="py-2.5 pr-3">
                         {s.syncMode === "api" ? (
@@ -468,127 +516,3 @@ export function StoreManagement({ t, stores, onConnect, onSetSyncMode }) {
   );
 }
 
-function OAuthConnectModal({ t, platform, onClose, onConnected }) {
-  const [step, setStep] = useState("login"); // login -> authorize -> connecting -> success
-  const [account, setAccount] = useState("");
-  const [selectedShops, setSelectedShops] = useState(() => new Set());
-  const theme = PLATFORM_THEME[platform];
-  const mockShops = platform === "Shopee"
-    ? ["Shopee 官方旗舰店", "Shopee 分店 2"]
-    : ["TikTok Shop 主账号"];
-
-  function toggleShop(name) {
-    setSelectedShops((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name); else next.add(name);
-      return next;
-    });
-  }
-
-  function handleLogin() {
-    if (!account.trim()) return;
-    setStep("authorize");
-  }
-
-  function handleAuthorize() {
-    setStep("connecting");
-    setTimeout(() => setStep("success"), 1200);
-  }
-
-  function handleFinish() {
-    onConnected(Array.from(selectedShops));
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
-      <div className="relative w-[380px] bg-white rounded-xl shadow-xl overflow-hidden">
-        <div className={`${theme.headerBg} text-white px-5 py-3 flex items-center justify-between`}>
-          <span className="text-sm font-medium">{t(`${platform} 授权登录（预览模拟）`, `${platform} Authorization Login (Preview)`)}</span>
-          <button onClick={onClose} className="text-white/80 hover:text-white"><X size={16} /></button>
-        </div>
-
-        <div className="p-5">
-          <div className="mb-3 flex items-center gap-2 text-[11px] px-2.5 py-1.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-200">
-            <Info size={12} className="shrink-0" /> {t(`这是模拟画面，不会真的连到你的 ${platform} 账号`, `This is a simulated screen and won't actually connect to your ${platform} account`)}
-          </div>
-
-          {step === "login" && (
-            <>
-              <div className="text-sm font-medium mb-3">{t(`登录你的 ${platform} 卖家账号`, `Log in to your ${platform} seller account`)}</div>
-              <input
-                value={account}
-                onChange={(e) => setAccount(e.target.value)}
-                placeholder={t("手机号 / 邮箱（模拟输入）", "Phone / Email (simulated input)")}
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400 mb-2"
-              />
-              <input
-                type="password"
-                placeholder={t("密码（模拟输入，不会被记录）", "Password (simulated input, not recorded)")}
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400 mb-4"
-              />
-              <button
-                onClick={handleLogin}
-                disabled={!account.trim()}
-                className={`w-full text-sm py-2 rounded-lg text-white ${account.trim() ? "bg-slate-900 hover:bg-slate-800" : "bg-slate-300 cursor-not-allowed"}`}
-              >
-                {t("登录", "Log in")}
-              </button>
-            </>
-          )}
-
-          {step === "authorize" && (
-            <>
-              <div className="text-sm font-medium mb-2">{t("我们的ERP系统请求以下权限", "Our ERP system is requesting the following permissions")}</div>
-              <div className="text-xs text-slate-500 mb-3">{t("账号：", "Account: ")}{account}</div>
-              <ul className="text-xs text-slate-600 space-y-1.5 mb-4">
-                <li className="flex items-center gap-2"><CheckCircle2 size={13} className="text-teal-500" /> {t("读取 / 更新订单信息", "Read / update order info")}</li>
-                <li className="flex items-center gap-2"><CheckCircle2 size={13} className="text-teal-500" /> {t("读取 / 更新库存信息", "Read / update inventory info")}</li>
-                <li className="flex items-center gap-2"><CheckCircle2 size={13} className="text-teal-500" /> {t("读取物流 / 追踪信息", "Read shipping / tracking info")}</li>
-                <li className="flex items-center gap-2"><CheckCircle2 size={13} className="text-teal-500" /> {t("读取店铺基本信息", "Read basic store info")}</li>
-              </ul>
-              <div className="flex gap-2">
-                <button onClick={onClose} className="flex-1 text-sm py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
-                  {t("取消", "Cancel")}
-                </button>
-                <button onClick={handleAuthorize} className="flex-1 text-sm py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800">
-                  {t("同意并连接", "Agree & Connect")}
-                </button>
-              </div>
-            </>
-          )}
-
-          {step === "connecting" && (
-            <div className="flex flex-col items-center justify-center py-8 gap-3">
-              <RefreshCw size={24} className="text-teal-500 animate-spin" />
-              <div className="text-sm text-slate-500">{t("正在建立连接...", "Connecting...")}</div>
-            </div>
-          )}
-
-          {step === "success" && (
-            <>
-              <div className="flex items-center gap-2 mb-3 text-emerald-600">
-                <CheckCircle2 size={16} /> <span className="text-sm font-medium">{t("已连接，选择要加入系统的店铺", "Connected — select stores to add")}</span>
-              </div>
-              <div className="space-y-2 mb-4">
-                {mockShops.map((s) => (
-                  <label key={s} className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50">
-                    <input type="checkbox" checked={selectedShops.has(s)} onChange={() => toggleShop(s)} className="h-3.5 w-3.5 rounded border-slate-300" />
-                    {s}
-                  </label>
-                ))}
-              </div>
-              <button
-                onClick={handleFinish}
-                disabled={selectedShops.size === 0}
-                className={`w-full text-sm py-2 rounded-lg text-white ${selectedShops.size > 0 ? "bg-slate-900 hover:bg-slate-800" : "bg-slate-300 cursor-not-allowed"}`}
-              >
-                {t(`完成连接（${selectedShops.size}）`, `Finish Connecting (${selectedShops.size})`)}
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}

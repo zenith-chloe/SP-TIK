@@ -1,13 +1,23 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Boxes, RefreshCw, LogIn, LogOut, AlertTriangle, Menu, X } from "lucide-react";
 import {
-  supabaseClient, mapDbStore, mapDbProduct, mapDbOrder, mapDbTransferLog, DEMO_TO_DB_STATUS, DEMO_TO_DB_PLATFORM, NAV,
+  supabaseClient, mapDbStore, mapDbProduct, mapDbSupplier, mapDbPurchaseOrder, mapDbOrder, mapDbTransferLog,
+  mapDbAdjustmentRequest, mapDbCancellationRecord, DEMO_TO_DB_STATUS, DEMO_TO_DB_PLATFORM, NAV,
 } from "./shared.jsx";
 import { Overview, Orders, OrderDrawer, Inventory } from "./pagesOverviewOrders.jsx";
-import { ProductMove, StoreManagement } from "./pagesMove.jsx";
+import { ProductMove } from "./pagesMove.jsx";
 import { ManualImport, Finance, AIPanel, Roles, AdsSpend, PrintSlip, LabelPrinting } from "./pagesImportFinance.jsx";
 import { Warehouse } from "./pagesWarehouse.jsx";
 import { ProductMaster } from "./pagesProducts.jsx";
+import { SupplierMaster } from "./pagesSuppliers.jsx";
+import { PurchaseOrderList } from "./pagesPurchaseOrders.jsx";
+import { InventoryAdjustment, AutoImportHub } from "./pagesInventoryAdjustment.jsx";
+import { ShipPackageTest } from "./pagesShipTest.jsx";
+
+// Supplier Management / Purchase Order (incl. Receiving) are not part of the
+// current warehouse/staff workflow — owner-only until AutoCount purchasing
+// sync is built. Code/schema stays intact, just hidden + access-gated.
+const OWNER_ONLY_TAB_KEYS = ["suppliers", "purchaseorders", "shiptest"];
 
 /* ============================== Login ============================== */
 
@@ -133,11 +143,16 @@ async function syncFulfillmentToPlatform(_order) {
 
 export default function App() {
   const [session, setSession] = useState(undefined); // undefined = checking, null = logged out
+  const [myRole, setMyRole] = useState(null);
   const [dataLoading, setDataLoading] = useState(true);
   const [orders, setOrders] = useState([]);
   const [inventory, setInventory] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+  const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [transferLogs, setTransferLogs] = useState([]);
   const [warehouseLocations, setWarehouseLocations] = useState([]);
+  const [adjustmentRequests, setAdjustmentRequests] = useState([]);
+  const [cancellationRecords, setCancellationRecords] = useState([]);
   const [stores, setStores] = useState([]);
   const [tab, setTab] = useState("overview");
   const [selectedOrder, setSelectedOrder] = useState(null);
@@ -173,7 +188,18 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  const ORDER_COLUMNS = "id, order_no, platform, platform_account_id, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, platform_status, warehouse_stage, is_cod, shipping_fee, order_date, print_count, last_printed_at, last_printed_by, note_color, note_text, updated_at";
+  // Supplier Management / Purchase Order / Receiving are owner-only for now
+  // (not part of the current warehouse/staff workflow) — this is the only
+  // place the frontend needs to know its own role, purely for hiding nav
+  // items and gating these two tabs. Actual write protection already lives
+  // in RLS regardless of this.
+  useEffect(() => {
+    if (!session) { setMyRole(null); return; }
+    supabaseClient.from("profiles").select("role").eq("id", session.user.id).maybeSingle()
+      .then(({ data }) => setMyRole(data?.role || "staff"));
+  }, [session]);
+
+  const ORDER_COLUMNS = "id, order_no, platform, platform_account_id, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, platform_status, warehouse_stage, cancel_stage, is_cod, shipping_fee, order_date, print_count, last_printed_at, last_printed_by, note_color, note_text, updated_at";
 
   // Supabase's REST API caps any single response at 1000 rows and a `.in()`
   // filter with thousands of ids blows past sane URL length limits, so once
@@ -231,12 +257,16 @@ export default function App() {
       ? ordersQuery.gt("updated_at", lastSyncAtRef.current)
       : ordersQuery.order("order_date", { ascending: false }).limit(5000);
 
-    const [accountsRes, productsRes, ordersRes, transferLogsRes, warehouseLocationsRes] = await Promise.all([
-      supabaseClient.from("platform_accounts").select("id, platform, account_name, created_at, token_expires_at, seller_name, seller_address, seller_phone"),
-      supabaseClient.from("products").select("sku, name, warehouse_a_qty, warehouse_b_qty, listed_shop_id, location, location_id, price, weight_kg, unit, image_url"),
+    const [accountsRes, productsRes, suppliersRes, purchaseOrdersRes, ordersRes, transferLogsRes, warehouseLocationsRes, adjustmentRequestsRes, cancellationRecordsRes] = await Promise.all([
+      supabaseClient.from("platform_accounts").select("id, platform, account_name, shop_id, created_at, token_expires_at, seller_name, seller_address, seller_phone"),
+      supabaseClient.from("products").select("id, sku, name, warehouse_a_qty, warehouse_b_qty, listed_shop_id, location, location_id, price, weight_kg, unit, image_url, category, brand, part_number, barcode, cost_price, status, autocount_item_code"),
+      supabaseClient.from("suppliers").select("id, name, contact_person, phone, email, address, payment_terms, status, notes"),
+      supabaseClient.from("purchase_orders").select("id, po_no, supplier_id, supplier_name, status, order_date, expected_date, total_amount, notes, purchase_order_items(id, product_id, sku, product_name, qty, unit_cost, subtotal)").order("created_at", { ascending: false }),
       ordersQuery,
       supabaseClient.from("transfer_logs").select("id, type, sku, from_location, to_location, qty, created_at").order("created_at", { ascending: false }),
       supabaseClient.from("warehouse_locations").select("id, parent_id, level, code, name"),
+      supabaseClient.from("inventory_adjustment_requests").select("*").order("requested_at", { ascending: false }),
+      supabaseClient.from("cancellation_records").select("*").order("requested_at", { ascending: false }),
     ]);
 
     const changedOrders = ordersRes.data || [];
@@ -253,8 +283,12 @@ export default function App() {
     const firstShopeeStore = mappedStores.find((s) => s.platform === "Shopee")?.id;
     setStores(mappedStores);
     setInventory((productsRes.data || []).map((p) => mapDbProduct(p, firstShopeeStore)));
+    setSuppliers((suppliersRes.data || []).map(mapDbSupplier));
+    setPurchaseOrders((purchaseOrdersRes.data || []).map((po) => mapDbPurchaseOrder(po, po.purchase_order_items)));
     setTransferLogs((transferLogsRes.data || []).map(mapDbTransferLog));
     setWarehouseLocations(warehouseLocationsRes.data || []);
+    setAdjustmentRequests((adjustmentRequestsRes.data || []).map(mapDbAdjustmentRequest));
+    setCancellationRecords((cancellationRecordsRes.data || []).map(mapDbCancellationRecord));
 
     const mappedChangedOrders = changedOrders.map((o) => mapDbOrder(o, itemsByOrder[o.id] || []));
     if (isIncremental) {
@@ -399,6 +433,95 @@ export default function App() {
     return { error: null };
   }
 
+  // Inventory Adjustment (approval-gated request, not a direct write). Per
+  // the AutoCount-is-sole-Physical-Stock-Master direction, this never touches
+  // products.warehouse_a_qty/b_qty itself — it only records the request and,
+  // once owner-approved, marks autocount_sync_status='pending' for a future
+  // real AutoCount sync. Fully separate from recordStockMovement above,
+  // which stays as-is for its own direct stock_in/out/transfer/adjustment
+  // writes.
+  async function createAdjustmentRequest({ sku, qtyChange, reason }) {
+    const product = inventory.find((i) => i.sku === sku);
+    const { error } = await supabaseClient.from("inventory_adjustment_requests").insert({
+      product_id: product?.id || null,
+      sku,
+      qty_change: Number(qtyChange) || 0,
+      reason,
+      requested_by: session?.user?.email || null,
+    });
+    if (error) return { error: error.message };
+    await loadRealData(true);
+    return { error: null };
+  }
+
+  async function approveAdjustmentRequest(id) {
+    const { error } = await supabaseClient.from("inventory_adjustment_requests")
+      .update({ status: "approved", approved_by: session?.user?.email || null, approved_at: new Date().toISOString(), autocount_sync_status: "pending" })
+      .eq("id", id);
+    if (error) { console.error("approveAdjustmentRequest failed", error); return { error: error.message }; }
+    setAdjustmentRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status: "approved", approvedBy: session?.user?.email || null, autocountSyncStatus: "pending" } : r)));
+    return { error: null };
+  }
+
+  async function rejectAdjustmentRequest(id) {
+    const { error } = await supabaseClient.from("inventory_adjustment_requests")
+      .update({ status: "rejected", approved_by: session?.user?.email || null, approved_at: new Date().toISOString() })
+      .eq("id", id);
+    if (error) { console.error("rejectAdjustmentRequest failed", error); return { error: error.message }; }
+    setAdjustmentRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status: "rejected", approvedBy: session?.user?.email || null } : r)));
+    return { error: null };
+  }
+
+  // Order Cancellation Management. Deliberately never writes order_status
+  // (frozen — see DB_TO_DEMO_STATUS) or deletes the order; cancel_stage is a
+  // fully separate lifecycle (null -> 'requested' -> 'cancelled') and
+  // cancellation_records is the append-only audit trail, kept even for
+  // orders already sent to AutoCount (autocount_doc_no carried over from the
+  // order for manual DO rollback follow-up).
+  async function requestOrderCancellation(orderId, reason) {
+    const { data: dbOrder, error: fetchErr } = await supabaseClient
+      .from("orders")
+      .select("id, order_no, platform, autocount_doc_no, buyer_name")
+      .eq("order_no", orderId)
+      .maybeSingle();
+    if (fetchErr || !dbOrder) return { error: fetchErr?.message || "订单不存在" };
+    if (!["shopee", "tiktok"].includes(dbOrder.platform)) return { error: "只支持 Shopee/TikTok 订单取消" };
+
+    const order = orders.find((o) => o.id === orderId);
+    const { error: recErr } = await supabaseClient.from("cancellation_records").insert({
+      order_id: dbOrder.id,
+      order_no: dbOrder.order_no,
+      channel: dbOrder.platform,
+      sku: order?.sku || "",
+      product_name: order?.product || "",
+      qty: order?.qty || 1,
+      customer_name: dbOrder.buyer_name || "",
+      reason,
+      autocount_doc_no: dbOrder.autocount_doc_no || null,
+      requested_by: session?.user?.email || null,
+    });
+    if (recErr) return { error: recErr.message };
+
+    const { error: stageErr } = await supabaseClient.from("orders").update({ cancel_stage: "requested" }).eq("order_no", orderId);
+    if (stageErr) return { error: stageErr.message };
+
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, cancelStage: "requested" } : o)));
+    await loadRealData(true);
+    return { error: null };
+  }
+
+  async function finalizeOrderCancellation(recordId, orderId) {
+    const { error: recErr } = await supabaseClient.from("cancellation_records").update({ cancelled_at: new Date().toISOString() }).eq("id", recordId);
+    if (recErr) { console.error("finalizeOrderCancellation record update failed", recErr); return { error: recErr.message }; }
+
+    const { error: stageErr } = await supabaseClient.from("orders").update({ cancel_stage: "cancelled" }).eq("order_no", orderId);
+    if (stageErr) { console.error("finalizeOrderCancellation stage update failed", stageErr); return { error: stageErr.message }; }
+
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, cancelStage: "cancelled" } : o)));
+    setCancellationRecords((prev) => prev.map((r) => (r.id === recordId ? { ...r, cancelledAt: new Date().toISOString() } : r)));
+    return { error: null };
+  }
+
   // Warehouse location hierarchy (warehouse -> zone -> shelf -> bin). The two
   // warehouse-level rows are seeded once by migration and aren't editable
   // here (they're the same two places warehouse_a_qty/b_qty already track);
@@ -450,7 +573,7 @@ export default function App() {
   // so letting this page also mutate warehouse_a_qty/b_qty directly would
   // create a second, unaudited way to change stock. The one exception is a
   // brand-new SKU's starting quantity, set once at creation.
-  async function createProduct({ sku, name, price, weightKg, unit, imageUrl, initialStock }) {
+  async function createProduct({ sku, name, price, weightKg, unit, imageUrl, initialStock, category, brand, partNumber, barcode, costPrice, status, autocountItemCode }) {
     const { error } = await supabaseClient.from("products").insert({
       sku,
       name,
@@ -462,6 +585,13 @@ export default function App() {
       image_url: imageUrl || null,
       warehouse_a_qty: initialStock || 0,
       warehouse_b_qty: 0,
+      category: category || null,
+      brand: brand || null,
+      part_number: partNumber || null,
+      barcode: barcode || null,
+      cost_price: costPrice || 0,
+      status: status || "active",
+      autocount_item_code: autocountItemCode || null,
     });
     if (error) return { error: error.message };
     setInventory((prev) => [
@@ -470,15 +600,37 @@ export default function App() {
         sku, name, warehouseA: initialStock || 0, warehouseB: 0, reorderPoint: 20,
         shopeeLinked: true, tiktokLinked: true, listedShop: null, location: "",
         price: price || 0, weightKg: weightKg || 0, unit: unit || "", imageUrl: imageUrl || null,
+        category: category || "", brand: brand || "", partNumber: partNumber || "",
+        barcode: barcode || "", costPrice: costPrice || 0, status: status || "active",
+        autocountItemCode: autocountItemCode || "",
       },
     ]);
     return { error: null };
   }
 
   async function updateProductMaster(sku, fields) {
+    // Only include keys actually present in `fields` — this function is used
+    // both for full-form saves (all keys present) and lightweight partial
+    // updates like a status-only toggle (one key present). Defaulting an
+    // absent key to null/"pcs"/0 here would silently wipe that column on
+    // every partial-update call, not just leave it unset.
+    const payload = {};
+    if ("name" in fields) payload.name = fields.name;
+    if ("price" in fields) payload.price = fields.price;
+    if ("weightKg" in fields) payload.weight_kg = fields.weightKg;
+    if ("unit" in fields) payload.unit = fields.unit || "pcs";
+    if ("imageUrl" in fields) payload.image_url = fields.imageUrl || null;
+    if ("category" in fields) payload.category = fields.category || null;
+    if ("brand" in fields) payload.brand = fields.brand || null;
+    if ("partNumber" in fields) payload.part_number = fields.partNumber || null;
+    if ("barcode" in fields) payload.barcode = fields.barcode || null;
+    if ("costPrice" in fields) payload.cost_price = fields.costPrice || 0;
+    if ("status" in fields) payload.status = fields.status || "active";
+    if ("autocountItemCode" in fields) payload.autocount_item_code = fields.autocountItemCode || null;
+
     const { error } = await supabaseClient
       .from("products")
-      .update({ name: fields.name, price: fields.price, weight_kg: fields.weightKg, unit: fields.unit || "pcs", image_url: fields.imageUrl || null })
+      .update(payload)
       .eq("sku", sku);
     if (error) { console.error("updateProductMaster failed", error); return { error: error.message }; }
     setInventory((prev) => prev.map((item) => (item.sku === sku ? { ...item, ...fields } : item)));
@@ -492,11 +644,247 @@ export default function App() {
     return { error: null };
   }
 
-  function connectStore(name, platform, syncMode = "manual") {
-    setStores((prev) => [
+  // Supplier Master CRUD — same shape as Product Master's. Not linked to
+  // products.supplier_id from any UI yet (explicitly deferred).
+  async function createSupplier({ name, contactPerson, phone, email, address, paymentTerms, notes, status }) {
+    const { data, error } = await supabaseClient
+      .from("suppliers")
+      .insert({
+        name,
+        contact_person: contactPerson || null,
+        phone: phone || null,
+        email: email || null,
+        address: address || null,
+        payment_terms: paymentTerms || null,
+        notes: notes || null,
+        status: status || "active",
+      })
+      .select("id")
+      .single();
+    if (error) return { error: error.message };
+    setSuppliers((prev) => [
       ...prev,
-      { id: `store-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, platform, name, connectedAt: new Date().toISOString().slice(0, 10), status: "已连接", syncMode },
+      { id: data.id, name, contactPerson: contactPerson || "", phone: phone || "", email: email || "", address: address || "", paymentTerms: paymentTerms || "", notes: notes || "", status: status || "active" },
     ]);
+    return { error: null };
+  }
+
+  async function updateSupplier(id, fields) {
+    // Same partial-update-safe pattern as updateProductMaster: only include a
+    // key if it was actually passed, so a future single-field call (e.g. a
+    // status toggle) can never silently null out the rest of the row.
+    const payload = {};
+    if ("name" in fields) payload.name = fields.name;
+    if ("contactPerson" in fields) payload.contact_person = fields.contactPerson || null;
+    if ("phone" in fields) payload.phone = fields.phone || null;
+    if ("email" in fields) payload.email = fields.email || null;
+    if ("address" in fields) payload.address = fields.address || null;
+    if ("paymentTerms" in fields) payload.payment_terms = fields.paymentTerms || null;
+    if ("notes" in fields) payload.notes = fields.notes || null;
+    if ("status" in fields) payload.status = fields.status || "active";
+
+    const { error } = await supabaseClient.from("suppliers").update(payload).eq("id", id);
+    if (error) { console.error("updateSupplier failed", error); return { error: error.message }; }
+    setSuppliers((prev) => prev.map((s) => (s.id === id ? { ...s, ...fields } : s)));
+    return { error: null };
+  }
+
+  async function deleteSupplier(id) {
+    const { error } = await supabaseClient.from("suppliers").delete().eq("id", id);
+    if (error) { console.error("deleteSupplier failed", error); return { error: error.message }; }
+    setSuppliers((prev) => prev.filter((s) => s.id !== id));
+    return { error: null };
+  }
+
+  // Purchase Order CRUD — Phase 1, pure record-keeping. Saving only ever
+  // writes to purchase_orders/purchase_order_items; status changes (incl.
+  // "received") never touch products/stock_movements/orders.
+  // po_no uniqueness is enforced by a DB constraint (not just the frontend's
+  // suggested-number generator), so a collision surfaces as a raw Postgres
+  // 23505 error here — translated to a readable message for staff.
+  function friendlyPoError(err) {
+    if (err.code === "23505") return t("PO 编号已存在，请更换编号", "This PO No. already exists — please use a different one");
+    return err.message;
+  }
+
+  async function createPurchaseOrder({ poNo, supplierId, supplierName, orderDate, expectedDate, notes, items }) {
+    const totalAmount = items.reduce((sum, it) => sum + it.qty * it.unitCost, 0);
+    const { data: po, error: poErr } = await supabaseClient
+      .from("purchase_orders")
+      .insert({
+        po_no: poNo,
+        supplier_id: supplierId,
+        supplier_name: supplierName,
+        order_date: orderDate,
+        expected_date: expectedDate || null,
+        notes: notes || null,
+        total_amount: totalAmount,
+        created_by: session?.user?.email || null,
+      })
+      .select("id")
+      .single();
+    if (poErr) return { error: friendlyPoError(poErr) };
+
+    const { error: itemsErr } = await supabaseClient.from("purchase_order_items").insert(
+      items.map((it) => ({
+        purchase_order_id: po.id,
+        product_id: it.productId,
+        sku: it.sku,
+        product_name: it.productName,
+        qty: it.qty,
+        unit_cost: it.unitCost,
+        subtotal: it.qty * it.unitCost,
+      }))
+    );
+    if (itemsErr) {
+      await supabaseClient.from("purchase_orders").delete().eq("id", po.id); // best-effort rollback, keeps an item failure from leaving an empty orphan PO
+      return { error: itemsErr.message };
+    }
+
+    setPurchaseOrders((prev) => [
+      {
+        id: po.id, poNo, supplierId, supplierName, status: "draft", orderDate, expectedDate: expectedDate || "",
+        totalAmount, notes: notes || "",
+        items: items.map((it) => ({ ...it, subtotal: it.qty * it.unitCost })),
+      },
+      ...prev,
+    ]);
+    return { error: null };
+  }
+
+  async function updatePurchaseOrder(id, { poNo, supplierId, supplierName, orderDate, expectedDate, notes, items }) {
+    const totalAmount = items.reduce((sum, it) => sum + it.qty * it.unitCost, 0);
+    const { error: poErr } = await supabaseClient
+      .from("purchase_orders")
+      .update({
+        po_no: poNo,
+        supplier_id: supplierId,
+        supplier_name: supplierName,
+        order_date: orderDate,
+        expected_date: expectedDate || null,
+        notes: notes || null,
+        total_amount: totalAmount,
+      })
+      .eq("id", id);
+    if (poErr) return { error: friendlyPoError(poErr) };
+
+    // Items are replaced wholesale on every edit (delete all, insert the
+    // current set) rather than diffed row-by-row — simplest correct approach
+    // for Phase 1's scope, since line items have no independent lifecycle
+    // outside their parent PO.
+    const { error: delErr } = await supabaseClient.from("purchase_order_items").delete().eq("purchase_order_id", id);
+    if (delErr) return { error: delErr.message };
+
+    const { error: insErr } = await supabaseClient.from("purchase_order_items").insert(
+      items.map((it) => ({
+        purchase_order_id: id,
+        product_id: it.productId,
+        sku: it.sku,
+        product_name: it.productName,
+        qty: it.qty,
+        unit_cost: it.unitCost,
+        subtotal: it.qty * it.unitCost,
+      }))
+    );
+    if (insErr) return { error: insErr.message };
+
+    setPurchaseOrders((prev) => prev.map((po) => (po.id === id
+      ? { ...po, poNo, supplierId, supplierName, orderDate, expectedDate: expectedDate || "", notes: notes || "", totalAmount, items: items.map((it) => ({ ...it, subtotal: it.qty * it.unitCost })) }
+      : po)));
+    return { error: null };
+  }
+
+  async function updatePurchaseOrderStatus(id, status) {
+    const { error } = await supabaseClient.from("purchase_orders").update({ status }).eq("id", id);
+    if (error) { console.error("updatePurchaseOrderStatus failed", error); return { error: error.message }; }
+    setPurchaseOrders((prev) => prev.map((po) => (po.id === id ? { ...po, status } : po)));
+    return { error: null };
+  }
+
+  async function deletePurchaseOrder(id) {
+    const { error } = await supabaseClient.from("purchase_orders").delete().eq("id", id);
+    if (error) { console.error("deletePurchaseOrder failed", error); return { error: error.message }; }
+    setPurchaseOrders((prev) => prev.filter((po) => po.id !== id));
+    return { error: null };
+  }
+
+  // Registers a goods receipt against a PO — separate from and never
+  // triggered by the PO's own status buttons. Only ever writes
+  // stock_movements (with purchase_order_id/purchase_order_item_id set)
+  // and products.warehouse_a_qty/b_qty, same as recordStockMovement.
+  async function registerReceiving({ purchaseOrderId, warehouse, lines }) {
+    const productField = warehouse === "B" ? "warehouse_b_qty" : "warehouse_a_qty";
+    for (const line of lines) {
+      if (!line.qty || line.qty <= 0) continue;
+      const { data: product, error: fetchErr } = await supabaseClient
+        .from("products")
+        .select("id, warehouse_a_qty, warehouse_b_qty")
+        .eq("id", line.productId)
+        .maybeSingle();
+      if (fetchErr || !product) return { error: fetchErr?.message || "商品不存在" };
+
+      const stockBefore = warehouse === "B" ? (product.warehouse_b_qty || 0) : (product.warehouse_a_qty || 0);
+      const stockAfter = stockBefore + line.qty;
+
+      const { error: updateErr } = await supabaseClient.from("products").update({ [productField]: stockAfter }).eq("id", product.id);
+      if (updateErr) return { error: updateErr.message };
+
+      const { error: logErr } = await supabaseClient.from("stock_movements").insert({
+        product_id: product.id,
+        sku: line.sku,
+        movement_type: "stock_in",
+        qty_change: line.qty,
+        qty_deducted: line.qty,
+        stock_before: stockBefore,
+        stock_after: stockAfter,
+        warehouse,
+        reason: "PO 收货",
+        staff_email: session?.user?.email || null,
+        purchase_order_id: purchaseOrderId,
+        purchase_order_item_id: line.purchaseOrderItemId,
+      });
+      if (logErr) { console.error("registerReceiving log failed", logErr); return { error: logErr.message }; }
+
+      setInventory((prev) => prev.map((item) => (item.sku === line.sku ? { ...item, [warehouse === "B" ? "warehouseB" : "warehouseA"]: stockAfter } : item)));
+    }
+    return { error: null };
+  }
+
+  // Persists the connection to platform_accounts (platform + shop_id has a DB
+  // unique constraint already in place — a duplicate insert is rejected and
+  // rolled back from local state below). shop_id has no real OAuth-issued
+  // value yet (no live API access), so a slug of the store name stands in
+  // for it until a real integration supplies one. access_token/refresh_token
+  // are never selected back into the frontend anywhere (loadRealData's
+  // platform_accounts query doesn't include those columns), so nothing here
+  // renders them.
+  function connectStore(name, platform, syncMode = "manual") {
+    const tempId = `store-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const connectedAt = new Date().toISOString().slice(0, 10);
+    setStores((prev) => [...prev, { id: tempId, platform, name, connectedAt, status: "已连接", syncMode }]);
+
+    const dbPlatform = DEMO_TO_DB_PLATFORM[platform] || "shopee";
+    const shopId = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || null;
+    const payload = {
+      platform: dbPlatform,
+      account_name: name,
+      shop_id: shopId,
+      access_token: null,
+      refresh_token: null,
+      status: "connected",
+      last_synced_at: null,
+    };
+    if (syncMode === "api") payload.token_expires_at = new Date(Date.now() + 365 * 86400000).toISOString();
+
+    supabaseClient.from("platform_accounts").insert(payload).select("id, created_at").single()
+      .then(({ data, error }) => {
+        if (error || !data) {
+          console.error("connectStore failed", error);
+          setStores((prev) => prev.filter((s) => s.id !== tempId)); // duplicate (platform+shop_id) or other DB error — drop the optimistic entry
+          return;
+        }
+        setStores((prev) => prev.map((s) => (s.id === tempId ? { ...s, id: data.id, connectedAt: (data.created_at || "").slice(0, 10) } : s)));
+      });
   }
 
   function setStoreSyncMode(storeId, mode) {
@@ -678,12 +1066,16 @@ export default function App() {
   // convention as handlePrintConfirm. Each only advances orders actually at
   // the expected prior stage, logs one warehouse_action_log row per order,
   // and never touches order_status or the platform sync tables.
+  // Accepts orders at 'pending' (Order Management Center's new 拣货完成
+  // button, picking happens before printing) or 'printed' (Warehouse page's
+  // existing flow, picking happens after printing) — both are valid prior
+  // stages, picking itself doesn't care which one came first.
   async function markPicked(orderNos) {
     const { data: dbOrders, error } = await supabaseClient
       .from("orders")
-      .select("id, order_no")
+      .select("id, order_no, warehouse_stage")
       .in("order_no", orderNos)
-      .eq("warehouse_stage", "printed");
+      .in("warehouse_stage", ["pending", "printed"]);
     if (error || !dbOrders || dbOrders.length === 0) return;
 
     const ids = dbOrders.map((o) => o.id);
@@ -693,7 +1085,7 @@ export default function App() {
 
     await supabaseClient
       .from("warehouse_action_log")
-      .insert(ids.map((id) => ({ order_id: id, action: "picked", from_stage: "printed", to_stage: "picked", staff_email: staffEmail })))
+      .insert(dbOrders.map((o) => ({ order_id: o.id, action: "picked", from_stage: o.warehouse_stage, to_stage: "picked", staff_email: staffEmail })))
       .then(({ error: logErr }) => logErr && console.error("warehouse_action_log insert (picked) failed", logErr));
 
     const orderNoSet = new Set(dbOrders.map((o) => o.order_no));
@@ -713,13 +1105,24 @@ export default function App() {
     const { error: updateErr } = await supabaseClient.from("orders").update({ warehouse_stage: "ready_ship" }).in("id", ids);
     if (updateErr) { console.error("markPacked failed", updateErr); return; }
 
+    // Packing complete also advances the business-facing order_status
+    // pending -> processing (mirrors confirmProcess's own pending-only gate)
+    // so ERP status reflects that the order has actually moved, not just
+    // the warehouse-internal stage.
+    const pendingIds = dbOrders.filter((o) => o.order_status === "pending").map((o) => o.id);
+    if (pendingIds.length > 0) {
+      const { error: statusErr } = await supabaseClient.from("orders").update({ order_status: "processing" }).in("id", pendingIds);
+      if (statusErr) console.error("markPacked order_status update failed", statusErr);
+    }
+
     await supabaseClient
       .from("warehouse_action_log")
       .insert(ids.map((id) => ({ order_id: id, action: "packed", from_stage: "picked", to_stage: "ready_ship", staff_email: staffEmail })))
       .then(({ error: logErr }) => logErr && console.error("warehouse_action_log insert (packed) failed", logErr));
 
     const orderNoSet = new Set(dbOrders.map((o) => o.order_no));
-    setOrders((prev) => prev.map((o) => (orderNoSet.has(o.id) ? { ...o, warehouseStage: "ready_ship" } : o)));
+    const pendingOrderNoSet = new Set(dbOrders.filter((o) => o.order_status === "pending").map((o) => o.order_no));
+    setOrders((prev) => prev.map((o) => (orderNoSet.has(o.id) ? { ...o, warehouseStage: "ready_ship", orderStatus: pendingOrderNoSet.has(o.id) ? "processing" : o.orderStatus } : o)));
 
     // Packing complete is the real "item left the shelf" moment, so this is
     // where stock actually gets deducted (moved here from handlePrintConfirm
@@ -804,7 +1207,7 @@ export default function App() {
           </button>
         </div>
         <nav className="flex-1 py-3 overflow-y-auto">
-          {NAV.map((item) => {
+          {NAV.filter((item) => myRole === "owner" || !OWNER_ONLY_TAB_KEYS.includes(item.key)).map((item) => {
             const Icon = item.icon;
             const active = tab === item.key;
             return (
@@ -871,10 +1274,43 @@ export default function App() {
         <div className="p-3 md:p-6">
           {tab === "overview" && <Overview t={t} orders={orders} inventory={inventory} stores={stores} onOpenOrder={setSelectedOrder} goTo={setTab} />}
           {tab === "orders" && (
-            <Orders t={t} orders={orders} stores={stores} onOpenOrder={setSelectedOrder} onPrint={openLockedPrint} onConfirmProcess={confirmProcess} onUpdateStatus={updateOrderStatus} onUpdateNote={updateOrderNote} goTo={setTab} />
+            <Orders t={t} orders={orders} stores={stores} onOpenOrder={setSelectedOrder} onPrint={openLockedPrint} onConfirmProcess={confirmProcess} onUpdateStatus={updateOrderStatus} onUpdateNote={updateOrderNote} onMarkPicked={markPicked} onMarkPacked={markPacked} goTo={setTab} />
           )}
-          {tab === "manualimport" && <ManualImport t={t} stores={stores} inventory={inventory} onImport={importOrders} />}
+          {tab === "manualimport" && (
+            <AutoImportHub
+              t={t}
+              lang={lang}
+              stores={stores}
+              inventory={inventory}
+              orders={orders}
+              adjustmentRequests={adjustmentRequests}
+              myRole={myRole}
+              onCreate={createAdjustmentRequest}
+              onApprove={approveAdjustmentRequest}
+              onReject={rejectAdjustmentRequest}
+              cancellationRecords={cancellationRecords}
+              onFinalizeCancellation={finalizeOrderCancellation}
+              goTo={setTab}
+              onRefresh={() => loadRealData(true)}
+              onConnectStore={connectStore}
+              onSetSyncMode={setStoreSyncMode}
+            />
+          )}
           {tab === "products" && <ProductMaster t={t} inventory={inventory} onCreate={createProduct} onUpdate={updateProductMaster} onDelete={deleteProduct} />}
+          {tab === "suppliers" && myRole === "owner" && <SupplierMaster t={t} suppliers={suppliers} onCreate={createSupplier} onUpdate={updateSupplier} onDelete={deleteSupplier} />}
+          {tab === "purchaseorders" && myRole === "owner" && (
+            <PurchaseOrderList
+              t={t}
+              purchaseOrders={purchaseOrders}
+              suppliers={suppliers}
+              products={inventory}
+              onCreate={createPurchaseOrder}
+              onUpdate={updatePurchaseOrder}
+              onUpdateStatus={updatePurchaseOrderStatus}
+              onDelete={deletePurchaseOrder}
+              onReceive={registerReceiving}
+            />
+          )}
           {tab === "inventory" && (
             <Inventory
               t={t}
@@ -898,18 +1334,32 @@ export default function App() {
               onMoveShop={moveProductToShop}
             />
           )}
-          {tab === "stores" && <StoreManagement t={t} stores={stores} onConnect={connectStore} onSetSyncMode={setStoreSyncMode} />}
           {tab === "finance" && <Finance t={t} orders={orders} />}
           {tab === "ads" && <AdsSpend t={t} />}
           {tab === "ai" && <AIPanel t={t} orders={orders} inventory={inventory} />}
           {tab === "labels" && <LabelPrinting t={t} orders={orders} stores={stores} onPrint={openDesignPrint} onReprint={reprintFromHistory} onUpdateSellerInfo={updateStoreSellerInfo} />}
           {tab === "warehouse" && <Warehouse t={t} orders={orders} onPrint={openDesignPrint} onMarkPicked={markPicked} onMarkPacked={markPacked} />}
+          {tab === "adjustments" && (
+            <InventoryAdjustment
+              t={t}
+              lang={lang}
+              inventory={inventory}
+              adjustmentRequests={adjustmentRequests}
+              myRole={myRole}
+              onCreate={createAdjustmentRequest}
+              onApprove={approveAdjustmentRequest}
+              onReject={rejectAdjustmentRequest}
+              cancellationRecords={cancellationRecords}
+              onFinalizeCancellation={finalizeOrderCancellation}
+            />
+          )}
           {tab === "roles" && <Roles t={t} />}
+          {tab === "shiptest" && myRole === "owner" && <ShipPackageTest t={t} />}
         </div>
       </main>
 
       {selectedOrder && (
-        <OrderDrawer t={t} order={selectedOrder} onClose={() => setSelectedOrder(null)} onPrint={(o) => openLockedPrint([o])} onUpdateStatus={updateOrderStatus} />
+        <OrderDrawer t={t} order={selectedOrder} onClose={() => setSelectedOrder(null)} onPrint={(o) => openLockedPrint([o])} onUpdateStatus={updateOrderStatus} onRequestCancel={requestOrderCancellation} />
       )}
       {printOrders && printOrders.length > 0 && (
         <PrintSlip

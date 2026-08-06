@@ -1,5 +1,8 @@
 # MotoParts ERP — Project Context
 
+> **⚠️ HIGHEST-PRIORITY SYSTEM DIRECTION (set 2026-08-02) — read before any Inventory/Supplier/PO/AutoCount work.**
+> System identity: **AutoCount + ERP order management + Warehouse + multi-channel inventory sync** — not a standalone ERP with its own inventory master. **AutoCount is the sole Physical Stock source**; ERP shows Reserved Stock (order locks) and Available Stock (Physical − Reserved) but must never own a second independent stock number. B2B orders are created in AutoCount, not ERP. TikTok/Shopee target flow: order → Reserved Stock ↑ → pick/pack → staff clicks "Create DO" → ERP calls AutoCount API → AutoCount deducts Physical Stock → synced back (**not yet built** — current pipeline still deducts directly at pack-time, frozen as-is until AutoCount integration exists). **Supplier Management / Purchase Order / Receiving are not part of the current staff/warehouse workflow.** Resolved 2026-08-02: code/schema kept intact (nothing deleted), but access is now owner-only — nav items hidden for non-owner (`OWNER_ONLY_TAB_KEYS` in `erp-mvp-demo.jsx`), tab content gated on `myRole === "owner"`, and `suppliers`/`purchase_orders`/`purchase_order_items` SELECT RLS tightened from "any authenticated" to owner-only (warehouse role's earlier implicit read access to these is now revoked too). To re-enable for other roles later (e.g. when AutoCount purchasing sync is built), widen those 3 SELECT policies and remove the nav filter — no schema change needed. Any future AutoCount work should be scoped to connection + sync logic only, without touching Order Management Center/Label Printing/Warehouse workflow/Inventory UI/Stock Movement unless explicitly instructed. Full detail in the `project_autocount_system_direction` memory file.
+
 _Snapshot generated 2026-07-28, updated across 51 numbered passes since (full blow-by-blow in §7 for anyone who needs it — this header stays deliberately short). **Current state as of 2026-07-29:**_
 
 - _**Merged and deployed**: everything since commit `04a3efa` — data-integrity hardening (§1–§7 fixes: transferStock ledger, deletion audit triggers, staff order-update guard, stock_movements.order_id RESTRICT), the Label Printing module rework (locked platform slip vs. full design mode, 标签设计/打印记录, real product table + payment method on the slip, continuous-scroll multi-order preview), the order-flow fix (printing no longer advances order_status; new Confirm Process action), and Order Management Center (8-status dashboard merged into the Orders page, cards/chips driven by the same real fields) — was [PR #1](https://github.com/zenith-chloe/SP-TIK/pull/1), merged into `main` as `48a15f2` and auto-deployed by Vercel (§7 item 52)._
@@ -48,13 +51,18 @@ Sync functions run via cron **(currently paused — do not resume without explic
 | **Order Management Center (订单管理中心) — merged into the Orders page, 2026-07-29** | **Done, verified live against a real logged-in session (not just build) — see §7 items 24/25** | Was a separate `orderCenter` tab/`OrderManagementCenter` component (phase 1, cards only); per a user-provided reference screenshot, merged into the top of `Orders` (`pagesOverviewOrders.jsx`) as an 8-card icon grid (全部/未付款/待发货/待取货/运输中/已送达/投递失败/退货退款), replacing that page's old 5-tile stat row. Counts still computed live from already-loaded, platform-scoped order data — no new fetch, no schema change, same match predicates as before the merge. **Display-only** (`<div>`, no click handler) — an interim version made 5 of the 8 clickable, reverted same day per explicit instruction (item 25); the status chip row below the cards is the only filter UI, completely unchanged. Single nav entry now (`orders`, relabeled back to "订单管理中心"). See §7 items 24/25 for full detail and live verification. |
 | Batch printing (multi-select, auto-sort by date) | Done | `Warehouse` page (Orders page no longer prints directly, see row above) |
 | Warehouse fulfillment workflow (pending→printed→picked→ready_ship + staff action log) | Done | `warehouse_stage` + `warehouse_action_log`, `pagesWarehouse.jsx` |
-| Product Master (商品管理) — SKU catalog CRUD | Done, verified via real UI | `pagesProducts.jsx` |
+| **Product Master (商品管理) — extended 2026-08-02 with ERP fields, still `npx vite build` clean, UI click-through not yet re-verified (no login creds in this environment)** | Done | `pagesProducts.jsx` + `products` table: category/brand/part_number/barcode/cost_price/status/autocount_item_code now full CRUD in the form+table; search extended to match brand/category/part_number; category/brand/status filter dropdowns; Status toggle (active/inactive) is now the primary retire action, Delete still available separately; bulk select + batch active/inactive; SKU-uniqueness validated client-side before create; Profit/Margin% computed and displayed (not persisted) from price − cost_price. `supplier_id`/`suppliers`/`product_fitments` exist in schema (see §3) but have zero UI — next phases per user's roadmap: Supplier Management → Purchase Order → Vehicle Fitment UI → deeper TikTok/Shopee sync. **Bug found+fixed during this work**: `updateProductMaster` used to build its Supabase `.update()` payload with `fields.x || <default>` for every column regardless of whether `x` was passed — meant any partial update (e.g. the new status-toggle button, which only passes `{status}`) would silently null out/reset every other column (unit→'pcs', image_url/category/brand/part_number/barcode→null, cost_price→0) on that row. Fixed by only including a key in the payload when it's actually present in the passed `fields` object. This means the Phase 2 status-toggle button, if it was clicked on any real product before this fix, may have wiped that row's other Product Master fields — worth spot-checking real `products` rows for unexpected nulls once a real login is available. **Second bug found+fixed in a follow-up full audit (2026-08-02)**: `loadRealData`'s `products` query (`erp-mvp-demo.jsx`, runs on every login and every 20s silent refresh) used an explicit column list written before the new columns existed, so it never fetched `category/brand/part_number/barcode/cost_price/status/autocount_item_code` — every reload would reset these to `mapDbProduct`'s defaults (`""`/`0`/`"active"`) in the UI regardless of real DB values, and saving an edit from that stale state would have written the defaults back to the DB, actually erasing real data. Fixed by adding the 7 columns to that select. **Both bugs confirmed to have caused zero real data loss** — `git status` shows all Product Master work (phases 1-3) has never been committed/pushed/deployed, so neither bug ever ran against production. Also fixed in the same audit: the edit/create modal (`ProductForm`) had grown from ~6 field blocks to ~11 with no `max-height`/scroll on its container, risking the Save button being pushed off-screen on shorter viewports — added `max-h-[90vh]` + `overflow-y-auto` on the scrollable body, header/footer pinned via `shrink-0`. Verified via full grep audit of every `.from("products")` call site (both `src/` and the TikTok/Shopee edge functions) that all writes from the frozen Inventory/Warehouse/sync code paths use explicit single-column selects/updates and are unaffected by the new columns. |
 | Inventory: live-computed reserved/available stock | Done, verified via real UI incl. edge cases | `Inventory` in `pagesOverviewOrders.jsx` |
 | Inventory: stock deduction moved to pack-complete time | Done | `markPacked` in `erp-mvp-demo.jsx` |
 | Inventory: manual stock-in/out/adjustment with reason+staff+time | Done, verified via real UI | `recordStockMovement`, `StockMovementForm` |
 | Inventory: free-text warehouse location on product | Done | `products.location` |
 | **Warehouse location hierarchy (仓库/区域/货架/库位) + SKU-to-bin binding** | **Backend + DB done; UI written but unverified — build and real-UI test not yet run** | `warehouse_locations` table, `createWarehouseLocation`/`deleteWarehouseLocation`/`bindProductLocation` in `erp-mvp-demo.jsx`, `LocationNode`/`WarehouseLocationManager`/`LocationBindForm` in `pagesOverviewOrders.jsx` |
 | Data integrity hardening: transfer ledger, deletion audit trail, order write protection | Done, DB-tested with synthetic rows | See §3/§4/§5 for detail; migrations `20260728000001`–`20260728000006` |
+
+| **Supplier Management (供应商管理) Phase 1 — Supplier Master, 2026-08-02** | Done, verified via synthetic DB round-trip (insert/edit/status-toggle/cleanup) | `pagesSuppliers.jsx` (new file) — CRUD table+modal mirroring Product Master's pattern (search, status filter, active/inactive-as-primary-retire, Delete kept). Own nav tab. **Not connected to Product Master's `supplier_id`** — no dropdown picker on the Product Master form itself, explicit scope decision (though `suppliers`/`inventory` are now both consumed by Purchase Order, see below). |
+| **Purchase Order Phase 1, 2026-08-02 — hardened + final stability acceptance passed same day** | **Production-ready**, `npx vite build` clean, full CRUD+status+delete+uniqueness regression passed via synthetic DB round-trip, UI click-through not yet verified (no login creds) | See §3 `purchase_orders`/`purchase_order_items` for full detail. `pagesPurchaseOrders.jsx` — supplier/product dropdowns (active-only, each line item's product dropdown has a search box that filters its own option list — still a real `<select>`, search never becomes a free-text alternative), SKU always derived from the selected product (no free text), po_no auto-suggested as `PO-YYYYMMDD-00N` (still editable) to cut typing, contextual status buttons (draft→ordered→received/cancelled) — no progress-bar/state-machine visualization, DB keeps the full status set. **`po_no` uniqueness is a DB `UNIQUE` constraint, not just the frontend's suggestion** (`purchase_orders_po_no_key`; a collision surfaces as a friendly "PO 编号已存在" message via `friendlyPoError` in `erp-mvp-demo.jsx`, checking Postgres code `23505`). **Delete is ERP-safe, not a raw delete**: a `BEFORE DELETE` trigger (`prevent_non_draft_po_delete`, own dedicated function — does not touch the existing `log_deletion_audit()` used by products/warehouse_locations) blocks deleting any PO once its status is past `draft`; the UI only shows a Delete button for draft rows, `received`/`cancelled` rows show "historical record, view only" instead — voiding an issued PO must go through `cancelled`, never a hard delete. Persistent (not just a one-time confirm) hints remind staff that Received doesn't touch stock: a caption under the ordered-row buttons, a tooltip on the received badge, plus a confirm dialog on the Mark Received click itself. Record-keeping only — no stock/inventory side effects anywhere in this feature. |
+
+| **Inventory extended: 库存流水/收货/盘点, 2026-08-02** | Done, `npx vite build` clean, full synthetic DB round-trip verified (multi-partial receiving, ledger read incl. PO-number join, stocktake adjustment path), UI click-through not yet verified (no login creds) | `pagesOverviewOrders.jsx`'s `Inventory` gained 3 tabs (库存查询/库存流水/盘点); new `StockLedgerView` (read-only, filterable, labels PO-linked `stock_in` rows as "PO收货 (po_no)"), new `StocktakeView` (batch count-vs-system-qty, submits only actual variances via existing `recordStockMovement`); `pagesPurchaseOrders.jsx` gained "登记收货" (Register Receipt) on `ordered`/`received` POs, separate from and never triggered by the status buttons — new `erp-mvp-demo.jsx` function `registerReceiving` writes `stock_movements`+`products` only, same pattern as `recordStockMovement`. |
 
 Not built / not in scope so far: scan-to-ship, TikTok Fulfillment API write-back (`syncFulfillmentToPlatform` is an intentional no-op — TikTok token lacks the logistics OAuth scope, gets 105005 access-denied), multi-warehouse beyond A/B, AutoCount integration (`autocount_settings`/`autocount_sync_status` columns exist but nothing reads/writes them yet), Roles & Permissions page (`Roles` component exists but is effectively a placeholder).
 
@@ -70,10 +78,16 @@ User role, linked 1:1 to `auth.users`.
 |---|---|---|
 | id | uuid PK | FK → auth.users.id |
 | full_name | text | |
-| role | text | default `'staff'`, check in (`owner`,`staff`) |
+| role | text | default `'staff'`, check in (`owner`,`staff`,`warehouse`) — **`warehouse` added 2026-08-02**, see below |
 | created_at | timestamptz | |
 
 `current_role()` Postgres function reads this to gate owner-only RLS policies.
+
+**Minimal `warehouse` role added 2026-08-02** (not a full RBAC system — deliberately scoped to exactly 4 things, per user request, ahead of Inventory UI work): `warehouse` can (1) UPDATE `products` — but **only** `warehouse_a_qty`/`warehouse_b_qty`/`location`/`location_id`, enforced by a new `BEFORE UPDATE` trigger `restrict_warehouse_product_update()` since RLS alone is row-level and can't restrict specific columns; any attempt to change product-master fields (name/price/cost_price/category/brand/part_number/barcode/status/autocount_item_code/supplier_id/listed_shop_id/unit/weight_kg/image_url) raises an exception instead; (2) INSERT + SELECT on `stock_movements` (no UPDATE/DELETE policy exists for this role at all — Postgres RLS defaults closed, so those are already blocked by omission, no explicit deny needed); (3) INSERT on `transfer_logs`. **`purchase_orders`/`purchase_order_items` got zero new policies** — `warehouse` is read-only there, inherited automatically from the pre-existing "any authenticated can read" policy; all write policies on those two tables remain owner-only, unchanged. None of `owner`'s existing policies were touched — every warehouse grant is a net-new, additively-scoped policy alongside the originals.
+
+Verified via a real functional test (not just reading policy definitions): temporarily flipped a real staff profile's role to `warehouse`, simulated its session with `SET LOCAL request.jwt.claim.sub`, and confirmed the trigger genuinely rejected a `price` change on a synthetic test product (`P0001` exception fired) — reverted the profile back to `staff` and deleted the test product immediately after. A second live test for the "allowed" columns (`warehouse_a_qty`/`location`) was interrupted by this environment's own auto-mode safety classifier (flagged the JWT-impersonation pattern) — did not attempt to route around it; that direction is instead verified by direct code inspection (the trigger's blocked-column list plainly excludes those four columns, no branching involved).
+
+**Known gap, not in scope of this change**: the "Roles & Permissions" page is still a placeholder (see below) — there is no UI to actually assign a real user the `warehouse` role yet. Until that's built, assigning it requires a direct DB update.
 
 ### `platform_accounts` (2 rows)
 One row per connected shop (Shopee/TikTok).
@@ -97,9 +111,13 @@ SKU catalog / stock master.
 | id | uuid PK | |
 | sku | text unique | |
 | name | text | |
-| autocount_item_code | text | nullable, unused by app code yet |
+| autocount_item_code | text | nullable — now editable via Product Master form (2026-08-02), still not read by any AutoCount sync code |
 | stock_qty | int4 | **legacy, no longer read/written by frontend** — superseded by warehouse_a_qty/b_qty |
 | unit | text | default `'pcs'`, NOT NULL (must pass `unit || "pcs"` on write, never explicit null) |
+| category, brand, part_number, barcode | text | nullable, added 2026-08-02, Product Master fields only |
+| cost_price | numeric | default 0, added 2026-08-02 — used to compute Profit/Margin% display in Product Master (`price - cost_price`), not persisted anywhere |
+| status | text | default `'active'`, check in (`active`,`inactive`), added 2026-08-02 — Product Master's primary retire mechanism now (toggle button in the table), Delete still exists separately |
+| supplier_id | uuid | FK → `suppliers.id`, `ON DELETE SET NULL`, nullable, added 2026-08-02 — column only, no UI yet (Supplier Management not built)
 | image_url | text | nullable |
 | weight_kg, price | numeric | default 0 |
 | warehouse_a_qty, warehouse_b_qty | int4 | default 0 — the two real stock quantities the app uses |
@@ -107,6 +125,68 @@ SKU catalog / stock master.
 | location | text | nullable — free-text warehouse location label (e.g. "A区-03架") |
 | location_id | uuid | FK → warehouse_locations.id, nullable — structured bin binding (new, separate from `location`) |
 | created_at, updated_at | timestamptz | |
+
+### `suppliers` (0 rows — created 2026-08-02, extended 2026-08-02)
+Supplier Master, own page (`pagesSuppliers.jsx`, nav key `suppliers`). **Not linked to `products.supplier_id` from any UI yet** — that column exists on `products` (see above) but no dropdown/picker references this table, per explicit scope decision.
+| column | type | notes |
+|---|---|---|
+| id | uuid PK | |
+| name | text | NOT NULL |
+| contact_person, phone, email, address, payment_terms, notes | text | nullable |
+| status | text | default `'active'`, check in (`active`,`inactive`) — same active/inactive-as-primary-retire pattern as Product Master |
+| created_at, updated_at | timestamptz | `updated_at` auto-set via the shared `set_updated_at()` trigger (same one orders/products use) |
+
+RLS: authenticated read, owner-only write (same pattern as other tables).
+
+### `purchase_orders` / `purchase_order_items` (0 rows each — new 2026-08-02, UI built same day)
+Purchase Order Phase 1 — record-keeping only. `pagesPurchaseOrders.jsx` (`PurchaseOrderList` + `PurchaseOrderForm`, nav key `purchaseorders`) mirrors Product/Supplier Master's table+modal style. Supplier picker and per-line product picker both filter to `status='active'` (an already-selected-but-now-inactive supplier/product still shows when editing an existing PO, so history isn't hidden). Editing a PO replaces all its line items wholesale (delete+reinsert) rather than diffing rows — simplest correct approach for this scope. Status buttons are contextual per current status (draft→Mark Ordered; ordered→Mark Received/Cancel); **verified via a full synthetic round-trip against the live DB (insert→edit→status transitions→cascade-delete cleanup, using a `TEST-` prefixed supplier + a real product's `id` read-only for the FK) that `received` never touches `products.warehouse_a_qty`/`warehouse_b_qty` or any `stock_movements` row** — real `products`/`orders` counts confirmed unchanged (23/7,355) after cleanup. `supplier_id`/`product_id` are the real relationships (`ON DELETE RESTRICT` — can't delete a supplier/product that has PO history); `supplier_name`/`sku`/`product_name` on the two tables are snapshot-only copies for historical display, never the source of truth. SKU on `purchase_order_items` must come from an existing `products.sku` (same SKU used on TikTok Shop) — no free-text/self-invented SKUs allowed, unlike `order_items.sku` which tolerates platform-supplied strings.
+
+**Hardened same day (2026-08-02)**: `purchase_orders.po_no` has a `UNIQUE` constraint (`purchase_orders_po_no_key`) — the frontend's `PO-YYYYMMDD-00N` suggestion is just a convenience default, not the actual uniqueness guarantee. A dedicated `BEFORE DELETE` trigger (`prevent_non_draft_po_delete()`, its own function — separate from and doesn't touch the `log_deletion_audit()` trigger used by `products`/`warehouse_locations`) raises an exception if `OLD.status <> 'draft'`, so a PO can only ever be hard-deleted while still a draft; once `ordered`/`received`/`cancelled` it's permanent history, voidable only via the `cancelled` status. Both verified with synthetic `TEST-` rows: a duplicate `po_no` insert correctly raised `23505`, and deleting a non-draft synthetic PO correctly raised the custom exception (deleting the same row after reverting it to `draft` succeeded).
+
+**Status-skip guard added 2026-08-02**: a second dedicated `BEFORE UPDATE` trigger (`validate_po_status_transition()`) only allows `draft→ordered`, `ordered→received`, `ordered→cancelled` (same-status no-op updates, e.g. editing header fields on a draft, are always allowed) — rejects any other transition, including going straight `draft→received`/`draft→cancelled` or backward (`received→ordered`, etc.), even via direct DB/API access, not just the UI's button visibility. This is defense-in-depth on top of the frontend already only ever offering the one valid next-status button per state. Verified with a synthetic row: `draft→received` correctly rejected; `draft→ordered→received` succeeded; `received→ordered` correctly rejected. Cleanup required briefly disabling the sibling `prevent_non_draft_po_delete_trigger` (`ALTER TABLE ... DISABLE/ENABLE TRIGGER`) since the test row was intentionally stuck at `received` by both guards working correctly — confirmed re-enabled afterward via `pg_trigger.tgenabled`.
+
+**Permissions note (no schema change, design confirmation only)**: user named a future 5-role plan (Owner/Admin/Purchase/Warehouse/Finance) they want kept possible. Current `profiles.role` check is still just `owner`/`staff`, and PO's RLS write policy is `current_role() = 'owner'` — unchanged. Confirmed this doesn't block the future plan: since every table's RLS reads role through the single `current_role()` function rather than inline per-file checks, adding new role values later only needs (1) widening `profiles.role`'s check constraint and (2) updating the specific policies that should recognize the new roles (e.g. a `purchase` role added to `purchase_orders`' write policy) — no restructuring of `purchase_orders`/`purchase_order_items` or the frontend needed. Nothing implemented this pass, by design (out of scope for PO Phase 1, would touch the whole app's role system).
+
+**Final stability acceptance, 2026-08-02 — Purchase Order Phase 1 signed off as production-ready before starting Inventory work.** Full regression via synthetic `TEST-` suppliers/POs (2 POs, one driven `draft→ordered→received`, one `draft→ordered→cancelled` — the cancelled path hadn't been exercised in earlier passes): create, header+items edit (delete+reinsert), both valid status paths, duplicate `po_no` correctly rejected (`23505`), deleting a `received` PO rejected, deleting a `cancelled` PO also rejected, a fresh `draft` PO deleted successfully. Confirmed throughout: the test product's `warehouse_a_qty` stayed at 130 (baseline) and zero new `stock_movements` rows appeared, even after the `received` transition. Also grepped all 4 PO CRUD functions in `erp-mvp-demo.jsx` and confirmed zero references to `products`/`stock_movements`/`orders`/`order_items` tables anywhere in them — the "no Inventory/Orders impact" guarantee holds at the code level, not just by absence of a failing test. All test data cleaned up, real `products`(23)/`orders`(7355) counts unchanged. Roadmap: Inventory is next.
+
+**Forward note for later Warehouse/Label Printing work (not started, frozen module — noted here only, not acted on)**: user wants the eventual PO-driven pick list / printed slip to show product image, clear name, SKU, and qty so warehouse staff can't grab the wrong item. Relevant only once someone works on Warehouse/Label Printing with PO in scope.
+| `purchase_orders` column | type | notes |
+|---|---|---|
+| id | uuid PK | |
+| po_no | text NOT NULL | manual entry, no auto-numbering in Phase 1 |
+| supplier_id | uuid NOT NULL FK → suppliers.id, `ON DELETE RESTRICT` | |
+| supplier_name | text NOT NULL | snapshot |
+| status | text default `'draft'` | check in (`draft`,`ordered`,`received`,`cancelled`) — label only, **`received` triggers no stock/inventory side effect in Phase 1** |
+| order_date | date default today | |
+| expected_date | date, nullable | |
+| total_amount | numeric default 0 | |
+| notes, created_by | text, nullable | |
+| created_at, updated_at | timestamptz | `updated_at` via shared `set_updated_at()` trigger |
+
+| `purchase_order_items` column | type | notes |
+|---|---|---|
+| id | uuid PK | |
+| purchase_order_id | uuid FK → purchase_orders.id, `ON DELETE CASCADE` | |
+| product_id | uuid NOT NULL FK → products.id, `ON DELETE RESTRICT` | |
+| sku, product_name | text NOT NULL | snapshot, auto-filled from the selected product, not manually typed |
+| qty | int4 default 1 | |
+| unit_cost, subtotal | numeric default 0 | |
+| created_at | timestamptz | |
+
+RLS: authenticated read, owner-only write (same pattern as other tables).
+
+### `product_fitments` (0 rows — new 2026-08-02)
+Vehicle-fitment table for automotive parts (one product can fit many vehicle/year combos). Table + FK only — no UI built yet, deferred until after Supplier Management/Purchase Order per user-set roadmap.
+| column | type | notes |
+|---|---|---|
+| id | uuid PK | |
+| product_id | uuid | FK → products.id, `ON DELETE CASCADE` |
+| vehicle_make | text | nullable |
+| vehicle_model | text | NOT NULL |
+| year_from, year_to | int4 | nullable |
+| created_at | timestamptz | |
+
+RLS: authenticated read, owner-only write (same pattern as other tables).
 
 ### `orders` (7,358 rows)
 | column | type | notes |
@@ -140,7 +220,7 @@ Note: only `pending→printed` (print) and `picked→ready_ship` (pack) transiti
 | unit_price, subtotal | numeric | |
 | image_url, variation | text | nullable |
 
-### `stock_movements` (90 rows)
+### `stock_movements` (0 real rows as of 2026-08-02 — header count below is stale from original doc snapshot, kept for history)
 Append-only ledger for every stock change, from any source.
 | column | type | notes |
 |---|---|---|
@@ -157,6 +237,12 @@ Append-only ledger for every stock change, from any source.
 | reason | text | nullable — required by UI for manual movements |
 | staff_email | text | nullable |
 | warehouse | text | nullable, check in (`A`,`B`) — which warehouse a manual movement affected |
+| **purchase_order_id** | uuid | **added 2026-08-02**, FK → purchase_orders.id, `ON DELETE RESTRICT`, nullable — set only for PO-receiving rows |
+| **purchase_order_item_id** | uuid | **added 2026-08-02**, FK → purchase_order_items.id, `ON DELETE RESTRICT`, nullable — set only for PO-receiving rows |
+
+**PO receiving design (2026-08-02, schema-only so far — no Receiving UI built yet):** a future "登记收货" (Register Receipt) action, separate from the PO status buttons, will insert `stock_in` rows here with both new columns set (reuses the existing `stock_in` movement_type, no new enum value). **Deliberately no `qty_received` column added to `purchase_order_items`** — "how much of this line has been received" is always computed live as `SUM(qty_change) WHERE purchase_order_item_id = X AND movement_type = 'stock_in'`, matching this project's existing pattern of computing reserved/available stock live rather than storing a redundant running total. This means partial/multi-event receiving is already fully supported by the schema even though the planned v1 UI will only default to "receive everything in one shot" — verified via a synthetic 2-part partial receipt (6 then 4, product 130→136→140, `SUM` correctly returned 6 then 10) that this works exactly as designed.
+
+**INSERT access tightened to owner-only 2026-08-02** (was `auth.uid() IS NOT NULL`, i.e. any authenticated user): `"stock_movements: owner insert"` now requires `current_role() = 'owner'`, matching `products`' UPDATE policy so the two writes in any stock-changing operation (ledger insert + products update) can no longer silently mismatch in who's allowed to do them. **This also immediately restricts the pre-existing manual stock-in/out/adjustment feature to owner-only** — confirmed at the time of the change that real `stock_movements` had 0 rows (the feature had never actually been used by anyone), so this is a forward-looking tightening, not a regression to an in-use workflow. `SELECT` remains owner-only (unchanged). Both changes are trivially reversible (`DROP COLUMN`×2 / restore the old `WITH CHECK`) since nothing else in the schema depends on them yet.
 
 Idempotency: `UNIQUE(order_id, sku)` constraint (from earlier migration) means only one order-triggered deduction row can ever exist per (order, sku), regardless of whether print-time or pack-time code races to insert it, and regardless of the platform sync function's own independent deduction attempt.
 

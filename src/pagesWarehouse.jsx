@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Printer, PackageOpen, PackageCheck, Box, Boxes, Truck, Clock, AlertTriangle } from "lucide-react";
-import { KPICard } from "./pagesOverviewOrders.jsx";
 
 // Display labels for orders.warehouse_stage — independent from
 // DB_TO_DEMO_STATUS (which describes order_status, the platform-driven
@@ -15,7 +14,6 @@ const STAGE_LABELS = {
   packed: { zh: "已包装", en: "Packed", icon: Boxes, tone: "bg-indigo-500" },
   ready_ship: { zh: "等待出货", en: "Ready to Ship", icon: Truck, tone: "bg-emerald-500" },
 };
-const STAGE_ORDER = ["pending", "printed", "picking", "picked", "packing", "packed", "ready_ship"];
 // Orders still actively moving through the warehouse pipeline today —
 // ready_ship/cancelled/etc. don't need daily attention on this list.
 const ACTIVE_STAGES = ["pending", "printed", "picked"];
@@ -23,13 +21,6 @@ const ACTIVE_STAGES = ["pending", "printed", "picked"];
 export function Warehouse({ t, orders, onPrint, onMarkPicked, onMarkPacked }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const lang = t("zh", "en");
-  const today = new Date().toISOString().slice(0, 10);
-
-  const todayOrders = orders.filter((o) => o.date === today);
-  const countsByStage = STAGE_ORDER.reduce((acc, stage) => {
-    acc[stage] = todayOrders.filter((o) => (o.warehouseStage || "pending") === stage).length;
-    return acc;
-  }, {});
 
   const activeOrders = orders
     .filter((o) => ACTIVE_STAGES.includes(o.warehouseStage || "pending"))
@@ -68,18 +59,6 @@ export function Warehouse({ t, orders, onPrint, onMarkPicked, onMarkPacked }) {
 
   return (
     <div className="space-y-4">
-      <div>
-        <div className="text-sm font-medium mb-3">{t("今日订单进度", "Today's Order Progress")}</div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-          {STAGE_ORDER.map((stage) => {
-            const s = STAGE_LABELS[stage];
-            return (
-              <KPICard key={stage} label={lang === "en" ? s.en : s.zh} value={countsByStage[stage]} icon={s.icon} tone={s.tone} />
-            );
-          })}
-        </div>
-      </div>
-
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm font-medium">{t("仓库作业订单（待处理/已打印/已拣货）", "Warehouse Queue (Pending / Printed / Picked)")}</div>

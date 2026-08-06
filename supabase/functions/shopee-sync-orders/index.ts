@@ -24,6 +24,17 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 
+// Browser callers (supabaseClient.functions.invoke) send a CORS preflight
+// OPTIONS request first. Without these headers the preflight response
+// doesn't grant the browser permission to send the real POST, so it never
+// leaves the browser — this must be checked before any other logic, or an
+// OPTIONS request (no body) falls through into "sync all shops".
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sync-secret",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 // Deducts stock for one order_item, exactly once, via the stock_movements
 // UNIQUE(order_id, sku) constraint: the insert only succeeds the first time
 // this (order, sku) pair is seen, so re-syncing the same order (which
@@ -298,11 +309,15 @@ async function syncOneShop(creds: ShopeeCredentials, account: {
 }
 
 Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
   const requiredSecret = Deno.env.get("SYNC_TRIGGER_SECRET");
   if (requiredSecret && req.headers.get("x-sync-secret") !== requiredSecret) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -312,37 +327,40 @@ Deno.serve(async (req: Request) => {
   } catch (e) {
     return new Response(JSON.stringify({ error: (e as Error).message }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
   let shopId: string | undefined;
+  let platformAccountId: string | undefined;
   try {
     const body = await req.json();
-    shopId = body?.shopId;
+    platformAccountId = body?.platformAccountId; // preferred — platform_accounts.id, unambiguous per store
+    shopId = body?.shopId; // kept for backward compat
   } catch {
     // no body / not JSON - sync all shops
   }
 
   let query = supabase
     .from("platform_accounts")
-    .select("id, shop_id, access_token, refresh_token, token_expires_at")
+    .select("id, platform, shop_id, access_token, refresh_token, token_expires_at")
     .eq("platform", "shopee")
     .eq("status", "connected")
     .not("access_token", "is", null);
-  if (shopId) query = query.eq("shop_id", shopId);
+  if (platformAccountId) query = query.eq("id", platformAccountId);
+  else if (shopId) query = query.eq("shop_id", shopId);
 
   const { data: accounts, error } = await query;
   if (error) {
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
   if (!accounts || accounts.length === 0) {
     return new Response(JSON.stringify({ error: "No connected Shopee shop with a saved access_token found" }), {
       status: 404,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -361,6 +379,6 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({ results }), {
-    headers: { "Content-Type": "application/json" },
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 });

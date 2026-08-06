@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, ShoppingCart, Warehouse, DollarSign, Bot, ShieldCheck,
-  Upload, ArrowRightLeft, Store, Megaphone, Printer, ClipboardCheck, Tag,
+  Upload, ArrowRightLeft, Store, Megaphone, Printer, ClipboardCheck, Tag, Truck, ClipboardList, ClipboardX, Send,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -33,6 +33,7 @@ export function mapDbStore(account) {
     id: account.id,
     platform: DB_TO_DEMO_PLATFORM[account.platform] || account.platform,
     name: account.account_name,
+    shopId: account.shop_id || "",
     connectedAt: (account.created_at || "").slice(0, 10),
     status: "已连接",
     syncMode: account.token_expires_at ? "api" : "manual",
@@ -44,6 +45,7 @@ export function mapDbStore(account) {
 
 export function mapDbProduct(p, fallbackShopId) {
   return {
+    id: p.id,
     sku: p.sku,
     name: p.name,
     warehouseA: p.warehouse_a_qty || 0,
@@ -58,11 +60,122 @@ export function mapDbProduct(p, fallbackShopId) {
     weightKg: Number(p.weight_kg || 0),
     unit: p.unit || "",
     imageUrl: p.image_url || null,
+    category: p.category || "",
+    brand: p.brand || "",
+    partNumber: p.part_number || "",
+    barcode: p.barcode || "",
+    costPrice: Number(p.cost_price || 0),
+    status: p.status || "active",
+    autocountItemCode: p.autocount_item_code || "",
+  };
+}
+
+export function mapDbSupplier(s) {
+  return {
+    id: s.id,
+    name: s.name,
+    contactPerson: s.contact_person || "",
+    phone: s.phone || "",
+    email: s.email || "",
+    address: s.address || "",
+    paymentTerms: s.payment_terms || "",
+    notes: s.notes || "",
+    status: s.status || "active",
+  };
+}
+
+export function mapDbPurchaseOrder(po, items) {
+  return {
+    id: po.id,
+    poNo: po.po_no,
+    supplierId: po.supplier_id,
+    supplierName: po.supplier_name,
+    status: po.status || "draft",
+    orderDate: po.order_date,
+    expectedDate: po.expected_date || "",
+    totalAmount: Number(po.total_amount || 0),
+    notes: po.notes || "",
+    items: (items || []).map(mapDbPurchaseOrderItem),
+  };
+}
+
+export function mapDbPurchaseOrderItem(item) {
+  return {
+    id: item.id,
+    productId: item.product_id,
+    sku: item.sku,
+    productName: item.product_name,
+    qty: item.qty || 0,
+    unitCost: Number(item.unit_cost || 0),
+    subtotal: Number(item.subtotal || 0),
+  };
+}
+
+export const MOVEMENT_TYPE_LABELS = {
+  order_deduction: { zh: "订单出库", en: "Order Deduction" },
+  stock_in: { zh: "入库", en: "Stock In" },
+  stock_out: { zh: "出库", en: "Stock Out" },
+  adjustment: { zh: "库存调整", en: "Adjustment" },
+  transfer_out: { zh: "搬出", en: "Transfer Out" },
+  transfer_in: { zh: "搬入", en: "Transfer In" },
+};
+
+export function mapDbStockMovement(m) {
+  return {
+    id: m.id,
+    sku: m.sku,
+    warehouse: m.warehouse || "",
+    movementType: m.movement_type,
+    qtyChange: m.qty_change ?? (m.qty_deducted ? -m.qty_deducted : 0),
+    stockBefore: m.stock_before,
+    stockAfter: m.stock_after,
+    reason: m.reason || "",
+    staffEmail: m.staff_email || "",
+    orderId: m.order_id || null,
+    purchaseOrderId: m.purchase_order_id || null,
+    purchaseOrderItemId: m.purchase_order_item_id || null,
+    createdAt: m.created_at,
   };
 }
 
 export function mapDbTransferLog(row) {
   return { id: row.id, type: row.type, sku: row.sku, from: row.from_location, to: row.to_location, qty: row.qty, date: row.created_at };
+}
+
+export function mapDbAdjustmentRequest(r) {
+  return {
+    id: r.id,
+    productId: r.product_id,
+    sku: r.sku,
+    qtyChange: r.qty_change,
+    reason: r.reason,
+    requestedBy: r.requested_by,
+    requestedAt: r.requested_at,
+    status: r.status,
+    approvedBy: r.approved_by || null,
+    approvedAt: r.approved_at || null,
+    autocountSyncStatus: r.autocount_sync_status,
+    autocountDocNo: r.autocount_doc_no || null,
+  };
+}
+
+export function mapDbCancellationRecord(r) {
+  return {
+    id: r.id,
+    orderId: r.order_id,
+    orderNo: r.order_no,
+    channel: r.channel,
+    sku: r.sku,
+    productName: r.product_name || "",
+    qty: r.qty,
+    customerName: r.customer_name || "",
+    reason: r.reason,
+    autocountDocNo: r.autocount_doc_no || null,
+    autocountDoStatus: r.autocount_do_status || null,
+    requestedBy: r.requested_by,
+    requestedAt: r.requested_at,
+    cancelledAt: r.cancelled_at || null,
+  };
 }
 
 export function mapDbOrder(order, items) {
@@ -98,6 +211,7 @@ export function mapDbOrder(order, items) {
     orderStatus: order.order_status || "pending",
     platformStatus: order.platform_status || null,
     warehouseStage: order.warehouse_stage || "pending",
+    cancelStage: order.cancel_stage || null,
     isCod: order.is_cod || false,
     date: (order.order_date || "").slice(0, 10),
     printCount: order.print_count || 0,
@@ -286,15 +400,19 @@ export const NAV = [
   // now renders inside the Orders component itself, above its existing
   // platform tabs/filters/list. This nav entry is that same single page.
   { key: "orders", zh: "订单管理中心", en: "Order Management Center", icon: ShoppingCart },
-  { key: "manualimport", zh: "手动导入订单", en: "Manual Order Import", icon: Upload },
+  { key: "manualimport", zh: "自动导入订单", en: "Auto Order Import", icon: Upload },
   { key: "products", zh: "商品管理", en: "Product Master", icon: Tag },
+  { key: "suppliers", zh: "供应商管理", en: "Supplier Management", icon: Truck },
+  { key: "purchaseorders", zh: "采购订单", en: "Purchase Orders", icon: ClipboardList },
   { key: "inventory", zh: "库存管理", en: "Inventory", icon: Warehouse },
   { key: "productmove", zh: "产品搬仓 / 搬店", en: "Stock Transfer / Shop Move", icon: ArrowRightLeft },
-  { key: "stores", zh: "店铺管理", en: "Store Management", icon: Store },
   { key: "finance", zh: "财务与利润", en: "Finance & Profit", icon: DollarSign },
   { key: "ads", zh: "广告费用", en: "Ad Spend", icon: Megaphone },
   { key: "ai", zh: "AI智能功能", en: "AI Features", icon: Bot },
   { key: "labels", zh: "标签打印", en: "Label Printing", icon: Printer },
-  { key: "warehouse", zh: "仓库", en: "Warehouse", icon: ClipboardCheck },
   { key: "roles", zh: "权限管理", en: "Roles & Permissions", icon: ShieldCheck },
+  // Internal test tool for the TikTok Ship Package API — owner-only (see
+  // OWNER_ONLY_TAB_KEYS in erp-mvp-demo.jsx), deliberately not surfaced to
+  // regular staff since it makes real, irreversible platform writes.
+  { key: "shiptest", zh: "发货测试(TikTok)", en: "Ship Test (TikTok)", icon: Send },
 ];
