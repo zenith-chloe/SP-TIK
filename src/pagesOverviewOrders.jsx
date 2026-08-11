@@ -1,15 +1,15 @@
 import { useState, useMemo, useEffect } from "react";
 import { createPortal } from "react-dom";
 import {
-  Search, X, ChevronRight, AlertTriangle, CheckCircle2, Truck, Circle,
+  Search, X, ChevronRight, ChevronLeft, AlertTriangle, CheckCircle2, Truck, Circle,
   CheckCircle, Printer, Clock, Info, MapPin, PackagePlus, PackageMinus, SlidersHorizontal,
   Plus, Trash2, Warehouse as WarehouseIcon, ChevronDown,
   Package, CreditCard, ShoppingCart, RotateCcw, XCircle, PackageOpen, PackageCheck,
-  ShoppingBag, Music2, Send,
+  ShoppingBag, Music2, Send, Zap,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend,
+  ResponsiveContainer, Legend, PieChart, Pie, Cell,
 } from "recharts";
 import {
   PLATFORM_THEME, SALES_TREND, STATUS_STEPS, ACTIONABLE_STATUS,
@@ -19,28 +19,346 @@ import {
 
 /* ============================== Overview ============================== */
 
-export function KPICard({ label, value, sub, icon: Icon, tone }) {
+// `platformBreakdown` (optional) = [{platform, count}] — when passed,
+// renders the same Shopee/TikTok row style as the 订单总数 card below.
+// Omitted by every other KPICard usage (库存预警/净利润), so they render
+// exactly as before.
+export function KPICard({ label, value, sub, icon: Icon, tone, onClick, platformBreakdown }) {
+  const Tag = onClick ? "button" : "div";
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-4 flex items-start justify-between">
-      <div>
-        <div className="text-xs text-slate-500 mb-1">{label}</div>
-        <div className="text-2xl font-semibold tabular-nums">{value}</div>
-        {sub && <div className="text-xs text-slate-400 mt-1">{sub}</div>}
+    <Tag
+      type={onClick ? "button" : undefined}
+      onClick={onClick}
+      className={`glass-surface rounded-2xl p-4 flex items-center gap-3 card-3d w-full ${onClick ? "text-left" : ""}`}
+    >
+      <div className={`h-12 w-12 rounded-2xl flex items-center justify-center icon-badge-3d shrink-0 ${tone}`}>
+        <Icon size={20} className="text-white" />
       </div>
-      <div className={`h-9 w-9 rounded-lg flex items-center justify-center ${tone}`}>
-        <Icon size={16} className="text-white" />
+      <div className="min-w-0">
+        <div className="text-xs text-slate-500 mb-0.5 truncate">{label}</div>
+        <div className="text-2xl font-semibold tabular-nums">{value}</div>
+        {sub && <div className="text-xs text-slate-400 mt-0.5 truncate">{sub}</div>}
+        {platformBreakdown && (
+          <div className="flex flex-col gap-1 mt-1.5">
+            {platformBreakdown.map((p) => {
+              const PfIcon = PLATFORM_ICON[p.platform];
+              return (
+                <span key={p.platform} className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                  <PfIcon size={12} className={p.platform === "Shopee" ? "text-orange-500" : "text-rose-600"} />
+                  {PLATFORM_SHORT_LABEL[p.platform]} <span className="font-semibold tabular-nums text-slate-600">{p.count}</span>
+                </span>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </Tag>
+  );
+}
+
+// Short display label for the dashboard only (per explicit request: show
+// "TikTok" not "TikTok Shop" here) — every other page in the app keeps
+// using the real "TikTok Shop" platform name unchanged, this is purely a
+// local display string for the two new dashboard widgets below.
+const PLATFORM_SHORT_LABEL = { Shopee: "Shopee", "TikTok Shop": "TikTok" };
+const PLATFORM_ICON = { Shopee: ShoppingBag, "TikTok Shop": Music2 };
+
+// Status breakdown donut colors — same families as statusColor() badges
+// elsewhere (shared.jsx), just as hex fills for recharts instead of
+// Tailwind classes. Purely cosmetic, not a new status taxonomy.
+const STATUS_DONUT_COLORS = {
+  待处理: "#f59e0b", 包装: "#6366f1", 出货: "#3b82f6", 物流中: "#06b6d4",
+  已签收: "#10b981", 已取消: "#94a3b8", 退款中: "#f43f5e",
+};
+
+// date-range predicate shared by the KPI card's own click-through modal —
+// operates on the same `o.date` (YYYY-MM-DD) field already used everywhere
+// else in this file, no new data.
+function inDateRange(dateStr, mode, customFrom, customTo) {
+  if (!dateStr) return false;
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  if (mode === "today") return dateStr === todayStr;
+  if (mode === "yesterday") {
+    const y = new Date(today); y.setDate(y.getDate() - 1);
+    return dateStr === y.toISOString().slice(0, 10);
+  }
+  if (mode === "7d") {
+    const from = new Date(today); from.setDate(from.getDate() - 6);
+    return dateStr >= from.toISOString().slice(0, 10) && dateStr <= todayStr;
+  }
+  if (mode === "30d") {
+    const from = new Date(today); from.setDate(from.getDate() - 29);
+    return dateStr >= from.toISOString().slice(0, 10) && dateStr <= todayStr;
+  }
+  if (mode === "custom") return (!customFrom || dateStr >= customFrom) && (!customTo || dateStr <= customTo);
+  return true;
+}
+
+// "Pending order" for the 订单总数 KPI card and its popup — real pending
+// orders only, same definition this file already uses for the "待处理订单"
+// KPI card and the 平台订单总览 "待处理" column (o.status === "待处理" &&
+// not UNPAID && not yet printed). Reusing the existing predicate, not a
+// new business rule. This alone already excludes completed/shipped/in
+// transit/cancelled orders (none of those are status "待处理"). Pure
+// display-level filter over the same `orders` prop already loaded — no
+// new fetch, no write, no change to order_status/platform_status anywhere
+// else.
+function isPendingOrder(o) {
+  return o.status === "待处理" && o.platformStatus !== "UNPAID" && !(o.printCount > 0);
+}
+
+// Single source of truth for which of the 3 Shipping Priority buckets
+// (Overdue Not Shipped / Ship Today / Ship Before Tomorrow) an order falls
+// into — used by both the card counts and the click-to-filter check, so a
+// card's number and what clicking it shows can never drift apart. Uses the
+// real platform deadline (`shipDeadline`) when the sync has captured it,
+// falling back to the existing order-age estimate otherwise.
+function getShipPriorityBucket(o, todayStr, yesterdayStr, tomorrowStr) {
+  if (o.shipDeadline) {
+    const deadlineDate = o.shipDeadline.slice(0, 10);
+    if (deadlineDate < todayStr) return "overdue";
+    if (deadlineDate === todayStr) return "shipToday";
+    if (deadlineDate === tomorrowStr) return "shipByTomorrow";
+    return null;
+  }
+  if (o.date < yesterdayStr) return "overdue";
+  if (o.date === todayStr) return "shipToday";
+  if (o.date === yesterdayStr) return "shipByTomorrow";
+  return null;
+}
+
+const DATE_FILTER_OPTIONS = [
+  { key: "today", zh: "今天", en: "Today" },
+  { key: "yesterday", zh: "昨天", en: "Yesterday" },
+  { key: "7d", zh: "最近7天", en: "Last 7 Days" },
+  { key: "30d", zh: "最近30天", en: "Last 30 Days" },
+  { key: "custom", zh: "自定义日期范围", en: "Custom Range" },
+];
+
+// Popup opened by clicking the 订单总数 KPI card. Read-only aggregation
+// over the same `orders` prop Overview already has — no fetch, no writes.
+// Level 1: today's real order count per platform (any status — NOT
+// filtered to isPendingOrder; a past-dated order that's since shipped is
+// still a real order for that date, and excluding it was the bug: date
+// filters like "昨天" showed 0 even when the platform genuinely had orders
+// that day, because those orders were no longer "待处理" by the time you
+// looked). Clicking a platform drills into Level 2, a per-platform detail
+// view where the date filter (今天/昨天/最近7天/最近30天/自定义) lives.
+// `onSelectPlatform` notifies Overview so 平台订单总览 stays synced with
+// whichever platform the user drilled into (requirement 4).
+function OrderOverviewModal({ t, orders, onClose, onSelectPlatform }) {
+  const [detailPlatform, setDetailPlatform] = useState(null); // null = level-1 list
+  const [dateMode, setDateMode] = useState("today");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const pendingByPlatform = ["Shopee", "TikTok Shop"].map((p) => ({
+    platform: p,
+    count: orders.filter((o) => o.platform === p && o.date === todayStr).length,
+  }));
+
+  const openDetail = (platform) => {
+    setDetailPlatform(platform);
+    setDateMode("today");
+    onSelectPlatform(platform);
+  };
+
+  const detailCount = detailPlatform
+    ? orders.filter((o) => o.platform === detailPlatform && inDateRange(o.date, dateMode, customFrom, customTo)).length
+    : 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
+      <div className="glass-surface rounded-2xl p-5 w-full max-w-sm card-3d" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-1.5">
+            {detailPlatform && (
+              <button onClick={() => setDetailPlatform(null)} className="text-slate-400 hover:text-slate-600 -ml-1">
+                <ChevronLeft size={16} />
+              </button>
+            )}
+            {detailPlatform ? (
+              <div className="flex items-center gap-1.5">
+                {(() => { const Icon = PLATFORM_ICON[detailPlatform]; return (
+                  <div className={`h-6 w-6 rounded-md flex items-center justify-center icon-badge-3d ${detailPlatform === "Shopee" ? "bg-gradient-to-br from-orange-400 to-orange-600" : "bg-gradient-to-br from-rose-500 to-rose-700"}`}>
+                    <Icon size={13} className="text-white" />
+                  </div>
+                ); })()}
+                <div className="text-sm font-semibold">{PLATFORM_SHORT_LABEL[detailPlatform]}</div>
+              </div>
+            ) : (
+              <div className="text-sm font-semibold">{t("订单总览", "Order Overview")}</div>
+            )}
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
+        </div>
+
+        {!detailPlatform && (
+          <div className="space-y-2">
+            {pendingByPlatform.map((p) => {
+              const Icon = PLATFORM_ICON[p.platform];
+              return (
+                <button
+                  key={p.platform}
+                  onClick={() => openDetail(p.platform)}
+                  className="w-full flex items-center justify-between rounded-xl border border-slate-100 bg-white/60 px-3 py-2.5 hover:bg-white transition-3d text-left"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className={`h-8 w-8 rounded-lg flex items-center justify-center icon-badge-3d ${p.platform === "Shopee" ? "bg-gradient-to-br from-orange-400 to-orange-600" : "bg-gradient-to-br from-rose-500 to-rose-700"}`}>
+                      <Icon size={15} className="text-white" />
+                    </div>
+                    <span className="text-sm font-medium">{PLATFORM_SHORT_LABEL[p.platform]}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-right">
+                      <div className="text-[10px] text-slate-400">{t("今日订单", "Today's Orders")}</div>
+                      <div className="text-base font-semibold tabular-nums">{p.count}</div>
+                    </div>
+                    <ChevronRight size={14} className="text-slate-300" />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {detailPlatform && (
+          <div>
+            <div className="flex flex-wrap gap-1.5 mb-4">
+              {DATE_FILTER_OPTIONS.map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => setDateMode(opt.key)}
+                  className={`text-[11px] px-2.5 py-1 rounded-full border transition-3d ${
+                    dateMode === opt.key ? "bg-violet-600 text-white border-violet-600" : "border-slate-200 text-slate-500 hover:bg-slate-50"
+                  }`}
+                >
+                  {t(opt.zh, opt.en)}
+                </button>
+              ))}
+            </div>
+            {dateMode === "custom" && (
+              <div className="flex items-center gap-2 mb-4 text-xs">
+                <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="input-3d border border-slate-200 rounded-lg px-2 py-1.5 outline-none flex-1" />
+                <span className="text-slate-400">–</span>
+                <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="input-3d border border-slate-200 rounded-lg px-2 py-1.5 outline-none flex-1" />
+              </div>
+            )}
+            <div className="rounded-xl border border-slate-100 bg-white/60 px-4 py-4 text-center">
+              <div className="text-xs text-slate-400 mb-1">{t("订单数量", "Orders")}</div>
+              <div className="text-3xl font-semibold tabular-nums">{detailCount}</div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
+// Popup opened by the "待处理订单" KPI card — pick a platform, then jump to
+// 订单管理中心 → 待发货 (To Ship), pre-filtered to that platform. No new
+// page: reuses the existing Orders component via `entryFilter` (see Orders
+// above). `platformCounts` = pendingByPlatformKPI, already computed in
+// Overview from the same real `orders` prop — no new data source.
+function PendingPlatformModal({ t, onClose, onSelectPlatform, platformCounts }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
+      <div className="glass-surface rounded-2xl p-5 w-full max-w-sm card-3d" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-sm font-semibold">{t("选择平台", "Select Platform")}</div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
+        </div>
+        <div className="space-y-2">
+          {platformCounts.map((p) => {
+            const Icon = PLATFORM_ICON[p.platform];
+            return (
+              <button
+                key={p.platform}
+                onClick={() => onSelectPlatform(p.platform)}
+                className="w-full flex items-center gap-3 rounded-xl border border-slate-100 bg-white/60 px-3 py-3 hover:bg-white transition-3d text-left"
+              >
+                <div className={`h-9 w-9 rounded-lg flex items-center justify-center icon-badge-3d shrink-0 ${p.platform === "Shopee" ? "bg-gradient-to-br from-orange-400 to-orange-600" : "bg-gradient-to-br from-rose-500 to-rose-700"}`}>
+                  <Icon size={16} className="text-white" />
+                </div>
+                <span className="text-sm font-medium flex-1">{PLATFORM_SHORT_LABEL[p.platform]}</span>
+                <span className="text-sm font-semibold tabular-nums text-slate-600">{p.count}</span>
+                <ChevronRight size={14} className="text-slate-300" />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGoToOrdersToShip }) {
   const pending = orders.filter((o) => o.status === "待处理" && o.platformStatus !== "UNPAID" && !(o.printCount > 0)).length;
   const totalProfit = orders.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
   const lowStock = inventory.filter((i) => i.warehouseA + i.warehouseB < i.reorderPoint);
   const recent = orders.slice(0, 6);
   const manualStores = stores.filter((s) => s.syncMode === "manual");
   const lang = t("zh", "en");
+  const [showOrderOverview, setShowOrderOverview] = useState(false);
+  const [showPendingPopup, setShowPendingPopup] = useState(false);
+  const [storeFilter, setStoreFilter] = useState("all"); // "all" | "Shopee" | "TikTok Shop" | store id
+
+  // 订单总数 card — today's PENDING orders only (Shopee + TikTok combined),
+  // same isPendingOrder definition used by the 待处理订单 card below, just
+  // additionally scoped to today's date. Same `orders` prop, no new data
+  // source, no new fetch.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayOrders = orders.filter((o) => o.date === todayStr && isPendingOrder(o));
+  const todayTotal = todayOrders.length;
+  const todayByPlatformKPI = ["Shopee", "TikTok Shop"].map((p) => ({
+    platform: p,
+    count: todayOrders.filter((o) => o.platform === p).length,
+  }));
+
+  // 待处理订单 card — real pending orders (isPendingOrder, same definition
+  // used elsewhere in this file), split per platform.
+  const pendingByPlatformKPI = ["Shopee", "TikTok Shop"].map((p) => ({
+    platform: p,
+    count: orders.filter((o) => o.platform === p && isPendingOrder(o)).length,
+  }));
+
+  // 平台订单总览 / 订单状态分布 — both pure display aggregations over the
+  // same `orders`/`stores` props the KPI cards above already read, no new
+  // data source, no new fetch, no state mutation. Row shape follows the
+  // requested columns (Platform / Store count / Orders / Sales amount /
+  // Pending orders), grouped per platform by default and drillable down to
+  // a single real store via the filter — currently 1 connected store per
+  // platform in this system (not fabricated placeholder "Store A/B/C"
+  // stores), so "Store count" reads 1 for both until more are connected.
+  const pendingPredicate = isPendingOrder;
+  const isSpecificStore = storeFilter !== "all" && storeFilter !== "Shopee" && storeFilter !== "TikTok Shop";
+  const platformOverview = isSpecificStore
+    ? stores.filter((s) => s.id === storeFilter).map((s) => {
+        const storeOrders = orders.filter((o) => o.platformAccountId === s.id);
+        return {
+          key: s.id, platform: s.platform, storeCount: 1,
+          orderCount: storeOrders.length,
+          sales: storeOrders.reduce((sum, o) => sum + o.unitPrice * o.qty, 0),
+          pendingCount: storeOrders.filter(pendingPredicate).length,
+        };
+      })
+    : ["Shopee", "TikTok Shop"]
+        .filter((p) => storeFilter === "all" || storeFilter === p)
+        .map((p) => {
+          const platformStores = stores.filter((s) => s.platform === p);
+          const platformOrders = orders.filter((o) => o.platform === p);
+          return {
+            key: p, platform: p, storeCount: platformStores.length,
+            orderCount: platformOrders.length,
+            sales: platformOrders.reduce((sum, o) => sum + o.unitPrice * o.qty, 0),
+            pendingCount: platformOrders.filter(pendingPredicate).length,
+          };
+        });
+  const statusBreakdown = Object.entries(
+    orders.reduce((acc, o) => { acc[o.status] = (acc[o.status] || 0) + 1; return acc; }, {}),
+  ).map(([status, count]) => ({ status, count, color: STATUS_DONUT_COLORS[status] || "#cbd5e1" }));
 
   return (
     <div className="space-y-6">
@@ -63,14 +381,34 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
       )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KPICard label={t("订单总数", "Total Orders")} value={orders.length} sub="Shopee + TikTok Shop" icon={CheckCircle2} tone="bg-teal-500" />
-        <KPICard label={t("待处理订单", "Pending Orders")} value={pending} sub={t("需要拣货/发货", "Needs picking/shipping")} icon={AlertTriangle} tone="bg-amber-500" />
-        <KPICard label={t("库存预警 SKU", "Low Stock SKUs")} value={lowStock.length} sub={t("低于安全库存", "Below safety stock")} icon={AlertTriangle} tone="bg-rose-500" />
-        <KPICard label={t("净利润 (RM)", "Net Profit (RM)")} value={fmt(totalProfit)} sub={t("已扣除平台费/佣金", "After platform fees/commission")} icon={CheckCircle2} tone="bg-indigo-500" />
+        <button type="button" onClick={() => setShowOrderOverview(true)} className="glass-surface rounded-2xl p-4 flex items-center gap-3 card-3d text-left">
+          <div className="h-12 w-12 rounded-2xl flex items-center justify-center icon-badge-3d shrink-0 bg-gradient-to-br from-teal-400 to-teal-600">
+            <CheckCircle2 size={20} className="text-white" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs text-slate-500 mb-0.5 truncate">{t("订单总数", "Total Orders")}</div>
+            <div className="text-2xl font-semibold tabular-nums">{todayTotal}</div>
+            <div className="text-xs text-slate-400 mt-0.5">{t("今日待处理订单", "Today's Pending Orders")}</div>
+            <div className="flex flex-col gap-1 mt-1.5">
+              {todayByPlatformKPI.map((p) => {
+                const Icon = PLATFORM_ICON[p.platform];
+                return (
+                  <span key={p.platform} className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                    <Icon size={12} className={p.platform === "Shopee" ? "text-orange-500" : "text-rose-600"} />
+                    {PLATFORM_SHORT_LABEL[p.platform]} <span className="font-semibold tabular-nums text-slate-600">{p.count}</span>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        </button>
+        <KPICard label={t("待处理订单", "Pending Orders")} value={pending} sub={t("需要拣货/发货", "Needs picking/shipping")} icon={AlertTriangle} tone="bg-gradient-to-br from-amber-400 to-amber-600" onClick={() => setShowPendingPopup(true)} platformBreakdown={pendingByPlatformKPI} />
+        <KPICard label={t("库存预警 SKU", "Low Stock SKUs")} value={lowStock.length} sub={t("低于安全库存", "Below safety stock")} icon={AlertTriangle} tone="bg-gradient-to-br from-rose-400 to-rose-600" />
+        <KPICard label={t("净利润 (RM)", "Net Profit (RM)")} value={fmt(totalProfit)} sub={t("已扣除平台费/佣金", "After platform fees/commission")} icon={CheckCircle2} tone="bg-gradient-to-br from-indigo-400 to-indigo-600" />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="md:col-span-2 bg-white border border-slate-200 rounded-xl p-4">
+        <div className="md:col-span-2 bg-white border border-slate-100 rounded-2xl p-4 card-3d">
           <div className="text-sm font-medium mb-3">{t("近14天销售趋势（按平台）", "Last 14 Days Sales Trend (by Platform)")}</div>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
@@ -87,11 +425,11 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
           </div>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="bg-white border border-slate-100 rounded-2xl p-4 card-3d">
           <div className="text-sm font-medium mb-3">{t("库存预警", "Stock Alerts")}</div>
           <div className="space-y-2">
             {lowStock.slice(0, 5).map((item) => (
-              <div key={item.sku} className="flex items-center justify-between text-sm border-b border-slate-100 pb-2 last:border-0">
+              <div key={item.sku} className="flex items-center justify-between text-sm border-b border-slate-100 pb-2 last:border-0 row-3d rounded-lg px-2 -mx-2">
                 <div>
                   <div className="font-medium">{item.name}</div>
                   <div className="text-xs text-slate-400">{item.sku}</div>
@@ -106,7 +444,92 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
         </div>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="glass-surface rounded-2xl p-4 card-3d">
+          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+            <div className="text-sm font-medium">{t("平台订单总览", "Platform Order Overview")}</div>
+            <select
+              value={storeFilter}
+              onChange={(e) => setStoreFilter(e.target.value)}
+              className="input-3d text-xs border border-slate-200 rounded-lg px-2 py-1 outline-none"
+            >
+              <option value="all">{t("全部平台", "All Platforms")}</option>
+              <option value="Shopee">Shopee</option>
+              <option value="TikTok Shop">TikTok</option>
+              {stores.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs min-w-[420px]">
+              <thead>
+                <tr className="text-left text-slate-400 border-b border-slate-200">
+                  <th className="py-1.5 pr-2 font-medium">{t("平台", "Platform")}</th>
+                  <th className="py-1.5 pr-2 font-medium text-right">{t("店铺数", "Stores")}</th>
+                  <th className="py-1.5 pr-2 font-medium text-right">{t("订单数", "Orders")}</th>
+                  <th className="py-1.5 pr-2 font-medium text-right">{t("销售额 (RM)", "Sales (RM)")}</th>
+                  <th className="py-1.5 pr-2 font-medium text-right">{t("待处理", "Pending")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {platformOverview.map((p) => (
+                  <tr key={p.key} className="border-b border-slate-100 last:border-0 row-3d">
+                    <td className="py-2 pr-2 font-medium">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className={`h-2 w-2 rounded-full ${PLATFORM_THEME[p.platform].dot}`} />
+                        {PLATFORM_SHORT_LABEL[p.platform]}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-2 text-right tabular-nums text-slate-500">{p.storeCount}</td>
+                    <td className="py-2 pr-2 text-right tabular-nums font-medium">{p.orderCount}</td>
+                    <td className="py-2 pr-2 text-right tabular-nums text-slate-700">{fmt(p.sales)}</td>
+                    <td className="py-2 pr-2 text-right tabular-nums text-amber-600">{p.pendingCount}</td>
+                  </tr>
+                ))}
+                {platformOverview.length === 0 && (
+                  <tr><td colSpan={5} className="py-3 text-center text-slate-400">{t("无数据", "No data")}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="glass-surface rounded-2xl p-4 card-3d">
+          <div className="text-sm font-medium mb-3">{t("订单状态分布", "Order Status Distribution")}</div>
+          <div className="flex items-center gap-4">
+            <div className="relative h-32 w-32 shrink-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={statusBreakdown} dataKey="count" nameKey="status" innerRadius={38} outerRadius={58} paddingAngle={2}>
+                    {statusBreakdown.map((s) => <Cell key={s.status} fill={s.color} />)}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <div className="text-[10px] text-slate-400">{t("总订单", "Total")}</div>
+                <div className="text-base font-semibold tabular-nums">{orders.length}</div>
+              </div>
+            </div>
+            <div className="flex-1 min-w-0 space-y-1.5">
+              {statusBreakdown.map((s) => (
+                <div key={s.status} className="flex items-center justify-between text-xs">
+                  <span className="flex items-center gap-1.5 text-slate-600 truncate">
+                    <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
+                    {statusLabel(s.status, lang)}
+                  </span>
+                  <span className="tabular-nums text-slate-500 shrink-0 ml-2">
+                    {s.count} ({orders.length > 0 ? ((s.count / orders.length) * 100).toFixed(1) : "0.0"}%)
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-100 rounded-2xl p-4 card-3d">
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm font-medium">{t("最新订单（两平台混合）", "Latest Orders (Both Platforms)")}</div>
           <button onClick={() => goTo("orders")} className="text-xs text-teal-600 flex items-center gap-1 hover:underline">
@@ -126,7 +549,7 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
           </thead>
           <tbody>
             {recent.map((o) => (
-              <tr key={o.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+              <tr key={o.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 row-3d">
                 <td className="py-2.5 pr-3 font-medium">{o.id}</td>
                 <td className="py-2.5 pr-3">
                   <span className="inline-flex items-center gap-1.5 text-xs">
@@ -147,6 +570,27 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo }) {
         </table>
         </div>
       </div>
+
+      {showOrderOverview && (
+        <OrderOverviewModal
+          t={t}
+          orders={orders}
+          onClose={() => setShowOrderOverview(false)}
+          onSelectPlatform={(platform) => setStoreFilter(platform)}
+        />
+      )}
+
+      {showPendingPopup && (
+        <PendingPlatformModal
+          t={t}
+          platformCounts={pendingByPlatformKPI}
+          onClose={() => setShowPendingPopup(false)}
+          onSelectPlatform={(platform) => {
+            setShowPendingPopup(false);
+            if (onGoToOrdersToShip) onGoToOrdersToShip(platform);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -199,19 +643,19 @@ const ORDER_STATUS_LABELS = {
 // filterValue (same as their disabled chip counterparts) so they can never
 // highlight.
 const ORDER_CENTER_CARDS = [
-  { key: "all", ...ORDER_STATUS_LABELS.all, filterValue: "全部", iconBg: "bg-amber-100", iconColor: "text-amber-600", numberColor: "text-amber-600", icon: Package, match: () => true },
-  { key: "toShip", ...ORDER_STATUS_LABELS.toShip, filterValue: "__to_ship__", iconBg: "bg-red-100", iconColor: "text-red-600", numberColor: "text-red-600", icon: PackagePlus, match: (o) => o.platformStatus === "AWAITING_SHIPMENT" },
-  { key: "toPickup", ...ORDER_STATUS_LABELS.toPickup, filterValue: "__to_pickup__", iconBg: "bg-blue-100", iconColor: "text-blue-600", numberColor: "text-blue-600", icon: ShoppingCart, match: (o) => o.platformStatus === "AWAITING_COLLECTION" },
-  { key: "inTransit", ...ORDER_STATUS_LABELS.inTransit, filterValue: "__in_transit__", iconBg: "bg-purple-100", iconColor: "text-purple-600", numberColor: "text-purple-600", icon: Truck, match: (o) => o.platformStatus === "IN_TRANSIT" },
-  { key: "delivered", ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__", iconBg: "bg-green-100", iconColor: "text-green-600", numberColor: "text-green-600", icon: CheckCircle, match: (o) => o.platformStatus === "DELIVERED" },
+  { key: "all", ...ORDER_STATUS_LABELS.all, filterValue: "全部", iconBg: "bg-gradient-to-br from-amber-400 to-amber-600", iconColor: "text-white", numberColor: "text-amber-600", icon: Package, match: () => true },
+  { key: "toShip", ...ORDER_STATUS_LABELS.toShip, filterValue: "__to_ship__", iconBg: "bg-gradient-to-br from-red-400 to-red-600", iconColor: "text-white", numberColor: "text-red-600", icon: PackagePlus, match: (o) => o.platformStatus === "AWAITING_SHIPMENT" },
+  { key: "toPickup", ...ORDER_STATUS_LABELS.toPickup, filterValue: "__to_pickup__", iconBg: "bg-gradient-to-br from-blue-400 to-blue-600", iconColor: "text-white", numberColor: "text-blue-600", icon: ShoppingCart, match: (o) => o.platformStatus === "AWAITING_COLLECTION" },
+  { key: "inTransit", ...ORDER_STATUS_LABELS.inTransit, filterValue: "__in_transit__", iconBg: "bg-gradient-to-br from-purple-400 to-purple-600", iconColor: "text-white", numberColor: "text-purple-600", icon: Truck, match: (o) => o.platformStatus === "IN_TRANSIT" },
+  { key: "delivered", ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__", iconBg: "bg-gradient-to-br from-green-400 to-green-600", iconColor: "text-white", numberColor: "text-green-600", icon: CheckCircle, match: (o) => o.platformStatus === "DELIVERED" },
 ];
 
 // 8th grid slot: 投递失败 (top, gray, no filterValue — never highlights) +
 // 已取消 (bottom, orange, filterValue "已取消" — highlights the whole shared
 // outer border, same as any other card, when that chip is selected).
 const FAILED_CANCELLED_SPLIT_CARD = {
-  top: { ...ORDER_STATUS_LABELS.failed, iconBg: "bg-slate-100", iconColor: "text-slate-500", numberColor: "text-slate-500", icon: AlertTriangle, match: (o) => o.platformStatus === "FAILED_DELIVERY" || o.platformStatus === "UNDELIVERED" },
-  bottom: { ...ORDER_STATUS_LABELS.cancelled, filterValue: "已取消", iconBg: "bg-orange-100", iconColor: "text-orange-600", numberColor: "text-orange-600", icon: XCircle, match: (o) => o.orderStatus === "cancelled" },
+  top: { ...ORDER_STATUS_LABELS.failed, iconBg: "bg-gradient-to-br from-slate-300 to-slate-500", iconColor: "text-white", numberColor: "text-slate-500", icon: AlertTriangle, match: (o) => o.platformStatus === "FAILED_DELIVERY" || o.platformStatus === "UNDELIVERED" },
+  bottom: { ...ORDER_STATUS_LABELS.cancelled, filterValue: "已取消", iconBg: "bg-gradient-to-br from-orange-400 to-orange-600", iconColor: "text-white", numberColor: "text-orange-600", icon: XCircle, match: (o) => o.orderStatus === "cancelled" },
 };
 
 // Merged into one shared card frame (2026-08-05, UI-only): 未付款 (top, no
@@ -220,18 +664,39 @@ const FAILED_CANCELLED_SPLIT_CARD = {
 // FAILED_CANCELLED_SPLIT_CARD above, same underlying cardCounts/match, just
 // grouped into one box instead of two separate grid cells.
 const UNPAID_RETURNED_SPLIT_CARD = {
-  top: { ...ORDER_STATUS_LABELS.unpaid, iconBg: "bg-pink-100", iconColor: "text-pink-600", numberColor: "text-pink-600", icon: CreditCard, match: (o) => o.platformStatus === "UNPAID" },
-  bottom: { ...ORDER_STATUS_LABELS.returned, filterValue: "退款中", iconBg: "bg-rose-100", iconColor: "text-rose-600", numberColor: "text-rose-600", icon: RotateCcw, match: (o) => o.orderStatus === "returned" },
+  top: { ...ORDER_STATUS_LABELS.unpaid, iconBg: "bg-gradient-to-br from-pink-400 to-pink-600", iconColor: "text-white", numberColor: "text-pink-600", icon: CreditCard, match: (o) => o.platformStatus === "UNPAID" },
+  bottom: { ...ORDER_STATUS_LABELS.returned, filterValue: "退款中", iconBg: "bg-gradient-to-br from-rose-400 to-rose-600", iconColor: "text-white", numberColor: "text-rose-600", icon: RotateCcw, match: (o) => o.orderStatus === "returned" },
 };
 
 /* ============================== Orders (订单列表) ============================== */
 
 const NOTE_COLORS = { red: "#ef4444", yellow: "#eab308", purple: "#a855f7" };
 
-export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProcess, onUpdateStatus, onUpdateNote, onMarkPicked, onMarkPacked, goTo }) {
-  const [activePlatform, setActivePlatform] = useState("Shopee");
+export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProcess, onUpdateStatus, onUpdateNote, onMarkPicked, onMarkPacked, goTo, entryFilter, onConsumeEntryFilter }) {
+  // entryFilter (optional) = { platform, status } passed in from the
+  // Dashboard's "待处理订单" card popup — pre-selects platform + status on
+  // first mount only, then is consumed/cleared so a normal sidebar visit to
+  // this page still defaults to Shopee/全部 as before. Orders unmounts on
+  // tab switch (conditionally rendered in erp-mvp-demo.jsx), so a plain
+  // lazy useState initializer is enough — no extra effect needed to re-sync.
+  const [activePlatform, setActivePlatform] = useState(() => entryFilter?.platform || "Shopee");
   const [activeStore, setActiveStore] = useState(null); // null = 该平台全部店铺
-  const [statusFilter, setStatusFilter] = useState("全部");
+  const [statusFilter, setStatusFilter] = useState(() => entryFilter?.status || "全部");
+  // Click filter for the 3 Shipping Priority cards (Ship Today / Ship
+  // Before Tomorrow / Overdue Not Shipped) — only meaningful while
+  // statusFilter === "__to_ship__" (see `filtered` below, same gate the
+  // cards themselves are rendered under).
+  const [priorityFilter, setPriorityFilter] = useState(null);
+  // Click filter for the 即时订单/Instant Order shortcut card — independent
+  // of priorityFilter/getShipPriorityBucket, only meaningful while
+  // statusFilter === "__to_ship__". Toggling narrows the list to
+  // deliveryOption === "Instant"; clicking 待发货 clears it back to the
+  // full 待发货 list.
+  const [instantFilter, setInstantFilter] = useState(false);
+  useEffect(() => {
+    if (entryFilter && onConsumeEntryFilter) onConsumeEntryFilter();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Status-card counts, fetched independently of the (capped) `orders` prop
   // via `{count:"exact",head:true}` queries — zero row data transferred,
   // just numbers — so cards reflect the true full-table count even though
@@ -266,6 +731,13 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   // standalone — no backend/API/lookup/sync changes, only this entry point.
   const [shipConfirmOpen, setShipConfirmOpen] = useState(false);
   const [shipBatchStatus, setShipBatchStatus] = useState("idle"); // idle|loading|done
+  // Shopee's own "确认发货" — separate state, separate handler, separate
+  // modal from TikTok's above (2026-08-11). Does NOT call onMarkPicked/
+  // onMarkPacked and does NOT touch warehouse_stage — shopee-push-fulfillment
+  // gates on the real Shopee platform_status instead, so no ERP-internal
+  // pick/pack workflow is required for Shopee, unlike TikTok's button.
+  const [shopeeShipConfirmOpen, setShopeeShipConfirmOpen] = useState(false);
+  const [shopeeShipBatchStatus, setShopeeShipBatchStatus] = useState("idle");
 
   // targetOrders passed in from the button's onClick closure. Sequence per
   // order: pick -> pack (both no-ops if already done, per their own
@@ -295,6 +767,24 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       if (!shipErr && shipResult?.success) shipped.push(order);
     }
     setShipBatchStatus("done");
+    if (shipped.length > 0) onPrint(shipped);
+  }
+
+  // Shopee equivalent of runShipBatch above — calls only the already-deployed
+  // shopee-push-fulfillment function (get_shipping_parameter + ship_order
+  // internally), no onMarkPicked/onMarkPacked, no warehouse_stage write. The
+  // order's departure from 待发货 happens via the existing shopee-sync-orders
+  // cron picking up the real post-ship status on its next pass, same as
+  // TikTok already relies on for its own eventual status change.
+  async function runShopeeShipBatch(targetOrders) {
+    setShopeeShipConfirmOpen(false);
+    setShopeeShipBatchStatus("loading");
+    const shipped = [];
+    for (const order of targetOrders) {
+      const { data, error } = await supabaseClient.functions.invoke("shopee-push-fulfillment", { body: { orderId: order.id } });
+      if (!error && data?.success) shipped.push(order);
+    }
+    setShopeeShipBatchStatus("done");
     if (shipped.length > 0) onPrint(shipped);
   }
   // Hides 拣货完成/包装完成 only where they're guaranteed to have zero effect:
@@ -362,7 +852,10 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
     Promise.all([
       base(),
       base().eq("platform_status", "UNPAID"),
-      base().eq("platform_status", "AWAITING_SHIPMENT"),
+      // TikTok's AWAITING_SHIPMENT unchanged; READY_TO_SHIP added additively
+      // for Shopee (2026-08-11) — never appears on real TikTok rows, so this
+      // is a no-op for TikTok's actual count.
+      base().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"]),
       base().eq("platform_status", "AWAITING_COLLECTION"),
       base().eq("platform_status", "IN_TRANSIT"),
       // 已送达 counts DELIVERED only — verified live against TikTok's own
@@ -398,19 +891,81 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
     return () => { cancelled = true; };
   }, [activePlatform, activeStore]);
 
+  // COMPLETED card — real platform_status === "COMPLETED", both platforms
+  // at once (unlike cardCounts above, this isn't scoped to activePlatform,
+  // since the card shows Shopee+TikTok side by side regardless of which
+  // platform tab is active). Same `{count:"exact",head:true}` pattern as
+  // cardCounts — true full-table counts, fetched once on mount, not on
+  // every platform/store switch.
+  const [completedCounts, setCompletedCounts] = useState({ Shopee: 0, "TikTok Shop": 0 });
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      ["Shopee", "TikTok Shop"].map((p) =>
+        supabaseClient.from("orders").select("id", { count: "exact", head: true })
+          .eq("platform", DEMO_TO_DB_PLATFORM[p]).eq("platform_status", "COMPLETED"),
+      ),
+    ).then(([shopee, tiktok]) => {
+      if (cancelled) return;
+      setCompletedCounts({ Shopee: shopee.count ?? 0, "TikTok Shop": tiktok.count ?? 0 });
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  // COD Orders — real is_cod flag (mapped to isCod in shared.jsx's
+  // mapDbOrder), from the already-loaded `orders` prop — no new query.
+  const codByPlatform = ["Shopee", "TikTok Shop"].map((p) => ({
+    platform: p,
+    count: orders.filter((o) => o.platform === p && o.isCod).length,
+  }));
+  const codTotal = codByPlatform.reduce((s, p) => s + p.count, 0);
+
+  // Courier Volume — real courier field, top 5 combined across both
+  // platforms, from the already-loaded `orders` prop — no new query.
+  const courierVolume = useMemo(() => {
+    const counts = {};
+    for (const o of orders) {
+      if (!o.courier || o.courier === "—") continue;
+      counts[o.courier] = (counts[o.courier] || 0) + 1;
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  }, [orders]);
+
   const revenue = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + o.unitPrice * o.qty, 0);
   const netProfit = all.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const date7dAgoStr = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
   const date30dAgoStr = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+  const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+
+  // Shipping Priority (Overdue / Ship Today / Ship By Tomorrow) for
+  // still-awaiting-shipment orders. Uses the real platform deadline
+  // (`shipDeadline`, TikTok's cancel_order_sla_time — see shared.jsx) when
+  // the sync has captured it for that order; falls back to the previous
+  // order-age estimate for any order where it's still null (not yet
+  // re-synced since this field was added, or platform doesn't return it —
+  // e.g. Shopee for now). Old orders are never broken, just estimated as
+  // before until a real deadline is synced for them.
+  const shippingPriority = useMemo(() => {
+    const toShipOrders = all.filter((o) => o.platformStatus === "AWAITING_SHIPMENT");
+    const counts = { overdue: 0, shipToday: 0, shipByTomorrow: 0 };
+    for (const o of toShipOrders) {
+      const bucket = getShipPriorityBucket(o, todayStr, yesterdayStr, tomorrowStr);
+      if (bucket) counts[bucket]++;
+    }
+    return counts;
+  }, [all, todayStr, yesterdayStr, tomorrowStr]);
 
   const filtered = useMemo(() => {
     return all.filter((o) => {
       if (statusFilter === "__to_ship__") {
         // 待发货 (2026-08-03): switched from ERP-invented print_count logic
         // to TikTok's real order status — matches Seller Center 1:1 now.
-        if (o.platformStatus !== "AWAITING_SHIPMENT") return false;
+        // TikTok condition unchanged; Shopee's real to-ship status is a
+        // different string (READY_TO_SHIP) — additive OR, not a replacement.
+        if (o.platformStatus !== "AWAITING_SHIPMENT" && o.platformStatus !== "READY_TO_SHIP") return false;
       } else if (statusFilter === "__to_pickup__") {
         // 待取货 (2026-08-03): real platformStatus === "AWAITING_COLLECTION".
         // This value has never appeared in synced TikTok data, so this card
@@ -433,6 +988,17 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         // point at the real platformStatus field the card already uses.
         if (o.platformStatus !== "DELIVERED") return false;
       } else if (statusFilter !== "全部" && o.status !== statusFilter) {
+        return false;
+      }
+      // Ship Today / Ship Before Tomorrow / Overdue Not Shipped click
+      // filter — only meaningful within 待发货, same bucket function the 3
+      // cards' own counts use (getShipPriorityBucket above), so clicking a
+      // card is guaranteed to show exactly the orders it counted.
+      if (priorityFilter && statusFilter === "__to_ship__" && getShipPriorityBucket(o, todayStr, yesterdayStr, tomorrowStr) !== priorityFilter) {
+        return false;
+      }
+      // 即时订单 click filter — additive, independent of priorityFilter above.
+      if (instantFilter && statusFilter === "__to_ship__" && o.deliveryOption !== "Instant") {
         return false;
       }
       if (dateMode === "custom") {
@@ -461,7 +1027,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       }
       return true;
     });
-  }, [all, statusFilter, dateMode, dateFilter, q, searchField]);
+  }, [all, statusFilter, priorityFilter, instantFilter, todayStr, yesterdayStr, tomorrowStr, dateMode, dateFilter, q, searchField]);
 
   const allChecked = filtered.length > 0 && filtered.every((o) => selectedIds.has(o.id));
   // Batch-printed labels come out oldest-first (FIFO), not in click/selection
@@ -505,24 +1071,103 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         </div>
       )}
 
-      <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 gap-1">
-        {["Shopee", "TikTok Shop"].map((pf) => {
-          const pfTheme = PLATFORM_THEME[pf];
-          const active = activePlatform === pf;
-          const PfLogo = pf === "Shopee" ? ShoppingBag : Music2;
-          return (
-            <button
-              key={pf}
-              onClick={() => { setActivePlatform(pf); setActiveStore(null); setStatusFilter("全部"); setSelectedIds(new Set()); }}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                active ? `${pfTheme.headerBg} text-white` : "text-slate-500 hover:bg-slate-50"
-              }`}
-            >
-              <PfLogo size={16} className={active ? "text-white" : pf === "Shopee" ? "text-orange-500" : "text-slate-700"} />
-              <span>{pf}</span>
-            </button>
-          );
-        })}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 gap-1">
+          {["Shopee", "TikTok Shop"].map((pf) => {
+            const pfTheme = PLATFORM_THEME[pf];
+            const active = activePlatform === pf;
+            const PfLogo = pf === "Shopee" ? ShoppingBag : Music2;
+            return (
+              <button
+                key={pf}
+                onClick={() => { setActivePlatform(pf); setActiveStore(null); setStatusFilter("全部"); setSelectedIds(new Set()); }}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  active ? `${pfTheme.headerBg} text-white` : "text-slate-500 hover:bg-slate-50"
+                }`}
+              >
+                <PfLogo size={16} className={active ? "text-white" : pf === "Shopee" ? "text-orange-500" : "text-slate-700"} />
+                <span>{pf}</span>
+              </button>
+            );
+          })}
+        </div>
+        <button
+          onClick={() => goTo("overview")}
+          className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 btn-3d shrink-0"
+        >
+          <ChevronLeft size={14} />
+          {t("返回总览", "Back to Dashboard")}
+        </button>
+      </div>
+
+      {/* COMPLETED card — cross-platform (Shopee + TikTok side by side),
+          independent of activePlatform since it summarizes both at once.
+          Real platform_status === "COMPLETED" counts, see completedCounts
+          above. */}
+      <div className="glass-surface rounded-2xl p-4 flex items-center gap-3 card-3d">
+        <div className="h-12 w-12 rounded-2xl flex items-center justify-center icon-badge-3d shrink-0 bg-gradient-to-br from-emerald-400 to-emerald-600">
+          <PackageCheck size={20} className="text-white" />
+        </div>
+        <div className="min-w-0">
+          <div className="text-xs text-slate-500 mb-0.5 truncate">{t("已完成订单", "Completed")}</div>
+          <div className="text-2xl font-semibold tabular-nums">{completedCounts.Shopee + completedCounts["TikTok Shop"]}</div>
+          <div className="flex items-center gap-3 mt-1">
+            {["Shopee", "TikTok Shop"].map((p) => {
+              const Icon = PLATFORM_ICON[p];
+              return (
+                <span key={p} className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                  <Icon size={12} className={p === "Shopee" ? "text-orange-500" : "text-rose-600"} />
+                  {PLATFORM_SHORT_LABEL[p]} <span className="font-semibold tabular-nums text-slate-600">{completedCounts[p]}</span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* COD Orders — real is_cod, from already-loaded orders prop, no new
+          query. Cross-platform, same pattern as the COMPLETED card above. */}
+      <div className="glass-surface rounded-2xl p-4 flex items-center gap-3 card-3d">
+        <div className="h-12 w-12 rounded-2xl flex items-center justify-center icon-badge-3d shrink-0 bg-gradient-to-br from-cyan-400 to-cyan-600">
+          <CreditCard size={20} className="text-white" />
+        </div>
+        <div className="min-w-0">
+          <div className="text-xs text-slate-500 mb-0.5 truncate">{t("COD 订单", "COD Orders")}</div>
+          <div className="text-2xl font-semibold tabular-nums">{codTotal}</div>
+          <div className="flex items-center gap-3 mt-1">
+            {codByPlatform.map((p) => {
+              const Icon = PLATFORM_ICON[p.platform];
+              return (
+                <span key={p.platform} className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                  <Icon size={12} className={p.platform === "Shopee" ? "text-orange-500" : "text-rose-600"} />
+                  {PLATFORM_SHORT_LABEL[p.platform]} <span className="font-semibold tabular-nums text-slate-600">{p.count}</span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Courier Volume — real courier field, combined, top 5, from
+          already-loaded orders prop, no new query. */}
+      <div className="glass-surface rounded-2xl p-4 card-3d">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="h-12 w-12 rounded-2xl flex items-center justify-center icon-badge-3d shrink-0 bg-gradient-to-br from-indigo-400 to-indigo-600">
+            <Truck size={20} className="text-white" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-xs text-slate-500 mb-0.5 truncate">{t("快递商订单量", "Courier Volume")}</div>
+            <div className="text-2xl font-semibold tabular-nums">{orders.filter((o) => o.courier && o.courier !== "—").length}</div>
+          </div>
+        </div>
+        <div className="space-y-1">
+          {courierVolume.map(([name, count]) => (
+            <div key={name} className="flex items-center justify-between text-xs text-slate-600">
+              <span className="truncate">{name}</span>
+              <span className="font-semibold tabular-nums text-slate-700">{count}</span>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* 店铺卡片行 — 平台按钮不再绑定单一店铺，改成平台下面列出该平台所有店铺，
@@ -562,8 +1207,8 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
             ))}
       </div>
 
-      <div className={`rounded-xl border ${theme.border} overflow-hidden bg-white`}>
-        <div className={`${theme.headerBg} text-white px-5 py-4 flex items-center justify-between`}>
+      <div className={`rounded-2xl border ${theme.border} overflow-hidden bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_12px_28px_-16px_rgba(15,23,42,0.15)]`}>
+        <div className={`${theme.headerBg} text-white px-5 py-4 flex items-center justify-between glass-panel`}>
           <div className="flex items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-full bg-white/80" />
             <span className="font-semibold text-base">{activePlatform}</span>
@@ -596,9 +1241,9 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                 key={card.key}
                 type={clickable ? "button" : undefined}
                 onClick={clickable ? () => setStatusFilter(card.filterValue) : undefined}
-                className={`bg-white rounded-lg border-2 ${active ? "border-purple-400" : "border-slate-200"} px-3 py-3 flex flex-col items-center justify-center gap-1.5 ${clickable ? "cursor-pointer hover:border-slate-300" : ""}`}
+                className={`bg-white rounded-2xl border-2 ${active ? "border-purple-400" : "border-slate-200"} px-3 py-3 flex flex-col items-center justify-center gap-1.5 card-3d ${clickable ? "cursor-pointer hover:border-slate-300" : ""}`}
               >
-                <div className={`h-8 w-8 rounded-full flex items-center justify-center ${card.iconBg}`}>
+                <div className={`h-8 w-8 rounded-full flex items-center justify-center icon-badge-3d ${card.iconBg}`}>
                   <Icon size={14} className={card.iconColor} />
                 </div>
                 <div className="text-xs text-slate-500">{t(card.zh, card.en)}</div>
@@ -612,9 +1257,14 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
               as one unified stat card. Only the 已取消 half is clickable (same
               filterValue its chip uses); 投递失败 has no filterValue, stays
               plain. The shared outer border goes purple when 已取消 is active. */}
-          <div className={`bg-white rounded-lg border-2 ${statusFilter === "已取消" ? "border-purple-400" : "border-slate-200"} flex flex-col divide-y divide-slate-100`}>
+          <div className={`bg-white rounded-2xl border-2 ${statusFilter === "已取消" ? "border-purple-400" : "border-slate-200"} flex flex-col divide-y divide-slate-100 card-3d`}>
             {[FAILED_CANCELLED_SPLIT_CARD.top, FAILED_CANCELLED_SPLIT_CARD.bottom].map((half) => {
-              const count = (half.filterValue === "已取消" ? cardCounts.cancelledToday : cardCounts.failed) ?? all.filter(half.match).length;
+              // 已取消: main number restored to the true total (cardCounts.cancelled,
+              // already fetched above, order_status==='cancelled', no date filter) —
+              // "今天取消" shown as a separate small line below using the other
+              // already-fetched value (cardCounts.cancelledToday). No new query.
+              const isCancelled = half.filterValue === "已取消";
+              const count = (isCancelled ? cardCounts.cancelled : cardCounts.failed) ?? all.filter(half.match).length;
               const Icon = half.icon;
               const clickable = half.filterValue !== undefined;
               const HalfTag = clickable ? "button" : "div";
@@ -625,11 +1275,16 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                   onClick={clickable ? () => setStatusFilter(half.filterValue) : undefined}
                   className={`flex-1 w-full flex flex-col items-center justify-center gap-1 py-1.5 ${clickable ? "cursor-pointer hover:bg-slate-50" : ""}`}
                 >
-                  <div className={`h-6 w-6 rounded-full flex items-center justify-center ${half.iconBg}`}>
+                  <div className={`h-6 w-6 rounded-full flex items-center justify-center icon-badge-3d ${half.iconBg}`}>
                     <Icon size={12} className={half.iconColor} />
                   </div>
                   <div className="text-[11px] text-slate-500 leading-none">{t(half.zh, half.en)}</div>
-                  <div className={`text-sm font-bold tabular-nums leading-none ${half.filterValue === "已取消" ? "text-red-600" : half.numberColor}`}>{count}</div>
+                  <div className={`text-sm font-bold tabular-nums leading-none ${isCancelled ? "text-red-600" : half.numberColor}`}>{count}</div>
+                  {isCancelled && (
+                    <div className="text-[10px] text-slate-400 leading-none mt-0.5">
+                      {t(`今天取消 ${cardCounts.cancelledToday ?? 0}`, `Cancelled Today ${cardCounts.cancelledToday ?? 0}`)}
+                    </div>
+                  )}
                 </HalfTag>
               );
             })}
@@ -639,7 +1294,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
               above — same data (cardCounts.unpaid / cardCounts.returned),
               same click behavior (未付款 stays non-clickable, 退货/退款 keeps
               its existing filterValue "退款中"), just grouped into one box. */}
-          <div className={`bg-white rounded-lg border-2 ${statusFilter === "退款中" ? "border-purple-400" : "border-slate-200"} flex flex-col divide-y divide-slate-100`}>
+          <div className={`bg-white rounded-2xl border-2 ${statusFilter === "退款中" ? "border-purple-400" : "border-slate-200"} flex flex-col divide-y divide-slate-100 card-3d`}>
             {[UNPAID_RETURNED_SPLIT_CARD.top, UNPAID_RETURNED_SPLIT_CARD.bottom].map((half) => {
               const count = (half.filterValue === "退款中" ? cardCounts.returned : cardCounts.unpaid) ?? all.filter(half.match).length;
               const Icon = half.icon;
@@ -652,7 +1307,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                   onClick={clickable ? () => setStatusFilter(half.filterValue) : undefined}
                   className={`flex-1 w-full flex flex-col items-center justify-center gap-1 py-1.5 ${clickable ? "cursor-pointer hover:bg-slate-50" : ""}`}
                 >
-                  <div className={`h-6 w-6 rounded-full flex items-center justify-center ${half.iconBg}`}>
+                  <div className={`h-6 w-6 rounded-full flex items-center justify-center icon-badge-3d ${half.iconBg}`}>
                     <Icon size={12} className={half.iconColor} />
                   </div>
                   <div className="text-[11px] text-slate-500 leading-none">{t(half.zh, half.en)}</div>
@@ -686,7 +1341,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder={t(`在 ${activePlatform} 内搜索`, `Search in ${activePlatform}`)}
-                className={`w-full pl-9 pr-3 py-3 text-sm border border-slate-200 rounded-lg outline-none ${theme.ring}`}
+                className={`w-full pl-9 pr-3 py-3 text-sm border border-slate-200 rounded-lg outline-none input-3d ${theme.ring}`}
               />
             </div>
             <div className="flex items-center gap-1.5 border border-slate-200 rounded-lg px-2.5 shrink-0">
@@ -740,6 +1395,95 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
           </div>
         </div>
 
+        {/* Shortcut row (2026-08-09, merged into one row 2026-08-09, made
+            clickable 2026-08-09) —
+            待发货(X): real count, same cardCounts.toShip already used by the
+            待发货 card in the main grid above (platformStatus ===
+            "AWAITING_SHIPMENT"), no new query. Click clears instantFilter
+            so it shows the full 待发货 list (row is only ever visible while
+            statusFilter is already "__to_ship__").
+            即时订单/Instant Order: counts orders.deliveryOption === "Instant"
+            from the same already-loaded `all` order list (deliveryOption is
+            synced from TikTok's real delivery_option_name field;
+            Shopee/older TikTok rows are null and simply don't match). Click
+            toggles instantFilter (see `filtered` above) to narrow the list
+            to exactly the orders it counts — same real-data source, no new
+            query, no change to any other existing card/logic. */}
+        {statusFilter === "__to_ship__" && (
+          <div className={`px-5 pt-3 border-t border-slate-100 ${theme.bgWash} flex items-center gap-[0.5cm]`}>
+            <button
+              type="button"
+              onClick={() => setInstantFilter(false)}
+              className={`h-[1cm] w-[3cm] bg-white rounded-full border px-2 flex items-center gap-1 card-3d overflow-hidden shrink-0 cursor-pointer transition-3d ${
+                !instantFilter ? "border-purple-400 ring-1 ring-purple-400" : "border-slate-200"
+              }`}
+            >
+              <div className="h-4 w-4 rounded-full flex items-center justify-center icon-badge-3d shrink-0 bg-gradient-to-br from-red-400 to-red-600">
+                <PackagePlus size={9} className="text-white" />
+              </div>
+              <div className="min-w-0 text-[9px] text-slate-600 truncate leading-none">
+                {t("待发货", "To Ship")} <span className="font-bold tabular-nums text-red-600">({cardCounts.toShip ?? all.filter((o) => o.platformStatus === "AWAITING_SHIPMENT").length})</span>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setInstantFilter((prev) => !prev)}
+              className={`h-[1cm] w-[3cm] bg-white rounded-full border px-2 flex items-center gap-1 card-3d overflow-hidden shrink-0 cursor-pointer transition-3d ${
+                instantFilter ? "border-purple-400 ring-1 ring-purple-400" : "border-slate-200"
+              }`}
+            >
+              <div className="h-4 w-4 rounded-full flex items-center justify-center icon-badge-3d shrink-0 bg-gradient-to-br from-purple-400 to-purple-600">
+                <Zap size={9} className="text-white" />
+              </div>
+              <div className="min-w-0 text-[9px] text-slate-600 truncate leading-none">
+                {t("即时订单", "Instant order")} <span className="font-bold tabular-nums text-purple-600">({all.filter((o) => o.deliveryOption === "Instant").length})</span>
+              </div>
+            </button>
+          </div>
+        )}
+
+        {/* Shipping Priority shortcut row (2026-08-08, moved+made conditional
+            per explicit instruction) — only shown while the 待发货/To Ship
+            filter is active, positioned below the status chips and above
+            "全选本页". Overdue / Ship Today / Ship By Tomorrow: uses the real
+            platform deadline (shipDeadline) when synced, falling back to
+            the order-age estimate otherwise (see getShipPriorityBucket).
+            Clicking a card narrows the list below to exactly that bucket —
+            same bucket function as the count, so number and filter can't
+            drift apart; clicking the active card again clears it. */}
+        {statusFilter === "__to_ship__" && (
+          <div className={`px-5 py-3 border-t border-slate-100 ${theme.bgWash} flex items-center gap-[0.5cm]`}>
+            {[
+              { key: "shipToday", zh: "今日需发货", en: "Ship Today", icon: Clock, iconBg: "bg-gradient-to-br from-amber-400 to-amber-600", numberColor: "text-amber-600", count: shippingPriority.shipToday },
+              // Widened (2026-08-09) — 明日前需发货's zh label + count were
+              // being clipped at the shared 3cm width; only this card's
+              // width changed (CSS only, no data/logic change).
+              { key: "shipByTomorrow", zh: "明日前需发货", en: "Ship Before Tomorrow", icon: Truck, iconBg: "bg-gradient-to-br from-blue-400 to-blue-600", numberColor: "text-blue-600", count: shippingPriority.shipByTomorrow, width: "w-[3.6cm]" },
+              { key: "overdue", zh: "逾期未发货", en: "Overdue Not Shipped", icon: AlertTriangle, iconBg: "bg-gradient-to-br from-red-400 to-red-600", numberColor: "text-red-600", count: shippingPriority.overdue },
+            ].map((card) => {
+              const Icon = card.icon;
+              const active = priorityFilter === card.key;
+              return (
+                <button
+                  key={card.key}
+                  type="button"
+                  onClick={() => setPriorityFilter((prev) => (prev === card.key ? null : card.key))}
+                  className={`h-[1cm] ${card.width || "w-[3cm]"} bg-white rounded-full border px-2 flex items-center gap-1 card-3d overflow-hidden shrink-0 cursor-pointer transition-3d ${
+                    active ? "border-purple-400 ring-1 ring-purple-400" : "border-slate-200"
+                  }`}
+                >
+                  <div className={`h-4 w-4 rounded-full flex items-center justify-center icon-badge-3d shrink-0 ${card.iconBg}`}>
+                    <Icon size={9} className="text-white" />
+                  </div>
+                  <div className="min-w-0 text-[9px] text-slate-600 truncate leading-none">
+                    {t(card.zh, card.en)} <span className={`font-bold tabular-nums ${card.numberColor}`}>({card.count})</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         <div className="px-5 py-2.5 border-t border-slate-100 bg-slate-50 flex items-center gap-3">
           <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
             <input type="checkbox" checked={allChecked} onChange={toggleAll} className="h-3.5 w-3.5 rounded border-slate-300" />
@@ -759,8 +1503,8 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                 onClick={() => statusFilter !== "全部" && selectedPickable.length > 0 && onMarkPicked(selectedPickable.map((o) => o.id))}
                 disabled={pickDisabled}
                 title={statusFilter === "全部" ? t("请先筛选具体订单状态再拣货", "Filter to a specific status before marking picked") : t("拣货完成，打印前必须先完成拣货", "Mark picked — required before printing")}
-                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ml-auto ${
-                  !pickDisabled ? "bg-amber-500 text-white hover:bg-amber-600" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl ml-auto btn-3d ${
+                  !pickDisabled ? "bg-gradient-to-r from-amber-400 to-amber-600 text-white hover:brightness-105" : "bg-slate-200 text-slate-400 cursor-not-allowed"
                 }`}
               >
                 <PackageOpen size={13} /> {t(`拣货完成（${selectedPickable.length}）`, `Mark Picked (${selectedPickable.length})`)}
@@ -775,8 +1519,8 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                 onClick={() => selectedPackable.length > 0 && onMarkPacked(selectedPackable.map((o) => o.id))}
                 disabled={selectedPackable.length === 0}
                 title={t("包装完成，打印前必须先完成包装（此步骤会扣减库存）", "Mark packed — required before printing (deducts stock)")}
-                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
-                  selectedPackable.length > 0 ? "bg-indigo-500 text-white hover:bg-indigo-600" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl btn-3d ${
+                  selectedPackable.length > 0 ? "bg-gradient-to-r from-indigo-400 to-indigo-600 text-white hover:brightness-105" : "bg-slate-200 text-slate-400 cursor-not-allowed"
                 }`}
               >
                 <PackageCheck size={13} /> {t(`包装完成（${selectedPackable.length}）`, `Mark Packed (${selectedPackable.length})`)}
@@ -799,8 +1543,8 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                 onClick={() => statusFilter !== "全部" && actionableOrders.length > 0 && !printBlocked && onPrint(actionableOrders)}
                 disabled={printDisabled}
                 title={statusFilter === "全部" ? t("请先筛选具体订单状态再打印", "Filter to a specific status before printing") : printBlocked ? t("待发货订单需先完成拣货+包装才能打印", "To-ship orders must be picked + packed before printing") : undefined}
-                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
-                  !printDisabled ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl btn-3d ${
+                  !printDisabled ? "bg-gradient-to-r from-slate-700 to-slate-900 text-white hover:brightness-110" : "bg-slate-200 text-slate-400 cursor-not-allowed"
                 }`}
               >
                 <Printer size={13} /> {t(`批量打印订单单（${actionableOrders.length}）`, `Batch print order slips (${actionableOrders.length})`)}
@@ -814,11 +1558,26 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                 onClick={() => shippable.length > 0 && setShipConfirmOpen(true)}
                 disabled={shippable.length === 0 || shipBatchStatus === "loading"}
                 title={t("确认发货：真实调用TikTok发货API，不可撤销", "Confirm ship — calls the real TikTok ship API, cannot be undone")}
-                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
-                  shippable.length > 0 && shipBatchStatus !== "loading" ? "bg-red-600 text-white hover:bg-red-700" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl btn-3d ${
+                  shippable.length > 0 && shipBatchStatus !== "loading" ? "bg-gradient-to-r from-red-500 to-red-600 text-white hover:brightness-105" : "bg-slate-200 text-slate-400 cursor-not-allowed"
                 }`}
               >
                 <Send size={13} /> {shipBatchStatus === "loading" ? t("处理中…", "Processing…") : t(`确认发货（${shippable.length}）`, `Confirm Ship (${shippable.length})`)}
+              </button>
+            );
+          })()}
+          {activePlatform === "Shopee" && (() => {
+            const shippable = selectedOrders.filter((o) => o.platform === "Shopee" && o.platformStatus === "READY_TO_SHIP");
+            return (
+              <button
+                onClick={() => shippable.length > 0 && setShopeeShipConfirmOpen(true)}
+                disabled={shippable.length === 0 || shopeeShipBatchStatus === "loading"}
+                title={t("确认发货：真实调用Shopee发货API，不可撤销", "Confirm ship — calls the real Shopee ship API, cannot be undone")}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl btn-3d ${
+                  shippable.length > 0 && shopeeShipBatchStatus !== "loading" ? "bg-gradient-to-r from-orange-500 to-orange-600 text-white hover:brightness-105" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                }`}
+              >
+                <Send size={13} /> {shopeeShipBatchStatus === "loading" ? t("处理中…", "Processing…") : t(`确认发货（${shippable.length}）`, `Confirm Ship (${shippable.length})`)}
               </button>
             );
           })()}
@@ -831,8 +1590,23 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
               <div className="bg-white rounded-xl shadow-xl p-5 w-72" onClick={(e) => e.stopPropagation()}>
                 <div className="text-sm font-semibold mb-3">{t("打印", "Print")}</div>
                 <div className="flex gap-2">
-                  <button onClick={() => runShipBatch(shippable)} className="flex-1 py-2 rounded-lg bg-red-600 text-white text-sm">{t("打印", "Print")}</button>
+                  <button onClick={() => runShipBatch(shippable)} className="flex-1 py-2 rounded-lg bg-red-600 text-white text-sm btn-3d">{t("打印", "Print")}</button>
                   <button onClick={() => setShipConfirmOpen(false)} className="flex-1 py-2 rounded-lg border border-slate-200 text-sm">{t("取消", "Cancel")}</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {shopeeShipConfirmOpen && (() => {
+          const shippable = selectedOrders.filter((o) => o.platform === "Shopee" && o.platformStatus === "READY_TO_SHIP");
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" onClick={() => setShopeeShipConfirmOpen(false)}>
+              <div className="bg-white rounded-xl shadow-xl p-5 w-72" onClick={(e) => e.stopPropagation()}>
+                <div className="text-sm font-semibold mb-3">{t("确认发货", "Confirm Ship")}</div>
+                <div className="flex gap-2">
+                  <button onClick={() => runShopeeShipBatch(shippable)} className="flex-1 py-2 rounded-lg bg-orange-600 text-white text-sm btn-3d">{t("确认", "Confirm")}</button>
+                  <button onClick={() => setShopeeShipConfirmOpen(false)} className="flex-1 py-2 rounded-lg border border-slate-200 text-sm">{t("取消", "Cancel")}</button>
                 </div>
               </div>
             </div>
@@ -842,7 +1616,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         <div className="border-t border-slate-100 divide-y divide-slate-100">
           {filtered.length === 0 && <div className="px-5 py-6 text-xs text-slate-400 text-center">{t("没有符合条件的订单", "No orders match the current filters")}</div>}
           {filtered.map((o) => (
-            <div key={o.id} className="w-full px-5 py-3 hover:bg-slate-50 flex flex-wrap items-start gap-3">
+            <div key={o.id} className="w-full px-5 py-3 hover:bg-slate-50 flex flex-wrap items-start gap-3 row-3d">
               <input
                 type="checkbox"
                 checked={selectedIds.has(o.id)}
@@ -873,7 +1647,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                   <button
                     onClick={() => onConfirmProcess([o.id])}
                     title={t("确认处理：推进到已处理，与打印无关", "Confirm Process — moves to Processed, independent of printing")}
-                    className="flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    className="flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 btn-3d"
                   >
                     <CheckCircle2 size={11} /> {t("确认处理", "Confirm Process")}
                   </button>
@@ -882,7 +1656,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                   onClick={() => statusFilter !== "全部" && onPrint([o])}
                   disabled={statusFilter === "全部"}
                   title={statusFilter === "全部" ? t("请先筛选具体订单状态再打印", "Filter to a specific status before printing") : t("打印订单单", "Print order slip")}
-                  className={`flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-full border ${
+                  className={`flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-full border btn-3d ${
                     statusFilter === "全部" ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-100"
                   }`}
                 >
