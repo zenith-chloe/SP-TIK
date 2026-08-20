@@ -33,6 +33,21 @@ const corsHeaders = {
 // requested (existing 'staff' rows are untouched, just not assignable here).
 const ALLOWED_ROLES = ["admin", "purchasing", "warehouse", "finance", "customer_service"];
 
+// 店铺权限授权 (2026-08-20) — validates any storeIds payload against real
+// platform_accounts rows before writing profiles.store_ids, so a client
+// can never smuggle in an id that doesn't correspond to a real connected
+// store. Returns the filtered (valid-only) id list.
+async function validateStoreIds(raw: unknown): Promise<string[] | { error: string }> {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return { error: "storeIds must be an array" };
+  const ids = raw.map(String);
+  if (ids.length === 0) return [];
+  const { data, error } = await supabase.from("platform_accounts").select("id").in("id", ids);
+  if (error) return { error: error.message };
+  const validIds = new Set(data.map((r) => r.id));
+  return ids.filter((id) => validIds.has(id));
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
@@ -87,7 +102,7 @@ Deno.serve(async (req: Request) => {
         if (data.users.length < 200) break;
         page++;
       }
-      const { data: profiles, error: profErr } = await supabase.from("profiles").select("id, full_name, role");
+      const { data: profiles, error: profErr } = await supabase.from("profiles").select("id, full_name, role, store_ids");
       if (profErr) return json({ error: profErr.message }, 500);
       const profileById = new Map(profiles.map((p) => [p.id, p]));
       const now = Date.now();
@@ -101,6 +116,7 @@ Deno.serve(async (req: Request) => {
             email: u.email ?? "",
             fullName: p.full_name,
             role: p.role,
+            storeIds: p.store_ids ?? [],
             status: bannedUntil > now ? "disabled" : "active",
             lastSignInAt: u.last_sign_in_at ?? null,
           };
@@ -117,9 +133,13 @@ Deno.serve(async (req: Request) => {
         return json({ error: "missing/invalid fields" }, 400);
       }
       if (password.length < 6) return json({ error: "密码至少需要 6 位" }, 400);
+      const storeIds = await validateStoreIds(body.storeIds);
+      if (!Array.isArray(storeIds)) return json(storeIds, 400);
       // handle_new_user() trigger reads raw_user_meta_data.full_name/role and
       // creates the matching profiles row itself — no manual insert needed
-      // (and avoids a race between this function and the trigger).
+      // (and avoids a race between this function and the trigger). store_ids
+      // isn't part of that trigger though, so it's set in a follow-up update
+      // right after the profiles row exists.
       const { data, error } = await supabase.auth.admin.createUser({
         email,
         password,
@@ -127,6 +147,9 @@ Deno.serve(async (req: Request) => {
         user_metadata: { full_name: fullName, role },
       });
       if (error) return json({ error: error.message }, 400);
+      if (data.user?.id && storeIds.length > 0) {
+        await supabase.from("profiles").update({ store_ids: storeIds }).eq("id", data.user.id);
+      }
       return json({ id: data.user?.id });
     }
 
@@ -136,9 +159,13 @@ Deno.serve(async (req: Request) => {
       const role = body.role != null ? String(body.role) : undefined;
       if (!userId) return json({ error: "missing userId" }, 400);
       if (role !== undefined && !ALLOWED_ROLES.includes(role)) return json({ error: "invalid role" }, 400);
-      const patch: Record<string, string> = {};
+      const storeIds = body.storeIds !== undefined ? await validateStoreIds(body.storeIds) : undefined;
+      if (storeIds !== undefined && !Array.isArray(storeIds)) return json(storeIds, 400);
+      // deno-lint-ignore no-explicit-any
+      const patch: Record<string, any> = {};
       if (fullName) patch.full_name = fullName;
       if (role) patch.role = role;
+      if (storeIds !== undefined) patch.store_ids = storeIds;
       if (Object.keys(patch).length === 0) return json({ error: "nothing to update" }, 400);
       const { error } = await supabase.from("profiles").update(patch).eq("id", userId);
       if (error) return json({ error: error.message }, 500);

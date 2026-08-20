@@ -2402,9 +2402,10 @@ export function Roles({ t }) {
   const [staff, setStaff] = useState([]);
   const [staffLoading, setStaffLoading] = useState(true);
   const [permissions, setPermissions] = useState([]);
+  const [stores, setStores] = useState([]); // real platform_accounts, for 店铺权限授权 checkboxes
   const [modalOpen, setModalOpen] = useState(false);
   const [editingStaff, setEditingStaff] = useState(null); // null = create mode
-  const [form, setForm] = useState({ fullName: "", email: "", password: "", role: ROLE_KEYS[0], status: "active" });
+  const [form, setForm] = useState({ fullName: "", email: "", password: "", role: ROLE_KEYS[0], status: "active", storeIds: [] });
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [toast, setToast] = useState(null);
@@ -2435,20 +2436,34 @@ export function Roles({ t }) {
     else console.error("loadPermissions failed", error);
   }
 
-  useEffect(() => { loadStaff(); loadPermissions(); }, []);
+  // 店铺权限授权 (2026-08-20) — real connected Shopee/TikTok stores for the
+  // checkbox list. Excludes hidden=true stores (same convention the store
+  // list elsewhere in this app already uses for retired/broken accounts —
+  // e.g. the legacy Shopee shop with a dead OAuth token).
+  async function loadStores() {
+    const { data, error } = await supabaseClient.from("platform_accounts").select("id, platform, account_name").eq("hidden", false).order("platform").order("account_name");
+    if (!error) setStores(data || []);
+    else console.error("loadStores failed", error);
+  }
+
+  useEffect(() => { loadStaff(); loadPermissions(); loadStores(); }, []);
 
   function openCreateModal() {
     setEditingStaff(null);
-    setForm({ fullName: "", email: "", password: "", role: ROLE_KEYS[0], status: "active" });
+    setForm({ fullName: "", email: "", password: "", role: ROLE_KEYS[0], status: "active", storeIds: [] });
     setErrorMsg("");
     setModalOpen(true);
   }
 
   function openEditModal(s) {
     setEditingStaff(s);
-    setForm({ fullName: s.fullName, email: s.email, password: "", role: ROLE_KEYS.includes(s.role) ? s.role : ROLE_KEYS[0], status: s.status });
+    setForm({ fullName: s.fullName, email: s.email, password: "", role: ROLE_KEYS.includes(s.role) ? s.role : ROLE_KEYS[0], status: s.status, storeIds: s.storeIds || [] });
     setErrorMsg("");
     setModalOpen(true);
+  }
+
+  function toggleFormStoreId(id) {
+    setForm((f) => ({ ...f, storeIds: f.storeIds.includes(id) ? f.storeIds.filter((x) => x !== id) : [...f.storeIds, id] }));
   }
 
   async function submitModal() {
@@ -2456,7 +2471,7 @@ export function Roles({ t }) {
     if (!form.fullName.trim()) { setErrorMsg(t("请输入员工姓名", "Please enter a name")); return; }
     setBusy(true);
     if (editingStaff) {
-      const { error } = await callStaffApi("update", { userId: editingStaff.id, fullName: form.fullName, role: form.role });
+      const { error } = await callStaffApi("update", { userId: editingStaff.id, fullName: form.fullName, role: form.role, storeIds: form.storeIds });
       if (error) { setBusy(false); setErrorMsg(error); return; }
       if (form.status !== editingStaff.status) {
         const { error: statusErr } = await callStaffApi("setStatus", { userId: editingStaff.id, status: form.status });
@@ -2468,7 +2483,7 @@ export function Roles({ t }) {
       loadStaff();
     } else {
       if (!form.email.trim() || !form.password) { setBusy(false); setErrorMsg(t("请填写登入帐号与预设密码", "Please fill in the login email and default password")); return; }
-      const { data, error } = await callStaffApi("create", { fullName: form.fullName, email: form.email, password: form.password, role: form.role });
+      const { data, error } = await callStaffApi("create", { fullName: form.fullName, email: form.email, password: form.password, role: form.role, storeIds: form.storeIds });
       if (error) { setBusy(false); setErrorMsg(error); return; }
       if (form.status === "disabled" && data?.id) {
         await callStaffApi("setStatus", { userId: data.id, status: "disabled" });
@@ -2576,12 +2591,24 @@ export function Roles({ t }) {
                       {s.lastSignInAt ? new Date(s.lastSignInAt).toLocaleString(lang === "zh" ? "zh-CN" : "en-US") : t("从未登录", "Never")}
                     </td>
                     <td className="py-2.5 pr-3">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button onClick={() => openEditModal(s)} title={t("编辑", "Edit")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Pencil size={13} /></button>
-                        <button onClick={() => openResetPasswordModal(s)} title={t("重置密码", "Reset Password")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><KeyRound size={13} /></button>
-                        <button onClick={() => handleToggleStatus(s)} title={s.status === "active" ? t("禁用", "Disable") : t("启用", "Enable")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Ban size={13} /></button>
-                        <button onClick={() => handleDelete(s)} title={t("删除", "Delete")} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50"><Trash2 size={13} /></button>
-                      </div>
+                      {/* owner 帐号不透过此弹窗管理 (2026-08-20 fix) — 'owner'
+                          isn't in ROLE_KEYS, so opening the edit modal on an
+                          owner row silently reset its role dropdown to
+                          "管理员"; saving would have downgraded a real owner
+                          to admin. Since owner already implicitly has full
+                          access to everything (incl. all stores), managing
+                          it through this generic staff modal was never
+                          meaningful anyway — just show a plain label. */}
+                      {s.role === "owner" ? (
+                        <div className="text-right text-[11px] text-slate-400">{t("所有者帐号", "Owner account")}</div>
+                      ) : (
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button onClick={() => openEditModal(s)} title={t("编辑", "Edit")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Pencil size={13} /></button>
+                          <button onClick={() => openResetPasswordModal(s)} title={t("重置密码", "Reset Password")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><KeyRound size={13} /></button>
+                          <button onClick={() => handleToggleStatus(s)} title={s.status === "active" ? t("禁用", "Disable") : t("启用", "Enable")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Ban size={13} /></button>
+                          <button onClick={() => handleDelete(s)} title={t("删除", "Delete")} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50"><Trash2 size={13} /></button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -2682,6 +2709,39 @@ export function Roles({ t }) {
                   {form.status === "active" ? <CheckCircle2 size={13} /> : <Ban size={13} />}
                   {form.status === "active" ? t("启用", "Active") : t("禁用", "Disabled")}
                 </button>
+              </div>
+              {/* 店铺权限授权 (2026-08-20) — owner isn't assignable via this
+                  modal (see ALLOWED_ROLES), so the "owner 预设拥有所有店铺权限"
+                  case never applies here; this list is only ever shown for
+                  the 5 non-owner roles, which always need an explicit grant. */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs text-slate-400">{t("可存取店铺", "Accessible Stores")}</label>
+                  {stores.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setForm({ ...form, storeIds: form.storeIds.length === stores.length ? [] : stores.map((s) => s.id) })}
+                      className="text-[11px] text-teal-600 hover:underline"
+                    >
+                      {form.storeIds.length === stores.length ? t("取消全选", "Deselect all") : t("全选", "Select all")}
+                    </button>
+                  )}
+                </div>
+                {stores.length === 0 ? (
+                  <div className="text-xs text-slate-400">{t("暂无已连接店铺", "No connected stores yet")}</div>
+                ) : (
+                  <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-40 overflow-y-auto">
+                    {stores.map((s) => (
+                      <label key={s.id} className="flex items-center gap-2 px-3 py-2 text-xs cursor-pointer hover:bg-slate-50">
+                        <input type="checkbox" checked={form.storeIds.includes(s.id)} onChange={() => toggleFormStoreId(s.id)} className="accent-teal-600" />
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${s.platform === "shopee" ? "bg-orange-100 text-orange-600" : "bg-slate-800 text-white"}`}>
+                          {s.platform === "shopee" ? "Shopee" : "TikTok"}
+                        </span>
+                        <span className="truncate">{s.account_name}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
               {errorMsg && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">{errorMsg}</div>}
             </div>
