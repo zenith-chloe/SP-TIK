@@ -40,6 +40,12 @@ export function mapDbStore(account) {
     sellerName: account.seller_name || account.account_name || "",
     sellerAddress: account.seller_address || "",
     sellerPhone: account.seller_phone || "",
+    // Cosmetic-only, ERP display side — never read by sync/cron logic.
+    logoUrl: account.logo_url || "",
+    fontColor: account.font_color || "#0f172a",
+    fontStyle: account.font_style || "normal",
+    badgeColor: account.badge_color || "",
+    shopNote: account.shop_note || "",
   };
 }
 
@@ -179,7 +185,19 @@ export function mapDbCancellationRecord(r) {
 }
 
 export function mapDbOrder(order, items) {
-  const first = items[0] || {};
+  // `items` comes back from a plain `.in("order_id", ...)` select with no
+  // ORDER BY (see fetchOrderItemsFor), so Postgres/PostgREST never guarantees
+  // row order — for a multi-item order (main product + a Shopee/TikTok
+  // free-gift line, e.g. 260817JW253WNF: RK chain set + a RM0 "NOT FOR SELL"
+  // gift SKU) that meant `items[0]` could just as easily land on the gift as
+  // the real product, and every single-item field below (sku/product/qty/
+  // etc — still consumed by print labels, warehouse picking, etc.) would
+  // silently show the gift instead. Picking the highest-subtotal item as
+  // `first` fixes that deterministically (a free gift's subtotal is always
+  // 0) without needing a schema change or an explicit is_gift flag. The full
+  // `items` array below (unsorted, real fetch order) is what the order
+  // list/detail UI now renders instead of relying on a single item.
+  const first = [...items].sort((a, b) => Number(b.subtotal ?? b.unit_price ?? 0) - Number(a.subtotal ?? a.unit_price ?? 0))[0] || {};
   return {
     id: order.order_no,
     platformOrderId: order.order_no,
@@ -187,6 +205,18 @@ export function mapDbOrder(order, items) {
     customer: order.buyer_name || "—",
     phone: order.buyer_phone || "—",
     address: order.shipping_address || "—",
+    // Real Shopee buyer_user_id (2026-08-20) — order/get_order_detail's
+    // optional field, now synced by shopee-sync-orders. Used only to build
+    // a buyer-specific Shopee Seller Center webchat deep link from the
+    // order drawer's 即时聊天 button; null for TikTok orders (field doesn't
+    // apply there, not requested/synced).
+    buyerId: order.buyer_user_id || null,
+    // Real Shopee buyer_username (2026-08-20) — the buyer's actual account
+    // handle (e.g. "muhdizzzat"), NOT masked like buyer_name/phone/address
+    // are. Used for the 即时聊天 button's copy-to-clipboard workflow, since
+    // Shopee's webchat page doesn't support a ?buyer_id= URL deep link
+    // (confirmed live). Null for TikTok orders (not requested/synced there).
+    buyerUsername: order.buyer_username || null,
     platformAccountId: order.platform_account_id || null,
     sku: first.sku || "",
     skuStatus: first.sku ? "ok" : "missing",
@@ -195,6 +225,20 @@ export function mapDbOrder(order, items) {
     variation: first.variation || "",
     qty: first.qty || 1,
     unitPrice: Number(first.unit_price || 0),
+    // Full item list (all SKUs on this order — main product(s) + any gift
+    // lines), real DB fetch order. Added 2026-08-17 so the order list/detail
+    // views can render every item instead of only the single `product`/
+    // `sku`/`qty` fields above (which stay as-is for existing consumers —
+    // print labels, warehouse picking, stock-deduction displays — that
+    // already depend on a single representative item per order).
+    items: items.map((it) => ({
+      sku: it.sku || "",
+      productName: it.product_name || "—",
+      image: it.image_url || null,
+      variation: it.variation || "",
+      qty: it.qty || 1,
+      unitPrice: Number(it.unit_price || 0),
+    })),
     shippingFee: Number(order.shipping_fee || 0),
     platformFee: 0,
     commission: 0,
@@ -214,6 +258,15 @@ export function mapDbOrder(order, items) {
     cancelStage: order.cancel_stage || null,
     isCod: order.is_cod || false,
     date: (order.order_date || "").slice(0, 10),
+    // Real platform ship-by deadline (TikTok's cancel_order_sla_time), when
+    // the sync has captured it for this order — null for rows not yet
+    // re-synced since this field was added, or where the platform doesn't
+    // return it. Consumers fall back to their own estimate when null.
+    shipDeadline: order.ship_deadline || null,
+    // Real TikTok delivery option label ("Instant", "Next-day delivery",
+    // "Standard shipping"), when the sync has captured it — null for rows
+    // not yet re-synced since this field was added, or Shopee orders.
+    deliveryOption: order.delivery_option || null,
     printCount: order.print_count || 0,
     lastPrintedAt: order.last_printed_at || null,
     lastPrintedBy: order.last_printed_by || null,
@@ -381,12 +434,12 @@ export function warehouseLabel(name, lang) {
 export const PLATFORM_THEME = {
   Shopee: {
     dot: "bg-orange-500", text: "text-orange-600", bgWash: "bg-orange-50/60",
-    border: "border-orange-200", headerBg: "bg-orange-500", chipActive: "bg-orange-500 text-white border-orange-500",
+    border: "border-orange-200", headerBg: "bg-gradient-to-r from-orange-500 to-orange-600", chipActive: "bg-orange-500 text-white border-orange-500",
     ring: "focus:border-orange-400",
   },
   "TikTok Shop": {
     dot: "bg-rose-600", text: "text-rose-600", bgWash: "bg-rose-50/60",
-    border: "border-rose-200", headerBg: "bg-rose-600", chipActive: "bg-rose-600 text-white border-rose-600",
+    border: "border-rose-200", headerBg: "bg-gradient-to-r from-rose-600 to-rose-700", chipActive: "bg-rose-600 text-white border-rose-600",
     ring: "focus:border-rose-400",
   },
 };

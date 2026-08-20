@@ -16,6 +16,13 @@ import {
   profit, fmt, statusColor, statusLabel, warehouseLabel, supabaseClient,
   mapDbStockMovement, MOVEMENT_TYPE_LABELS, DEMO_TO_DB_PLATFORM,
 } from "./shared.jsx";
+// Reused from the Finance page's real settlement/estimate logic
+// (2026-08-20, new) — OrderDrawer's new "预估收入明细"/"买家实付金额"
+// sections read the exact same real Shopee data (order_settlements +
+// incomeBreakdown/estimatedBreakdown), not a re-derived copy, so the
+// numbers can never drift between the two pages. Pure reuse — none of
+// pagesImportFinance.jsx's own logic changes because of this.
+import { platformFeeRate, incomeBreakdown, estimatedBreakdown, FeeBreakdownPanel } from "./pagesImportFinance.jsx";
 
 /* ============================== Overview ============================== */
 
@@ -106,6 +113,33 @@ function inDateRange(dateStr, mode, customFrom, customTo) {
 // else.
 function isPendingOrder(o) {
   return o.status === "待处理" && o.platformStatus !== "UNPAID" && !(o.printCount > 0);
+}
+
+// 即时订单/Instant order.
+// TikTok: matches only an exact "genuinely instant" delivery_option value —
+// "Instant Delivery" / "Same-Day Delivery" / "Next-Day Delivery" (also kept:
+// bare "Instant", TikTok's own docs label). Corrected 2026-08-17 (explicit
+// user fix, reversing the same day's earlier change): "Next-day delivery"
+// (lowercase d — TikTok's normal standard-speed shipping OPTION label, not
+// an instant-order concept) was wrongly being matched, which silently
+// pulled ordinary 待发货/待取货 orders into the 即时订单 card. Real TikTok
+// Seller Centre currently has 0 genuine instant orders — verified live
+// (`select delivery_option, count(*) from orders where platform='tiktok'
+// and platform_status in ('AWAITING_SHIPMENT','AWAITING_COLLECTION') group
+// by platform_status, delivery_option`: only "Next-day delivery"/"Standard
+// shipping" exist right now, neither of which should count) — so this
+// intentionally matches nothing in the current real dataset; it exists so a
+// real future TikTok "Instant Delivery"/"Same-Day Delivery"/"Next-Day
+// Delivery" order is still caught correctly without another code change.
+// Shopee: unchanged, still matches via o.courier (its sync never populates
+// delivery_option at all), e.g. "Instant Delivery (Arrange in 90 mins)" —
+// confirmed live against 260815EDU42C32 / 260816ETGNQWFX / 260817HPPK7SF3.
+// Additive OR throughout: neither platform's condition can ever match on
+// the other's field (o.deliveryOption is always null for Shopee rows,
+// o.courier never contains "instant" for real TikTok rows).
+const TIKTOK_INSTANT_DELIVERY_OPTIONS = new Set(["Instant", "Instant Delivery", "Same-Day Delivery", "Next-Day Delivery"]);
+function isInstantOrder(o) {
+  return TIKTOK_INSTANT_DELIVERY_OPTIONS.has(o.deliveryOption) || (o.courier || "").toLowerCase().includes("instant");
 }
 
 // Single source of truth for which of the 3 Shipping Priority buckets
@@ -626,9 +660,10 @@ const ORDER_STATUS_LABELS = {
   all: { zh: "全部", en: "All" },
   unpaid: { zh: "未付款", en: "Unpaid" },
   toShip: { zh: "待发货", en: "To Ship" }, // = real platformStatus === "AWAITING_SHIPMENT" (2026-08-03: switched off print_count — TikTok's own status doesn't distinguish "printed" from "not printed", both are AWAITING_SHIPMENT, so splitting on print_count was an ERP-invented distinction that drifted from the platform's real count)
-  toPickup: { zh: "待取货", en: "To Pickup" }, // = real platformStatus === "AWAITING_COLLECTION" (2026-08-03: this value has never appeared in synced TikTok data — Seller Center's "Awaiting collection" isn't exposed by the order search API this ERP syncs from — so this card is expected to read 0 until/unless TikTok starts returning it, which matches Seller Center's own count)
+  toPickup: { zh: "待取货", en: "To Pickup" }, // = real platformStatus === "AWAITING_COLLECTION" (2026-08-03: this value has never appeared in synced TikTok data — Seller Center's "Awaiting collection" isn't exposed by the order search API this ERP syncs from — so this card is expected to read 0 until/unless TikTok starts returning it, which matches Seller Center's own count) OR "PROCESSED" (2026-08-17, authorized: Shopee's real post-ship_order status, written by shopee-push-fulfillment immediately on success — additive, does not affect TikTok)
   inTransit: { zh: "运输中", en: "In Transit" }, // = real platformStatus === "IN_TRANSIT" (2026-07-29: was the dead o.status==="物流中")
   delivered: { zh: "已送达", en: "Delivered" }, // = real platformStatus === "DELIVERED" only (2026-08-05: dropped COMPLETED — verified live against TikTok's own API total_count per status: DELIVERED=408, COMPLETED=5653, these are two distinct Seller Center buckets, not one; COMPLETED orders still show under 全部, just no longer inflate this card)
+  completed: { zh: "已完成", en: "Completed" }, // = real platformStatus === "COMPLETED" — identical definition on both platforms (2026-08-17, new combo-card bottom half, paired with 已送达)
   failed: { zh: "投递失败", en: "Delivery Failed" }, // no real data yet
   returned: { zh: "退货/退款", en: "Return/Refund" }, // = o.status === "退款中"
   cancelled: { zh: "已取消", en: "Cancelled" }, // = o.status === "已取消"
@@ -645,9 +680,21 @@ const ORDER_STATUS_LABELS = {
 const ORDER_CENTER_CARDS = [
   { key: "all", ...ORDER_STATUS_LABELS.all, filterValue: "全部", iconBg: "bg-gradient-to-br from-amber-400 to-amber-600", iconColor: "text-white", numberColor: "text-amber-600", icon: Package, match: () => true },
   { key: "toShip", ...ORDER_STATUS_LABELS.toShip, filterValue: "__to_ship__", iconBg: "bg-gradient-to-br from-red-400 to-red-600", iconColor: "text-white", numberColor: "text-red-600", icon: PackagePlus, match: (o) => o.platformStatus === "AWAITING_SHIPMENT" },
-  { key: "toPickup", ...ORDER_STATUS_LABELS.toPickup, filterValue: "__to_pickup__", iconBg: "bg-gradient-to-br from-blue-400 to-blue-600", iconColor: "text-white", numberColor: "text-blue-600", icon: ShoppingCart, match: (o) => o.platformStatus === "AWAITING_COLLECTION" },
-  { key: "inTransit", ...ORDER_STATUS_LABELS.inTransit, filterValue: "__in_transit__", iconBg: "bg-gradient-to-br from-purple-400 to-purple-600", iconColor: "text-white", numberColor: "text-purple-600", icon: Truck, match: (o) => o.platformStatus === "IN_TRANSIT" },
-  { key: "delivered", ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__", iconBg: "bg-gradient-to-br from-green-400 to-green-600", iconColor: "text-white", numberColor: "text-green-600", icon: CheckCircle, match: (o) => o.platformStatus === "DELIVERED" },
+  { key: "toPickup", ...ORDER_STATUS_LABELS.toPickup, filterValue: "__to_pickup__", iconBg: "bg-gradient-to-br from-blue-400 to-blue-600", iconColor: "text-white", numberColor: "text-blue-600", icon: ShoppingCart, match: (o) => o.platformStatus === "AWAITING_COLLECTION" || o.platformStatus === "PROCESSED" },
+  { key: "inTransit", ...ORDER_STATUS_LABELS.inTransit, filterValue: "__in_transit__", iconBg: "bg-gradient-to-br from-purple-400 to-purple-600", iconColor: "text-white", numberColor: "text-purple-600", icon: Truck, match: (o) => o.platformStatus === "IN_TRANSIT" || o.platformStatus === "SHIPPED" },
+  // Shopee real data confirmed live (2026-08-17): 0 rows ever use DELIVERED,
+  // 612 real rows use COMPLETED — Shopee has no separate "delivered but not
+  // completed" bucket the way TikTok does, so COMPLETED is Shopee's actual
+  // terminal delivered state. Gated on o.platform (per-row, not a component
+  // closure) so TikTok's own DELIVERED-only definition — and its deliberate
+  // DELIVERED-vs-COMPLETED distinction (see cardCounts below) — is untouched.
+  // TO_CONFIRM_RECEIVE added 2026-08-17 (explicit user classification,
+  // Shopee-only): real data shows these are already-shipped orders awaiting
+  // buyer receipt confirmation (courier already assigned, e.g. SPX Express /
+  // Instant Delivery), not pre-shipment — so it belongs here, not in
+  // 待取货. Confirmed it never overlaps 待取货's own AWAITING_COLLECTION/
+  // PROCESSED match above.
+  { key: "delivered", ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__", iconBg: "bg-gradient-to-br from-green-400 to-green-600", iconColor: "text-white", numberColor: "text-green-600", icon: CheckCircle, match: (o) => o.platformStatus === "DELIVERED" || (o.platform === "Shopee" && (o.platformStatus === "COMPLETED" || o.platformStatus === "TO_CONFIRM_RECEIVE")) },
 ];
 
 // 8th grid slot: 投递失败 (top, gray, no filterValue — never highlights) +
@@ -666,6 +713,24 @@ const FAILED_CANCELLED_SPLIT_CARD = {
 const UNPAID_RETURNED_SPLIT_CARD = {
   top: { ...ORDER_STATUS_LABELS.unpaid, iconBg: "bg-gradient-to-br from-pink-400 to-pink-600", iconColor: "text-white", numberColor: "text-pink-600", icon: CreditCard, match: (o) => o.platformStatus === "UNPAID" },
   bottom: { ...ORDER_STATUS_LABELS.returned, filterValue: "退款中", iconBg: "bg-gradient-to-br from-rose-400 to-rose-600", iconColor: "text-white", numberColor: "text-rose-600", icon: RotateCcw, match: (o) => o.orderStatus === "returned" },
+};
+
+// 已送达 (top) + 已完成 (bottom) merged into one two-tier card (2026-08-17,
+// explicit UI restructure request, applies to both Shopee and TikTok).
+// Same shared-frame pattern as the two split cards above, but deliberately
+// carries no `numberColor`/count on either half — per explicit request this
+// card never shows a number at all; the real total only appears on the
+// dedicated page once you click through (see the banner above the order
+// list, and the `filtered` __delivered__/__completed__ branches). 已送达
+// reuses the exact same filterValue/match the old standalone card used
+// (untouched: TikTok stays DELIVERED-only, Shopee also matches
+// COMPLETED/TO_CONFIRM_RECEIVE). 已完成 is new: real platformStatus ===
+// "COMPLETED", identical definition on both platforms — this is TikTok's
+// own distinct terminal status already established elsewhere in this file
+// as separate from DELIVERED, not a redefinition of anything.
+const DELIVERED_COMPLETED_SPLIT_CARD = {
+  top: { ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__", iconBg: "bg-gradient-to-br from-green-400 to-green-600", iconColor: "text-white", icon: CheckCircle, match: (o) => o.platformStatus === "DELIVERED" || (o.platform === "Shopee" && (o.platformStatus === "COMPLETED" || o.platformStatus === "TO_CONFIRM_RECEIVE")) },
+  bottom: { ...ORDER_STATUS_LABELS.completed, filterValue: "__completed__", iconBg: "bg-gradient-to-br from-emerald-400 to-emerald-600", iconColor: "text-white", icon: PackageCheck, match: (o) => o.platformStatus === "COMPLETED" },
 };
 
 /* ============================== Orders (订单列表) ============================== */
@@ -687,12 +752,12 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   // statusFilter === "__to_ship__" (see `filtered` below, same gate the
   // cards themselves are rendered under).
   const [priorityFilter, setPriorityFilter] = useState(null);
-  // Click filter for the 即时订单/Instant Order shortcut card — independent
-  // of priorityFilter/getShipPriorityBucket, only meaningful while
-  // statusFilter === "__to_ship__". Toggling narrows the list to
-  // deliveryOption === "Instant"; clicking 待发货 clears it back to the
-  // full 待发货 list.
-  const [instantFilter, setInstantFilter] = useState(false);
+  // 即时订单 dedicated page (2026-08-17, Shopee only) — "pending" | "processed",
+  // only meaningful while statusFilter === "__instant_orders__" (see
+  // `filtered` below). Replaces the old instantFilter toggle that used to
+  // narrow 待发货 itself; instant orders no longer appear under 待发货 at
+  // all now, they have this separate page instead.
+  const [instantStage, setInstantStage] = useState("pending");
   useEffect(() => {
     if (entryFilter && onConsumeEntryFilter) onConsumeEntryFilter();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -797,8 +862,13 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   // happens, and 待取货/退款 can legitimately hold orders shipped outside
   // ERP whose warehouse_stage was never advanced — hiding there would
   // remove real function.
+  // TikTok's 即时订单/待处理 stage (2026-08-17) is the same real
+  // AWAITING_SHIPMENT status as 待发货, just pre-filtered to instant orders,
+  // so it gets the same treatment: "确认发货" (below, not gated by
+  // statusFilter) already calls onMarkPicked+onMarkPacked itself.
   const hidePickPack = (activePlatform === "TikTok Shop" && statusFilter === "__to_ship__")
-    || statusFilter === "__in_transit__" || statusFilter === "__delivered__" || statusFilter === "已取消";
+    || (activePlatform === "TikTok Shop" && statusFilter === "__instant_orders__" && instantStage === "pending")
+    || statusFilter === "__in_transit__" || statusFilter === "__delivered__" || statusFilter === "__completed__" || statusFilter === "已取消";
   const theme = PLATFORM_THEME[activePlatform];
   const lang = t("zh", "en");
   // Status-chip row — text sourced from the same `ORDER_STATUS_LABELS` the
@@ -835,9 +905,16 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   const platformStores = stores.filter((s) => s.platform === activePlatform);
   const allManual = platformStores.length > 0 && platformStores.every((s) => s.syncMode === "manual");
 
+  // platformStores is already hidden-filtered upstream (loadRealData only
+  // fetches platform_accounts where hidden=false) — orders belonging to a
+  // hidden store's platform_account_id are real orders, just orphaned from
+  // "全部店铺"'s count once their store is hidden, so exclude them here too
+  // instead of only when a specific (necessarily-visible) store is picked.
+  const visibleAccountIds = useMemo(() => new Set(platformStores.map((s) => s.id)), [platformStores]);
+
   const all = useMemo(
-    () => orders.filter((o) => o.platform === activePlatform && (!activeStore || o.platformAccountId === activeStore)),
-    [orders, activePlatform, activeStore],
+    () => orders.filter((o) => o.platform === activePlatform && visibleAccountIds.has(o.platformAccountId) && (!activeStore || o.platformAccountId === activeStore)),
+    [orders, activePlatform, activeStore, visibleAccountIds],
   );
 
   useEffect(() => {
@@ -846,23 +923,84 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
     if (!dbPlatform) return;
     function base() {
       let q = supabaseClient.from("orders").select("id", { count: "exact", head: true }).eq("platform", dbPlatform);
+      // 全部店铺 (activeStore null) must still exclude hidden stores' orders
+      // — same gap as the earlier "25 vs 24" fix, just in this separate
+      // live-count query instead of the in-memory `all` list (that fix never
+      // touched this query, so a hidden store's order could still leak into
+      // this card's number even though the visible order LIST already
+      // excluded it). A specific activeStore is always already a visible
+      // store (picked from the hidden-filtered `stores` prop), so this only
+      // changes behavior for the "全部店铺" (null) case.
       if (activeStore) q = q.eq("platform_account_id", activeStore);
+      else q = q.in("platform_account_id", Array.from(visibleAccountIds));
       return q;
+    }
+    // 即时订单 (instant) has its own card/page for both platforms now
+    // (Shopee: 2026-08-17; TikTok: 2026-08-17 same day, added second) — so
+    // 待发货/待取货 must exclude them here — otherwise an instant order
+    // would double-count under both cards. Each platform identifies
+    // "instant" via its own real synced field: Shopee via o.courier (its
+    // sync never populates delivery_option), TikTok via o.delivery_option —
+    // must stay in exact lockstep with TIKTOK_INSTANT_DELIVERY_OPTIONS /
+    // isInstantOrder above (2026-08-17 correction: "Next-day delivery" is a
+    // normal shipping speed option, not an instant order, and was wrongly
+    // matching here too). Gated per-platform so neither platform's query
+    // construction is touched by the other's rule.
+    const isShopee = activePlatform === "Shopee";
+    const isTikTok = activePlatform === "TikTok Shop";
+    const tiktokInstantOptions = Array.from(TIKTOK_INSTANT_DELIVERY_OPTIONS);
+    function excludeInstant(q) {
+      if (isShopee) return q.not("courier", "ilike", "%instant%");
+      // Chained .not(eq) per value rather than a single .not(..., "in", ...)
+      // — avoids PostgREST's quoted-list string formatting entirely (values
+      // here contain spaces/hyphens), same safe pattern as the rest of this
+      // file's platform_status filters.
+      if (isTikTok) return tiktokInstantOptions.reduce((acc, opt) => acc.not("delivery_option", "eq", opt), q);
+      return q;
+    }
+    function onlyInstant(q) {
+      if (isTikTok) return q.in("delivery_option", tiktokInstantOptions);
+      return q.ilike("courier", "%instant%");
     }
     Promise.all([
       base(),
       base().eq("platform_status", "UNPAID"),
       // TikTok's AWAITING_SHIPMENT unchanged; READY_TO_SHIP added additively
       // for Shopee (2026-08-11) — never appears on real TikTok rows, so this
-      // is a no-op for TikTok's actual count.
-      base().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"]),
-      base().eq("platform_status", "AWAITING_COLLECTION"),
-      base().eq("platform_status", "IN_TRANSIT"),
-      // 已送达 counts DELIVERED only — verified live against TikTok's own
-      // API total_count per status (DELIVERED=408, COMPLETED=5653): these
-      // are two distinct Seller Center buckets, not one. COMPLETED orders
-      // aren't dropped, they just no longer inflate this specific card.
-      base().eq("platform_status", "DELIVERED"),
+      // is a no-op for TikTok's actual count. Instant orders excluded for
+      // Shopee (2026-08-17) — they have their own card now.
+      excludeInstant(base().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"])),
+      // TikTok's AWAITING_COLLECTION unchanged; PROCESSED added additively
+      // for Shopee (2026-08-17) — real post-ship_order status, never
+      // appears on real TikTok rows, so this is a no-op for TikTok's count.
+      // Instant orders excluded for Shopee — same reasoning as toShip above.
+      excludeInstant(base().in("platform_status", ["AWAITING_COLLECTION", "PROCESSED"])),
+      // TikTok's IN_TRANSIT unchanged; SHIPPED added additively for Shopee
+      // (2026-08-17) — Shopee's real post-ship_order-and-picked-up status
+      // (confirmed live: 42 real SHIPPED rows on the visible store, 0 rows
+      // ever use IN_TRANSIT for Shopee), never appears on real TikTok rows,
+      // so this is a no-op for TikTok's count. This was the actual bug
+      // behind "运输中 empty for a specific Shopee store" — it was always
+      // empty for Shopee at any scope (全部店铺 included), not a per-store
+      // filtering bug; SHIPPED just wasn't counted as 运输中 anywhere yet.
+      base().in("platform_status", ["IN_TRANSIT", "SHIPPED"]),
+      // 已送达: TikTok stays DELIVERED-only — verified live against TikTok's
+      // own API total_count per status (DELIVERED=408, COMPLETED=5653):
+      // these are two distinct Seller Center buckets, not one. COMPLETED
+      // orders aren't dropped, they just don't inflate this card for
+      // TikTok. Shopee (2026-08-17, isShopee-gated) adds COMPLETED — Shopee
+      // real data confirmed live: 0 rows ever use DELIVERED, 612 real rows
+      // use COMPLETED, so COMPLETED is Shopee's actual terminal "delivered"
+      // status, not a separate later stage the way it is for TikTok. This
+      // was the real bug behind "已送达 empty for a specific Shopee store" —
+      // it was always empty for Shopee at any scope, not a per-store filter
+      // bug; DELIVERED alone just never matches any real Shopee order.
+      // TO_CONFIRM_RECEIVE added 2026-08-17 (explicit user classification) —
+      // real rows in this status are already shipped (courier assigned),
+      // just awaiting buyer receipt confirmation, so it belongs in 已送达
+      // not 待取货 (待取货's own query above is unchanged, only
+      // AWAITING_COLLECTION/PROCESSED).
+      isShopee ? base().in("platform_status", ["DELIVERED", "COMPLETED", "TO_CONFIRM_RECEIVE"]) : base().eq("platform_status", "DELIVERED"),
       base().eq("order_status", "returned"),
       base().eq("platform_status", "FAILED_DELIVERY"),
       base().eq("platform_status", "UNDELIVERED"),
@@ -873,7 +1011,24 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       // wrote this row, which for a cancelled order is effectively when ERP
       // recorded the cancellation.
       base().eq("order_status", "cancelled").gte("updated_at", `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`),
-    ]).then(([all_, unpaid, toShip, toPickup, inTransit, delivered, returned, failedA, failedB, cancelled_, cancelledToday]) => {
+      // 即时订单 two-stage counts — Shopee card (2026-08-17) via onlyInstant's
+      // courier match, TikTok card (2026-08-17, same pattern) via
+      // onlyInstant's delivery_option match. AWAITING_SHIPMENT/READY_TO_SHIP
+      // = To Process (待发货/待处理), AWAITING_COLLECTION/PROCESSED =
+      // Processed (待取货/已处理) — same real status pair each platform's
+      // own regular toShip/toPickup cards already use, just narrowed to
+      // instant-only rows.
+      onlyInstant(base().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"])),
+      onlyInstant(base().in("platform_status", ["AWAITING_COLLECTION", "PROCESSED"])),
+      // 已完成 (2026-08-17, new combo-card bottom half) — real
+      // platform_status === "COMPLETED", scoped to the current
+      // platform/store the same way every other count above already is
+      // (base() already handles activeStore/hidden-store exclusion). Same
+      // real value the top-of-page cross-platform "已完成订单" KPI card
+      // uses, just filtered down to one platform/store here instead of
+      // summing both at once.
+      base().eq("platform_status", "COMPLETED"),
+    ]).then(([all_, unpaid, toShip, toPickup, inTransit, delivered, returned, failedA, failedB, cancelled_, cancelledToday, instantToProcess, instantProcessed, completed]) => {
       if (cancelled) return;
       setCardCounts({
         all: all_.count ?? 0,
@@ -886,10 +1041,13 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         failed: (failedA.count ?? 0) + (failedB.count ?? 0),
         cancelled: cancelled_.count ?? 0,
         cancelledToday: cancelledToday.count ?? 0,
+        instantToProcess: instantToProcess.count ?? 0,
+        instantProcessed: instantProcessed.count ?? 0,
+        completed: completed.count ?? 0,
       });
     });
     return () => { cancelled = true; };
-  }, [activePlatform, activeStore]);
+  }, [activePlatform, activeStore, visibleAccountIds]);
 
   // COMPLETED card — real platform_status === "COMPLETED", both platforms
   // at once (unlike cardCounts above, this isn't scoped to activePlatform,
@@ -966,11 +1124,33 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         // TikTok condition unchanged; Shopee's real to-ship status is a
         // different string (READY_TO_SHIP) — additive OR, not a replacement.
         if (o.platformStatus !== "AWAITING_SHIPMENT" && o.platformStatus !== "READY_TO_SHIP") return false;
+        // Instant orders moved to their own 即时订单 card/page — Shopee
+        // (2026-08-17) then TikTok (2026-08-17, same day) — excluded here so
+        // 待发货 (Regular Order only) and the new page never double-show the
+        // same order. Gated on platform so this is a no-op for any other
+        // platform that might be added later.
+        if ((activePlatform === "Shopee" || activePlatform === "TikTok Shop") && isInstantOrder(o)) return false;
       } else if (statusFilter === "__to_pickup__") {
         // 待取货 (2026-08-03): real platformStatus === "AWAITING_COLLECTION".
-        // This value has never appeared in synced TikTok data, so this card
-        // reads 0 — same as Seller Center's own count, not a bug.
-        if (o.platformStatus !== "AWAITING_COLLECTION") return false;
+        // TikTok condition unchanged (never appears on real TikTok rows, so
+        // this stays a no-op there). PROCESSED added additively (2026-08-17,
+        // authorized) — Shopee's real post-ship_order status, so an order
+        // moves here immediately after a successful shopee-push-fulfillment
+        // call instead of waiting for the next cron sync to relabel it.
+        if (o.platformStatus !== "AWAITING_COLLECTION" && o.platformStatus !== "PROCESSED") return false;
+        // Same instant-order exclusion as 待发货 above.
+        if ((activePlatform === "Shopee" || activePlatform === "TikTok Shop") && isInstantOrder(o)) return false;
+      } else if (statusFilter === "__instant_orders__") {
+        // 即时订单 dedicated page (2026-08-17, Shopee first then TikTok same
+        // day — this statusFilter value is only ever set by the platform's
+        // own 即时订单 card). Two-stage flow via instantStage, same real
+        // platform_status pairs 待发货/待取货 use above.
+        if (!isInstantOrder(o)) return false;
+        if (instantStage === "pending") {
+          if (o.platformStatus !== "AWAITING_SHIPMENT" && o.platformStatus !== "READY_TO_SHIP") return false;
+        } else {
+          if (o.platformStatus !== "AWAITING_COLLECTION" && o.platformStatus !== "PROCESSED") return false;
+        }
       } else if (statusFilter === "__in_transit__") {
         // 运输中 (2026-07-29): was o.status === "物流中", a demo-status value
         // DB_TO_DEMO_STATUS never actually produces for any real order — the
@@ -978,7 +1158,11 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         // platformStatus, so the chip is now pointed at the same real field
         // instead of the dead one, per explicit instruction to connect real
         // platform state where the DB genuinely has it.
-        if (o.platformStatus !== "IN_TRANSIT") return false;
+        // TikTok's IN_TRANSIT unchanged; SHIPPED added additively for Shopee
+        // (2026-08-17) — Shopee's real in-transit status (0 real rows ever
+        // use IN_TRANSIT for Shopee, 42 real rows use SHIPPED), same
+        // additive-OR pattern as 待发货/待取货 above.
+        if (o.platformStatus !== "IN_TRANSIT" && o.platformStatus !== "SHIPPED") return false;
       } else if (statusFilter === "__delivered__") {
         // 已送达 (2026-07-29): was o.status === "已签收", which is even less
         // real than 物流中 — DB_TO_DEMO_STATUS never produces it either, and
@@ -986,7 +1170,20 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         // OrderDrawer's "确认接收" button (which itself persists order_status
         // as 'shipped', not anything that maps back to 已签收). Same fix:
         // point at the real platformStatus field the card already uses.
-        if (o.platformStatus !== "DELIVERED") return false;
+        // TikTok stays DELIVERED-only (unchanged); Shopee additionally
+        // matches COMPLETED (2026-08-17) — Shopee's real terminal delivered
+        // status, per-row via o.platform so this can never affect a TikTok
+        // row even when both platforms' orders are ever mixed in `all`.
+        // TO_CONFIRM_RECEIVE added 2026-08-17 (explicit user classification)
+        // — same per-row Shopee gate, see ORDER_CENTER_CARDS/cardCounts above.
+        const isShopeeDelivered = o.platform === "Shopee" && (o.platformStatus === "COMPLETED" || o.platformStatus === "TO_CONFIRM_RECEIVE");
+        if (o.platformStatus !== "DELIVERED" && !isShopeeDelivered) return false;
+      } else if (statusFilter === "__completed__") {
+        // 已完成 dedicated page (2026-08-17, new — bottom half of the
+        // 已送达/已完成 combo card). Real platformStatus === "COMPLETED",
+        // identical definition on both platforms; does not touch the
+        // __delivered__ branch above at all.
+        if (o.platformStatus !== "COMPLETED") return false;
       } else if (statusFilter !== "全部" && o.status !== statusFilter) {
         return false;
       }
@@ -995,10 +1192,6 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       // cards' own counts use (getShipPriorityBucket above), so clicking a
       // card is guaranteed to show exactly the orders it counted.
       if (priorityFilter && statusFilter === "__to_ship__" && getShipPriorityBucket(o, todayStr, yesterdayStr, tomorrowStr) !== priorityFilter) {
-        return false;
-      }
-      // 即时订单 click filter — additive, independent of priorityFilter above.
-      if (instantFilter && statusFilter === "__to_ship__" && o.deliveryOption !== "Instant") {
         return false;
       }
       if (dateMode === "custom") {
@@ -1027,7 +1220,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       }
       return true;
     });
-  }, [all, statusFilter, priorityFilter, instantFilter, todayStr, yesterdayStr, tomorrowStr, dateMode, dateFilter, q, searchField]);
+  }, [all, activePlatform, statusFilter, priorityFilter, instantStage, todayStr, yesterdayStr, tomorrowStr, dateMode, dateFilter, q, searchField]);
 
   const allChecked = filtered.length > 0 && filtered.every((o) => selectedIds.has(o.id));
   // Batch-printed labels come out oldest-first (FIFO), not in click/selection
@@ -1230,7 +1423,10 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
             unified purple the chip row uses; icon/number colors and label
             text never change either way. */}
         <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-4 gap-3`}>
-          {ORDER_CENTER_CARDS.map((card) => {
+          {/* "delivered" is rendered separately now, as the top half of the
+              已送达/已完成 combo card below (2026-08-17 restructure) — filtered
+              out of this plain single-card loop so it doesn't render twice. */}
+          {ORDER_CENTER_CARDS.filter((card) => card.key !== "delivered").map((card) => {
             const count = cardCounts[card.key] ?? all.filter(card.match).length;
             const Icon = card.icon;
             const clickable = card.filterValue !== undefined;
@@ -1247,10 +1443,37 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                   <Icon size={14} className={card.iconColor} />
                 </div>
                 <div className="text-xs text-slate-500">{t(card.zh, card.en)}</div>
-                {card.key !== "all" && <div className={`text-lg font-bold tabular-nums ${card.numberColor}`}>{count}</div>}
+                {card.key !== "all" && (
+                  <div className={`text-lg font-bold tabular-nums ${card.numberColor}`}>{count}</div>
+                )}
               </CardTag>
             );
           })}
+          {/* 已送达 + 已完成, combined two-tier card (2026-08-17, explicit UI
+              restructure — replaces the old standalone 已送达 card, applies
+              to both Shopee and TikTok). Same shared-frame pattern as the
+              two split cards below, but intentionally shows no count on
+              either half — the real total only loads on the dedicated page
+              once clicked (see the banner above the order list). */}
+          <div className={`bg-white rounded-2xl border-2 ${(statusFilter === "__delivered__" || statusFilter === "__completed__") ? "border-purple-400" : "border-slate-200"} flex flex-col divide-y divide-slate-100 card-3d`}>
+            {[DELIVERED_COMPLETED_SPLIT_CARD.top, DELIVERED_COMPLETED_SPLIT_CARD.bottom].map((half) => {
+              const Icon = half.icon;
+              const active = statusFilter === half.filterValue;
+              return (
+                <button
+                  key={half.zh}
+                  type="button"
+                  onClick={() => setStatusFilter(half.filterValue)}
+                  className={`flex-1 w-full flex flex-col items-center justify-center gap-1 py-1.5 cursor-pointer hover:bg-slate-50 ${active ? "bg-slate-50" : ""}`}
+                >
+                  <div className={`h-6 w-6 rounded-full flex items-center justify-center icon-badge-3d ${half.iconBg}`}>
+                    <Icon size={12} className={half.iconColor} />
+                  </div>
+                  <div className="text-[11px] text-slate-500 leading-none">{t(half.zh, half.en)}</div>
+                </button>
+              );
+            })}
+          </div>
           {/* 8th slot: 投递失败 + 已取消 in one card — same outer rounded/
               background as the other 7, each half reusing the same icon-
               then-label-then-number vertical stack (just smaller) so it reads
@@ -1316,6 +1539,34 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
               );
             })}
           </div>
+
+          {/* 即时订单 — standalone card, first built Shopee-only (2026-08-17,
+              authorized UI restructure), then mirrored for TikTok the same
+              day (also authorized) using the same statusFilter/instantStage
+              machinery — isInstantOrder/excludeInstant/onlyInstant already
+              branch per-platform (courier for Shopee, delivery_option for
+              TikTok), so this card and its sub-tabs work unchanged for
+              either platform once rendered. Clicking switches to its own
+              dedicated 待发货/待取货 two-stage view (see the sub-tabs +
+              `filtered` branch above) instead of being mixed into the
+              regular 待发货 card/list — that card now excludes these orders
+              entirely (see the __to_ship__/__to_pickup__ branches above).
+              Count is the sum of both stages so the card reads as "all
+              instant orders right now" regardless of which stage the click
+              lands on. */}
+          {(activePlatform === "Shopee" || activePlatform === "TikTok Shop") && (
+            <button
+              type="button"
+              onClick={() => setStatusFilter("__instant_orders__")}
+              className={`bg-white rounded-2xl border-2 ${statusFilter === "__instant_orders__" ? "border-purple-400" : "border-slate-200"} px-3 py-3 flex flex-col items-center justify-center gap-1.5 card-3d cursor-pointer hover:border-slate-300`}
+            >
+              <div className="h-8 w-8 rounded-full flex items-center justify-center icon-badge-3d bg-gradient-to-br from-purple-400 to-purple-600">
+                <Zap size={14} className="text-white" />
+              </div>
+              <div className="text-xs text-slate-500">{t("即时订单", "Instant Order")}</div>
+              <div className="text-lg font-bold tabular-nums text-purple-600">{(cardCounts.instantToProcess ?? 0) + (cardCounts.instantProcessed ?? 0)}</div>
+            </button>
+          )}
         </div>
 
         <div className="px-5 pt-3">
@@ -1395,50 +1646,67 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
           </div>
         </div>
 
-        {/* Shortcut row (2026-08-09, merged into one row 2026-08-09, made
-            clickable 2026-08-09) —
-            待发货(X): real count, same cardCounts.toShip already used by the
-            待发货 card in the main grid above (platformStatus ===
-            "AWAITING_SHIPMENT"), no new query. Click clears instantFilter
-            so it shows the full 待发货 list (row is only ever visible while
-            statusFilter is already "__to_ship__").
-            即时订单/Instant Order: counts orders.deliveryOption === "Instant"
-            from the same already-loaded `all` order list (deliveryOption is
-            synced from TikTok's real delivery_option_name field;
-            Shopee/older TikTok rows are null and simply don't match). Click
-            toggles instantFilter (see `filtered` above) to narrow the list
-            to exactly the orders it counts — same real-data source, no new
-            query, no change to any other existing card/logic. */}
-        {statusFilter === "__to_ship__" && (
+        {/* 即时订单 dedicated page sub-tabs (2026-08-17, Shopee first then
+            TikTok same day) — this view is only ever reached via either
+            platform's own 即时订单 card, so no platform gate needed here.
+            Two stages, same real platform_status pairs 待发货/待取货 use
+            elsewhere, via cardCounts.instantToProcess/instantProcessed (same
+            live head-count query pattern, no new query shape). Replaces the
+            old instantFilter toggle that used to live inside the 待发货 view
+            itself — instant orders no longer appear there at all now (see
+            `filtered` above), this page is their only home. */}
+        {statusFilter === "__instant_orders__" && (
           <div className={`px-5 pt-3 border-t border-slate-100 ${theme.bgWash} flex items-center gap-[0.5cm]`}>
             <button
               type="button"
-              onClick={() => setInstantFilter(false)}
-              className={`h-[1cm] w-[3cm] bg-white rounded-full border px-2 flex items-center gap-1 card-3d overflow-hidden shrink-0 cursor-pointer transition-3d ${
-                !instantFilter ? "border-purple-400 ring-1 ring-purple-400" : "border-slate-200"
+              onClick={() => setInstantStage("pending")}
+              className={`h-[1cm] px-3 bg-white rounded-full border flex items-center gap-1 card-3d overflow-hidden shrink-0 cursor-pointer transition-3d ${
+                instantStage === "pending" ? "border-purple-400 ring-1 ring-purple-400" : "border-slate-200"
               }`}
             >
               <div className="h-4 w-4 rounded-full flex items-center justify-center icon-badge-3d shrink-0 bg-gradient-to-br from-red-400 to-red-600">
                 <PackagePlus size={9} className="text-white" />
               </div>
               <div className="min-w-0 text-[9px] text-slate-600 truncate leading-none">
-                {t("待发货", "To Ship")} <span className="font-bold tabular-nums text-red-600">({cardCounts.toShip ?? all.filter((o) => o.platformStatus === "AWAITING_SHIPMENT").length})</span>
+                {t("待发货/待处理", "To Process")} <span className="font-bold tabular-nums text-red-600">({cardCounts.instantToProcess ?? 0})</span>
               </div>
             </button>
             <button
               type="button"
-              onClick={() => setInstantFilter((prev) => !prev)}
-              className={`h-[1cm] w-[3cm] bg-white rounded-full border px-2 flex items-center gap-1 card-3d overflow-hidden shrink-0 cursor-pointer transition-3d ${
-                instantFilter ? "border-purple-400 ring-1 ring-purple-400" : "border-slate-200"
+              onClick={() => setInstantStage("processed")}
+              className={`h-[1cm] px-3 bg-white rounded-full border flex items-center gap-1 card-3d overflow-hidden shrink-0 cursor-pointer transition-3d ${
+                instantStage === "processed" ? "border-purple-400 ring-1 ring-purple-400" : "border-slate-200"
               }`}
             >
-              <div className="h-4 w-4 rounded-full flex items-center justify-center icon-badge-3d shrink-0 bg-gradient-to-br from-purple-400 to-purple-600">
-                <Zap size={9} className="text-white" />
+              <div className="h-4 w-4 rounded-full flex items-center justify-center icon-badge-3d shrink-0 bg-gradient-to-br from-blue-400 to-blue-600">
+                <ShoppingCart size={9} className="text-white" />
               </div>
               <div className="min-w-0 text-[9px] text-slate-600 truncate leading-none">
-                {t("即时订单", "Instant order")} <span className="font-bold tabular-nums text-purple-600">({all.filter((o) => o.deliveryOption === "Instant").length})</span>
+                {t("待取货/已处理", "Processed")} <span className="font-bold tabular-nums text-blue-600">({cardCounts.instantProcessed ?? 0})</span>
               </div>
             </button>
+          </div>
+        )}
+
+        {/* 已送达/已完成 dedicated page banners (2026-08-17, now both
+            platforms — the combo card above never shows a count on either
+            half for either platform anymore, so both need somewhere to
+            reveal the real total once clicked through). cardCounts.delivered
+            already includes the Shopee COMPLETED/TO_CONFIRM_RECEIVE fix;
+            cardCounts.completed is the new platform/store-scoped COMPLETED
+            count added alongside it. */}
+        {statusFilter === "__delivered__" && (
+          <div className={`px-5 pt-3 border-t border-slate-100 ${theme.bgWash}`}>
+            <div className="text-sm font-medium text-slate-700">
+              {t(`已送达订单页面 · 共 ${cardCounts.delivered ?? all.filter(DELIVERED_COMPLETED_SPLIT_CARD.top.match).length} 笔`, `Delivered Orders · ${cardCounts.delivered ?? all.filter(DELIVERED_COMPLETED_SPLIT_CARD.top.match).length} total`)}
+            </div>
+          </div>
+        )}
+        {statusFilter === "__completed__" && (
+          <div className={`px-5 pt-3 border-t border-slate-100 ${theme.bgWash}`}>
+            <div className="text-sm font-medium text-slate-700">
+              {t(`已完成订单页面 · 共 ${cardCounts.completed ?? all.filter(DELIVERED_COMPLETED_SPLIT_CARD.bottom.match).length} 笔`, `Completed Orders · ${cardCounts.completed ?? all.filter(DELIVERED_COMPLETED_SPLIT_CARD.bottom.match).length} total`)}
+            </div>
           </div>
         )}
 
@@ -1531,7 +1799,10 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
             // 已取消/未付款订单不能打印。待发货 (__to_ship__) 视图下打印额外要求拣货+包装完成；
             // 其他视图下的打印行为不变（除了已取消/未付款这两类被排除）。
             const actionableOrders = selectedOrders.filter((o) => o.status !== "已取消" && o.platformStatus !== "UNPAID" && o.platformStatus !== "IN_TRANSIT" && o.platformStatus !== "DELIVERED" && o.platformStatus !== "COMPLETED");
-            const printGated = statusFilter === "__to_ship__";
+            // __instant_orders__ (2026-08-17) follows the same pack-before-
+            // print rule as __to_ship__ — it's the same real Shopee shipment
+            // flow, just viewed on its own page.
+            const printGated = statusFilter === "__to_ship__" || statusFilter === "__instant_orders__";
             const printBlocked = printGated && actionableOrders.some((o) => o.warehouseStage !== "ready_ship");
             // 全部 mixes every status/warehouse_stage together, so batch
             // printing is disabled there — real printing only allowed from
@@ -1764,30 +2035,43 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
                   </div>
                 </div>
                 <div className="text-xs text-slate-500 truncate mt-0.5">{o.customer}</div>
-                <div className="flex items-start gap-2 mt-1.5">
-                  {o.productImage ? (
-                    <img src={o.productImage} alt={o.product} className="h-9 w-9 rounded-lg object-cover border border-slate-200 shrink-0" />
-                  ) : (
-                    <div className="h-9 w-9 rounded-lg bg-slate-100 border border-slate-200 shrink-0" />
-                  )}
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium text-slate-700 truncate">{o.product}</div>
-                    <div className="text-[11px] text-slate-400 truncate mt-0.5 flex items-center gap-1">
-                      <span className="truncate">
-                        {o.variation ? `${o.variation} · ` : ""}{t("Seller SKU", "Seller SKU")}: {o.sku || t("（无SKU）", "(no SKU)")} × {o.qty}
-                      </span>
-                      {o.skuStatus === "missing" && (
-                        <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-600 border border-rose-200">
-                          <AlertTriangle size={9} /> {t("缺SKU", "Missing SKU")}
-                        </span>
+                {/* Renders every line item on the order (main product(s) +
+                    any free-gift SKU), not just one — a Shopee/TikTok order
+                    with a gift line (e.g. 260817JW253WNF: RK chain set +
+                    "NOT FOR SELL" gift) used to show only whichever single
+                    item mapDbOrder's unordered DB fetch happened to land on
+                    first, sometimes the gift instead of the real product.
+                    Falls back to the single o.product/o.sku fields only if
+                    o.items is ever empty (shouldn't happen for a synced
+                    order, but keeps this from rendering blank). */}
+                <div className="mt-1.5 space-y-1.5">
+                  {(o.items && o.items.length > 0 ? o.items : [{ sku: o.sku, productName: o.product, image: o.productImage, variation: o.variation, qty: o.qty }]).map((it, idx) => (
+                    <div key={idx} className="flex items-start gap-2">
+                      {it.image ? (
+                        <img src={it.image} alt={it.productName} className="h-9 w-9 rounded-lg object-cover border border-slate-200 shrink-0" />
+                      ) : (
+                        <div className="h-9 w-9 rounded-lg bg-slate-100 border border-slate-200 shrink-0" />
                       )}
-                      {o.skuStatus === "unlinked" && (
-                        <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
-                          <AlertTriangle size={9} /> {t("系统未登记", "Not registered")}
-                        </span>
-                      )}
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-slate-700 truncate">{it.productName}</div>
+                        <div className="text-[11px] text-slate-400 truncate mt-0.5 flex items-center gap-1">
+                          <span className="truncate">
+                            {it.variation ? `${it.variation} · ` : ""}{t("Seller SKU", "Seller SKU")}: {it.sku || t("（无SKU）", "(no SKU)")} × {it.qty}
+                          </span>
+                          {idx === 0 && o.skuStatus === "missing" && (
+                            <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-600 border border-rose-200">
+                              <AlertTriangle size={9} /> {t("缺SKU", "Missing SKU")}
+                            </span>
+                          )}
+                          {idx === 0 && o.skuStatus === "unlinked" && (
+                            <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                              <AlertTriangle size={9} /> {t("系统未登记", "Not registered")}
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  ))}
                 </div>
               </button>
               <ChevronRight size={14} className="text-slate-300 mt-1 shrink-0" />
@@ -1802,150 +2086,392 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
 /* ============================== Order drawer (shared) ============================== */
 
 export function OrderDrawer({ t, order, onClose, onPrint, onUpdateStatus, onRequestCancel }) {
-  const isCancelled = order.status === "已取消" || order.status === "退款中";
+  // Real platformStatus condition (2026-08-20) — same one the 待发货 card
+  // itself already uses (ORDER_STATUS_LABELS.toShip / __to_ship__ filter
+  // above: TikTok AWAITING_SHIPMENT, Shopee READY_TO_SHIP), NOT the legacy
+  // order.status demo label. Originally gated the Shopee-style layout to
+  // 待发货 only; widened (2026-08-20, second explicit one-time exception,
+  // confirmed with the user) to cover every status under 全部 — this value
+  // is still threaded through so the shared component below can adjust its
+  // top action button's wording for the pre-ship vs. post-ship case.
+  const isAwaitingShip = order.platformStatus === "AWAITING_SHIPMENT" || order.platformStatus === "READY_TO_SHIP";
   const stepIdx = STATUS_STEPS.indexOf(order.status);
-  const p = profit(order);
   const theme = PLATFORM_THEME[order.platform];
-  const actionable = ACTIONABLE_STATUS.includes(order.status);
-  const lang = t("zh", "en");
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-slate-900/30" onClick={onClose} />
-      <div className="relative w-[420px] bg-white h-full shadow-xl overflow-y-auto">
-        <div className={`flex items-center justify-between px-5 py-4 border-b border-slate-200 ${theme.bgWash}`}>
-          <div>
-            <div className="text-sm font-semibold flex items-center gap-2">
-              <span className={`h-2 w-2 rounded-full ${theme.dot}`} />
-              {order.id}
-            </div>
-            <div className="text-xs text-slate-400">
-              {order.platform} · {order.date}
-              {order.platformOrderId && order.platformOrderId !== order.id && (
-                <> · {t("平台订单号", "Platform order no.")} {order.platformOrderId}</>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => onPrint(order)}
-              className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
-            >
-              <Printer size={13} /> {t("打印订单单", "Print Order Slip")}
-            </button>
-            <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
-              <X size={18} />
-            </button>
-          </div>
-        </div>
-
-        <div className="p-5 space-y-5">
-          <div className="flex items-center gap-2">
-            <span className={`text-xs px-2 py-0.5 rounded-full border ${statusColor(order.status)}`}>{statusLabel(order.status, lang)}</span>
-          </div>
-
-          {!isCancelled && (
-            <div>
-              <div className="text-xs text-slate-400 mb-2">{t("订单流程追踪", "Order Progress")}</div>
-              <div className="flex items-center">
-                {STATUS_STEPS.map((s, i) => (
-                  <div key={s} className="contents">
-                    <div className="flex flex-col items-center gap-1 w-12">
-                      {i <= stepIdx ? (
-                        <CheckCircle size={18} className="text-teal-500" />
-                      ) : (
-                        <Circle size={18} className="text-slate-300" />
-                      )}
-                      <span className={`text-[10px] text-center ${i <= stepIdx ? "text-slate-700" : "text-slate-300"}`}>{statusLabel(s, lang)}</span>
-                    </div>
-                    {i < STATUS_STEPS.length - 1 && (
-                      <div className={`flex-1 h-0.5 -mt-4 ${i < stepIdx ? "bg-teal-400" : "bg-slate-200"}`} />
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          {isCancelled && (
-            <div className="flex items-center gap-2 text-rose-600 text-sm bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">
-              <AlertTriangle size={15} /> {t(`此订单已${order.status}`, `This order is already ${statusLabel(order.status, lang)}`)}
-            </div>
-          )}
-
-          {onRequestCancel && (order.platform === "Shopee" || order.platform === "TikTok") && (
-            order.cancelStage ? (
-              <div className="flex items-center gap-2 text-amber-700 text-xs bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-                <AlertTriangle size={13} /> {order.cancelStage === "requested" ? t("取消申请中，待确认取消", "Cancellation requested, pending confirmation") : t("此订单已取消", "This order has been cancelled")}
-              </div>
-            ) : (
-              <button
-                onClick={() => {
-                  const reason = window.prompt(t("请输入取消原因", "Enter cancellation reason"));
-                  if (reason && reason.trim()) onRequestCancel(order.id, reason.trim());
-                }}
-                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50"
-              >
-                <AlertTriangle size={13} /> {t("申请取消订单", "Request Order Cancellation")}
-              </button>
-            )
-          )}
-
-          {actionable && (
-            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
-              <div className="text-xs text-slate-500">{t("客户已收货，或需登记退货？", "Has the customer received it, or need to log a return?")}</div>
-              <div className="flex flex-col items-start gap-2">
-                <button
-                  onClick={() => onUpdateStatus(order.id, "已签收")}
-                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-                >
-                  <CheckCircle2 size={13} /> {t("确认接收", "Confirm Received")}
-                </button>
-                <button
-                  onClick={() => onUpdateStatus(order.id, "退款中")}
-                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700"
-                >
-                  <AlertTriangle size={13} /> {t("登记退货", "Log Return")}
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="border-t border-slate-100 pt-4 space-y-2 text-sm">
-            <div className="text-xs text-slate-400 mb-1">{t("商品信息", "Product Info")}</div>
-            <div className="flex justify-between"><span className="text-slate-500">{t("商品", "Product")}</span><span className="font-medium text-right">{order.product}</span></div>
-            <div className="flex justify-between">
-              <span className="text-slate-500">SKU</span>
-              <span className={order.skuStatus === "missing" ? "text-rose-600 font-medium" : order.skuStatus === "unlinked" ? "text-amber-700 font-medium" : ""}>
-                {order.sku || t("（无SKU）", "(no SKU)")}
-                {order.skuStatus === "missing" && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-600 border border-rose-200 align-middle">{t("⚠ CSV未填，请补充", "⚠ Missing in CSV, please fill in")}</span>}
-                {order.skuStatus === "unlinked" && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 align-middle">{t("⚠ 系统未登记此SKU", "⚠ SKU not registered in system")}</span>}
-              </span>
-            </div>
-            <div className="flex justify-between"><span className="text-slate-500">{t("数量", "Qty")}</span><span className="tabular-nums">{order.qty}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">{t("客户", "Customer")}</span><span>{order.customer}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">{t("出货仓库", "Ship-from Warehouse")}</span><span>{warehouseLabel(order.warehouse, lang)}</span></div>
-          </div>
-
-          <div className="border-t border-slate-100 pt-4 space-y-2 text-sm">
-            <div className="text-xs text-slate-400 mb-1 flex items-center gap-1"><Truck size={12}/> {t("物流信息", "Logistics Info")}</div>
-            <div className="flex justify-between"><span className="text-slate-500">{t("追踪号码", "Tracking No.")}</span><span className="tabular-nums">{order.tracking}</span></div>
-          </div>
-
-          <div className="border-t border-slate-100 pt-4 space-y-2 text-sm">
-            <div className="text-xs text-slate-400 mb-1">{t("费用与利润", "Fees & Profit")}</div>
-            <div className="flex justify-between"><span className="text-slate-500">{t("商品金额", "Product Amount")}</span><span className="tabular-nums">RM {fmt(order.unitPrice * order.qty)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">{t("运费", "Shipping Fee")}</span><span className="tabular-nums">RM {fmt(order.shippingFee)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">{t("平台费用", "Platform Fee")}</span><span className="tabular-nums">- RM {fmt(order.platformFee)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">{t("佣金", "Commission")}</span><span className="tabular-nums">- RM {fmt(order.commission)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">{t("成本", "Cost")}</span><span className="tabular-nums">- RM {fmt(order.cost * order.qty)}</span></div>
-            <div className="flex justify-between font-semibold pt-2 border-t border-slate-100">
-              <span>{t("净利润", "Net Profit")}</span>
-              <span className={`tabular-nums ${p >= 0 ? "text-emerald-600" : "text-rose-600"}`}>RM {fmt(p)}</span>
-            </div>
-          </div>
-        </div>
+      <div className="relative w-[800px] max-w-[92vw] bg-white h-full shadow-xl overflow-y-auto">
+        <ShopeeStyleOrderDrawerContent
+          t={t} order={order} onClose={onClose} onPrint={onPrint}
+          onUpdateStatus={onUpdateStatus} onRequestCancel={onRequestCancel}
+          stepIdx={stepIdx} theme={theme} isAwaitingShip={isAwaitingShip}
+        />
       </div>
     </div>
+  );
+}
+
+// Shopee-style order detail — 1:1 layout match per explicit request.
+// Originally built 2026-08-20 for 待发货 only (one-time exception to the
+// standing don't-touch-other-cards rule); widened the same day (second
+// explicit one-time exception, confirmed with the user) to be the single
+// detail view for every status under 全部 — this is now the ONLY drawer
+// body OrderDrawer renders. Only reads existing real data (order fields
+// already on the mapped order, plus a read-only order_settlements lookup
+// reusing pagesImportFinance.jsx's own incomeBreakdown/estimatedBreakdown)
+// — no new backend/API/sync logic, purely a UI restructure. The top action
+// button reuses the existing onPrint callback (same action already
+// available via the header's print button elsewhere) — deliberately NOT
+// wired to the real, irreversible ship-API batch flow (runShipBatch/
+// runShopeeShipBatch in the Orders component above), which stays exactly
+// as-is per "不需要更改接口逻辑". 确认接收/登记退货 and the 已取消/退款中
+// banner are carried over unchanged from the previous non-Shopee-style
+// fallback (now retired) so no existing functionality is lost — only its
+// presentation moved.
+const CANCELLABLE_PLATFORM_STATUSES = new Set([
+  "UNPAID", "READY_TO_SHIP", "AWAITING_SHIPMENT", "PROCESSED", "AWAITING_COLLECTION",
+]);
+
+function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateStatus, onRequestCancel, stepIdx, theme, isAwaitingShip }) {
+  const lang = t("zh", "en");
+  const [settlement, setSettlement] = useState(null);
+  const [settlementLoading, setSettlementLoading] = useState(true);
+  const [showIncomeDetail, setShowIncomeDetail] = useState(false);
+  const [showPaymentDetail, setShowPaymentDetail] = useState(false);
+  // 即时聊天 copy-to-clipboard toast (2026-08-20) — see button below. Local,
+  // self-dismissing (2.5s), scoped to this drawer only.
+  const [chatToast, setChatToast] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSettlementLoading(true);
+    setSettlement(null);
+    const dbPlatform = DEMO_TO_DB_PLATFORM[order.platform];
+    if (!dbPlatform) { setSettlementLoading(false); return; }
+    supabaseClient
+      .from("order_settlements")
+      .select("*")
+      .eq("order_no", order.id)
+      .eq("platform", dbPlatform)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) { setSettlement(data || null); setSettlementLoading(false); }
+      });
+    return () => { cancelled = true; };
+  }, [order.id, order.platform]);
+
+  const hasRealData = !!settlement;
+  // isEstimate (2026-08-20, bug fix) — must check settlement.is_final, not
+  // just "a settlement row exists". A 待发货 order can only ever have a
+  // real PRE-settlement estimate (is_final=false, written by
+  // shopee-pending-estimate-sync) since it hasn't completed yet — using
+  // just `!hasRealData` mislabeled that as "最终到账金额" (Final) instead
+  // of "预估到账金额" (Estimate) the first time this was wired up.
+  const isFinalSettlement = !!(settlement && settlement.is_final);
+  const incomeDetail = hasRealData ? incomeBreakdown(order, settlement, t) : estimatedBreakdown(order, t);
+  // Real buyer_payment_info (2026-08-20) — Shopee's own get_escrow_detail
+  // response, same raw_response already stored by shopee-pending-estimate-sync.
+  const buyerPaymentInfo = settlement?.raw_response?.response?.buyer_payment_info || null;
+  const num = (v) => Number(v || 0);
+
+  const items = order.items && order.items.length > 0
+    ? order.items
+    : [{ sku: order.sku, productName: order.product, image: order.productImage, variation: order.variation, qty: order.qty, unitPrice: order.unitPrice }];
+
+  // Carried over unchanged from the previous non-Shopee-style fallback
+  // (retired 2026-08-20) — same order.status values, same meaning.
+  const isCancelled = order.status === "已取消" || order.status === "退款中";
+  const actionable = ACTIONABLE_STATUS.includes(order.status);
+  // 取消订单 button visibility (2026-08-20, explicit spec): only shown for
+  // early/pre-ship real platform statuses (待处理/待发货/待取货/未付款) —
+  // hidden once an order has actually shipped (运输中/已送达/已完成) or is
+  // already cancelled/in a return flow. Falls back to hidden for any status
+  // not explicitly in the allow-list, which safely covers 运输中/已送达/
+  // 已完成/已取消/退货退款/投递失败 without having to enumerate every one.
+  const canCancel = !isCancelled && !order.cancelStage && CANCELLABLE_PLATFORM_STATUSES.has(order.platformStatus);
+  // Representative item — the same one order.sku/order.skuStatus already
+  // describes (see mapDbOrder's `first` — highest-subtotal item). Used only
+  // to attach the existing missing/unlinked-SKU warning to the matching row
+  // in the item table below; no new SKU-validity logic, just relocating an
+  // existing signal into the new layout.
+  const repIdx = items.findIndex((it) => it.sku && it.sku === order.sku);
+
+  return (
+    <>
+      <div className={`flex items-center justify-between px-5 py-4 border-b border-slate-200 ${theme.bgWash}`}>
+        <div>
+          <div className="text-sm font-semibold flex items-center gap-2">
+            <span className={`h-2 w-2 rounded-full ${theme.dot}`} />
+            {order.id}
+          </div>
+          <div className="text-xs text-slate-400">{order.platform} · {order.date}</div>
+        </div>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+          <X size={18} />
+        </button>
+      </div>
+
+      <div className="p-5 space-y-5">
+        {/* 顶部操作按钮 */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onPrint(order)}
+            className="flex-1 flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-orange-500 text-white hover:bg-orange-600 font-medium"
+          >
+            <Printer size={13} /> {isAwaitingShip ? t("安排出货 / 打印订单", "Arrange Shipment / Print") : t("打印订单", "Print Order")}
+          </button>
+          {onRequestCancel && canCancel && (
+            <button
+              onClick={() => {
+                const reason = window.prompt(t("请输入取消原因", "Enter cancellation reason"));
+                if (reason && reason.trim()) onRequestCancel(order.id, reason.trim());
+              }}
+              className="flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 font-medium"
+            >
+              {t("取消订单", "Cancel Order")}
+            </button>
+          )}
+        </div>
+        {order.cancelStage && (
+          <div className="flex items-center gap-2 text-amber-700 text-xs bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+            <AlertTriangle size={13} /> {order.cancelStage === "requested" ? t("取消申请中，待确认取消", "Cancellation requested, pending confirmation") : t("此订单已取消", "This order has been cancelled")}
+          </div>
+        )}
+        {isCancelled && (
+          <div className="flex items-center gap-2 text-rose-600 text-xs bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">
+            <AlertTriangle size={13} /> {t(`此订单状态：${statusLabel(order.status, lang)}`, `This order is already ${statusLabel(order.status, lang)}`)}
+          </div>
+        )}
+
+        {/* 订单流程追踪 — 保留 */}
+        <div>
+          <div className="text-xs text-slate-400 mb-2">{t("订单流程追踪", "Order Progress")}</div>
+          <div className="flex items-center">
+            {STATUS_STEPS.map((s, i) => (
+              <div key={s} className="contents">
+                <div className="flex flex-col items-center gap-1 w-12">
+                  {i <= stepIdx ? (
+                    <CheckCircle size={18} className="text-teal-500" />
+                  ) : (
+                    <Circle size={18} className="text-slate-300" />
+                  )}
+                  <span className={`text-[10px] text-center ${i <= stepIdx ? "text-slate-700" : "text-slate-300"}`}>{statusLabel(s, lang)}</span>
+                </div>
+                {i < STATUS_STEPS.length - 1 && (
+                  <div className={`flex-1 h-0.5 -mt-4 ${i < stepIdx ? "bg-teal-400" : "bg-slate-200"}`} />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 客户已收货/需登记退货 — carried over unchanged from the retired fallback */}
+        {actionable && (
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+            <div className="text-xs text-slate-500">{t("客户已收货，或需登记退货？", "Has the customer received it, or need to log a return?")}</div>
+            <div className="flex flex-col items-start gap-2">
+              <button
+                onClick={() => onUpdateStatus(order.id, "已签收")}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+              >
+                <CheckCircle2 size={13} /> {t("确认接收", "Confirm Received")}
+              </button>
+              <button
+                onClick={() => onUpdateStatus(order.id, "退款中")}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700"
+              >
+                <AlertTriangle size={13} /> {t("登记退货", "Log Return")}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 待出货提示区块，或（已出货后）当前状态文字 */}
+        {order.shipDeadline ? (
+          <div className="flex items-center gap-2 text-xs bg-amber-50 border border-amber-100 text-amber-700 rounded-lg px-3 py-2">
+            <Clock size={13} className="shrink-0" />
+            {t(`为避免延迟出货，请于 ${order.shipDeadline} 前出货`, `Ship before ${order.shipDeadline} to avoid a late shipment`)}
+          </div>
+        ) : (
+          <div className={`flex items-center gap-2 text-xs rounded-lg px-3 py-2 border ${statusColor(order.status)}`}>
+            <Info size={13} className="shrink-0" /> {statusLabel(order.status, lang)}
+          </div>
+        )}
+
+        {/* 订单编号 + 买家收件地址 — 2026-08-20: side-by-side now that the
+            drawer is 800px wide, was single-column at the old 420px width */}
+        <div className="grid grid-cols-2 gap-6">
+          <div className="text-sm">
+            <div className="text-xs text-slate-400 mb-1">{t("订单编号", "Order No.")}</div>
+            <div className="font-medium tabular-nums">{order.platformOrderId || order.id}</div>
+          </div>
+
+          <div className="text-sm">
+            <div className="text-xs text-slate-400 mb-1.5 flex items-center gap-1"><MapPin size={12} /> {t("买家收件地址", "Buyer Shipping Address")}</div>
+            <div className="text-slate-700 font-medium">{order.customer}</div>
+            <div className="text-slate-500">{order.phone}</div>
+            <div className="text-slate-500">{order.address}</div>
+            {/* Real Shopee API behavior, not local masking — order/get_order_detail
+                redacts buyer PII to "****" by default (buyer information
+                protection policy); confirmed live 2026-08-20 (1382/1383 synced
+                Shopee orders masked, 0/8158 TikTok orders masked). Unmasking
+                would need a different Shopee endpoint (shipping-document
+                download) — out of scope here per "其他數據算式與API保持不變". */}
+            {order.platform === "Shopee" && order.customer === "****" && (
+              <div className="text-[11px] text-amber-600 mt-1">{t("⚠ Shopee 隐藏买家信息以保护隐私，需另接打印面单 API 才能显示真实地址", "⚠ Shopee masks buyer info for privacy; real address needs a separate shipping-label API")}</div>
+            )}
+          </div>
+        </div>
+
+        {/* 运送信息 + 买家信息/即时聊天 */}
+        <div className="grid grid-cols-2 gap-6 border-t border-slate-100 pt-4">
+          <div className="text-sm">
+            <div className="text-xs text-slate-400 mb-1.5 flex items-center gap-1"><Truck size={12} /> {t("运送信息", "Shipping Info")}</div>
+            <div className="flex justify-between mb-1"><span className="text-slate-500">{t("包裹编号", "Package No.")}</span><span className="tabular-nums">{order.tracking}</span></div>
+            <div className="flex justify-between mb-1"><span className="text-slate-500">{t("物流渠道", "Logistics Channel")}</span><span>{order.courier}</span></div>
+            <div className="flex justify-between mb-2"><span className="text-slate-500">{t("最新物流状态", "Latest Logistics Status")}</span><span>{statusLabel(order.status, lang)}</span></div>
+            <div className="text-slate-500 mb-1.5">{t(`共 ${items.length} 件商品`, `Total ${items.length} product${items.length > 1 ? "s" : ""}`)}</div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {items.map((it, idx) => (
+                <div key={idx} className="relative">
+                  {it.image ? (
+                    <img src={it.image} alt={it.productName} className="h-10 w-10 rounded-md object-cover border border-slate-200" />
+                  ) : (
+                    <div className="h-10 w-10 rounded-md bg-slate-100 border border-slate-200" />
+                  )}
+                  <span className="absolute -bottom-1 -right-1 text-[9px] leading-none bg-slate-900 text-white rounded-full px-1 py-0.5">×{it.qty}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="text-sm">
+            <div className="text-xs text-slate-400 mb-1">{t("买家信息", "Buyer Info")}</div>
+            <div className="font-medium mb-2">{order.customer}</div>
+            <button
+              onClick={async () => {
+                // Shopee MY Seller Center webchat (2026-08-20, revised) —
+                // confirmed live that Shopee's webchat page does NOT honor
+                // ?buyer_id=/?order_id= query params to auto-select a
+                // conversation (no deep-link support), so this switched to
+                // a copy-to-clipboard workflow instead: copy the buyer's
+                // real account handle (buyer_username, e.g. "muhdizzzat" —
+                // NOT masked like buyer_name/phone/address are) so the
+                // seller can paste it straight into Shopee's own chat
+                // search box, then open the generic webchat inbox.
+                if (order.platform === "Shopee") {
+                  if (order.buyerUsername) {
+                    try {
+                      await navigator.clipboard.writeText(order.buyerUsername);
+                      setChatToast(t(`已复制买家账号 ${order.buyerUsername}，已为您打开 Shopee Chat！`, `Copied buyer account ${order.buyerUsername} — opening Shopee Chat!`));
+                    } catch {
+                      setChatToast(t("复制失败，请手动复制买家账号", "Copy failed — please copy the buyer account manually"));
+                    }
+                  } else {
+                    setChatToast(t("此订单暂无买家账号数据", "No buyer account synced for this order yet"));
+                  }
+                  setTimeout(() => setChatToast(null), 2500);
+                  window.open("https://seller.shopee.com.my/webchat/conversations", "_blank", "noopener,noreferrer");
+                } else {
+                  window.alert(t("即时聊天功能暂未开通", "Live chat isn't available yet"));
+                }
+              }}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
+            >
+              <Send size={13} /> {t("即时聊天", "Live Chat")}
+            </button>
+            {chatToast && (
+              <div className="fixed bottom-6 right-6 z-[60] bg-slate-900 text-white text-xs px-4 py-2.5 rounded-lg shadow-lg max-w-xs">
+                {chatToast}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 付款信息：商品列表 + 折叠预估收入明细 */}
+        <div className="border-t border-slate-100 pt-4 text-sm">
+          <div className="text-xs text-slate-400 mb-2 flex items-center gap-1"><CreditCard size={12} /> {t("付款信息", "Payment Info")}</div>
+          <div className="space-y-2 mb-2">
+            {items.map((it, idx) => (
+              <div key={idx} className="flex items-center gap-2 text-xs">
+                {it.image ? (
+                  <img src={it.image} alt={it.productName} className="h-9 w-9 rounded-md object-cover border border-slate-200 shrink-0" />
+                ) : (
+                  <div className="h-9 w-9 rounded-md bg-slate-100 border border-slate-200 shrink-0" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="text-slate-700 truncate">{it.productName}</div>
+                  <div className="text-slate-400 truncate">
+                    {[it.sku, it.variation].filter(Boolean).join(" · ") || "—"}
+                    {idx === repIdx && order.skuStatus === "missing" && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-600 border border-rose-200 align-middle">{t("⚠ CSV未填，请补充", "⚠ Missing in CSV, please fill in")}</span>}
+                    {idx === repIdx && order.skuStatus === "unlinked" && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 align-middle">{t("⚠ 系统未登记此SKU", "⚠ SKU not registered in system")}</span>}
+                  </div>
+                </div>
+                <div className="text-right shrink-0 text-slate-500 tabular-nums">
+                  <div>RM {fmt(num(it.unitPrice))} × {it.qty}</div>
+                  <div className="text-slate-700 font-medium">RM {fmt(num(it.unitPrice) * (it.qty || 1))}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={() => setShowIncomeDetail((v) => !v)}
+            className="w-full flex items-center justify-between text-xs text-slate-500 py-1.5 border-t border-slate-100"
+          >
+            <span>{hasRealData ? t("预估收入明细", "Estimated Income Breakdown") : t("预估收入明细（系统预估）", "Estimated Income Breakdown (system estimate)")}</span>
+            <ChevronDown size={14} className={`text-slate-400 transition-transform ${showIncomeDetail ? "rotate-180" : ""}`} />
+          </button>
+          {showIncomeDetail && (
+            settlementLoading ? (
+              <div className="text-xs text-slate-300 py-2">{t("加载中…", "Loading…")}</div>
+            ) : (
+              <div className="pt-2">
+                <FeeBreakdownPanel detail={incomeDetail} t={t} isEstimate={!isFinalSettlement} />
+              </div>
+            )
+          )}
+        </div>
+
+        {/* 买家实付金额 */}
+        {buyerPaymentInfo && (
+          <div className="border-t border-slate-100 pt-4 text-sm">
+            <button
+              onClick={() => setShowPaymentDetail((v) => !v)}
+              className="w-full flex items-center justify-between text-xs text-slate-400"
+            >
+              <span>{t("买家实付金额", "Buyer Total Payment")}</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-700 font-semibold tabular-nums">RM {fmt(num(buyerPaymentInfo.buyer_total_amount))}</span>
+                <ChevronDown size={14} className={`text-slate-400 transition-transform ${showPaymentDetail ? "rotate-180" : ""}`} />
+              </div>
+            </button>
+            {showPaymentDetail && (
+              <div className="mt-2 space-y-1 text-xs">
+                <div className="flex justify-between"><span className="text-slate-500">{t("商品总额", "Merchandise Subtotal")}</span><span className="tabular-nums">RM {fmt(num(buyerPaymentInfo.merchant_subtotal))}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">{t("运费", "Shipping Fee")}</span><span className="tabular-nums">RM {fmt(num(buyerPaymentInfo.shipping_fee))}</span></div>
+                {num(buyerPaymentInfo.shopee_voucher) !== 0 && (
+                  <div className="flex justify-between"><span className="text-slate-500">Shopee Voucher</span><span className="tabular-nums text-rose-600">RM {fmt(num(buyerPaymentInfo.shopee_voucher))}</span></div>
+                )}
+                {num(buyerPaymentInfo.seller_voucher) !== 0 && (
+                  <div className="flex justify-between"><span className="text-slate-500">Seller Voucher</span><span className="tabular-nums text-rose-600">RM {fmt(num(buyerPaymentInfo.seller_voucher))}</span></div>
+                )}
+                {num(buyerPaymentInfo.shopee_coins_redeemed) !== 0 && (
+                  <div className="flex justify-between"><span className="text-slate-500">{t("Shopee 币折抵", "Shopee Coins")}</span><span className="tabular-nums text-rose-600">- RM {fmt(num(buyerPaymentInfo.shopee_coins_redeemed))}</span></div>
+                )}
+                {num(buyerPaymentInfo.shipping_fee_sst_amount) !== 0 && (
+                  <div className="flex justify-between"><span className="text-slate-500">Buyer Paid Shipping Fee SST</span><span className="tabular-nums">RM {fmt(num(buyerPaymentInfo.shipping_fee_sst_amount))}</span></div>
+                )}
+                <div className="flex justify-between font-semibold pt-1.5 border-t border-slate-100">
+                  <span>{t("买家实付总额", "Total Paid by Buyer")}</span>
+                  <span className="tabular-nums">RM {fmt(num(buyerPaymentInfo.buyer_total_amount))}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
