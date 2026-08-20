@@ -2351,29 +2351,28 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
             <div className="font-medium mb-2">{order.customer}</div>
             <button
               onClick={async () => {
-                // Shopee MY Seller Center order detail page (2026-08-20,
-                // reverted per explicit request — NOTE: this exact
-                // /portal/sale/order/{order_sn} path was the FIRST thing
-                // tried for this button and confirmed live by the user to
-                // 404. Restored anyway on explicit instruction, without a
-                // fresh live re-verification ("沒有實際驗證，只是目前需要這個
-                //體驗，希望先試看看") — if it 404s again, buyer_username is
-                // still copied to clipboard first as a working fallback
-                // (paste into https://seller.shopee.com.my/webchat/conversations,
-                // the path already confirmed NOT to 404).
+                // Shopee MY buyer public storefront/profile page
+                // (2026-08-20) — https://shopee.com.my/{username} is
+                // Shopee's standard public-facing profile URL (not an
+                // internal Seller Center SPA route like the two prior
+                // attempts, which 404'd / didn't deep-link), carries a
+                // real "Chat Now/聊聊" button on Shopee's own page. Still
+                // copies buyer_username to clipboard first as a safety net
+                // in case a given buyer's profile is private/unavailable.
                 if (order.platform === "Shopee") {
                   if (order.buyerUsername) {
                     try {
                       await navigator.clipboard.writeText(order.buyerUsername);
-                      setChatToast(t(`已复制买家账号 ${order.buyerUsername}，正在打开订单详情页…`, `Copied buyer account ${order.buyerUsername} — opening order detail page…`));
+                      setChatToast(t(`已复制买家账号 ${order.buyerUsername}，正在打开买家主页…`, `Copied buyer account ${order.buyerUsername} — opening buyer profile…`));
                     } catch {
                       setChatToast(t("复制失败，请手动复制买家账号", "Copy failed — please copy the buyer account manually"));
                     }
+                    setTimeout(() => setChatToast(null), 2500);
+                    window.open(`https://shopee.com.my/${order.buyerUsername}`, "_blank", "noopener,noreferrer");
                   } else {
                     setChatToast(t("此订单暂无买家账号数据", "No buyer account synced for this order yet"));
+                    setTimeout(() => setChatToast(null), 2500);
                   }
-                  setTimeout(() => setChatToast(null), 2500);
-                  window.open(`https://seller.shopee.com.my/portal/sale/order/${order.platformOrderId}`, "_blank", "noopener,noreferrer");
                 } else {
                   window.alert(t("即时聊天功能暂未开通", "Live chat isn't available yet"));
                 }
