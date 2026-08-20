@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Boxes, RefreshCw, LogIn, LogOut, AlertTriangle, Menu, X } from "lucide-react";
+import { Boxes, RefreshCw, LogIn, LogOut, AlertTriangle, Menu, X, Puzzle } from "lucide-react";
 import {
   supabaseClient, mapDbStore, mapDbProduct, mapDbSupplier, mapDbPurchaseOrder, mapDbOrder, mapDbTransferLog,
   mapDbAdjustmentRequest, mapDbCancellationRecord, DEMO_TO_DB_STATUS, DEMO_TO_DB_PLATFORM, NAV,
@@ -21,19 +21,102 @@ const OWNER_ONLY_TAB_KEYS = ["suppliers", "purchaseorders", "shiptest", "roles"]
 
 /* ============================== Login ============================== */
 
+// 滑块拼图验证 (2026-08-20) — pure client-side gate in front of the same
+// existing supabaseClient.auth.signInWithPassword call below; no backend,
+// no new table, doesn't touch any frozen module. User drags the puzzle
+// piece to align with the notch; on a correct release it immediately calls
+// the real sign-in (no separate submit click needed) — a wrong release
+// just resets the piece and lets them retry. This is a UX/basic-bot-
+// friction gate, not a security boundary — real access control is still
+// entirely Supabase Auth's password check underneath it.
+function SliderCaptcha({ t, onSolved }) {
+  const trackRef = useRef(null);
+  const [targetX, setTargetX] = useState(() => 55 + Math.random() * 30); // 55%-85%
+  const [sliderX, setSliderX] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const TOLERANCE = 4; // percent
+
+  function clampFromClientX(clientX) {
+    const rect = trackRef.current.getBoundingClientRect();
+    const pct = ((clientX - rect.left) / rect.width) * 100;
+    return Math.max(0, Math.min(100, pct));
+  }
+
+  function handlePointerDown(e) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragging(true);
+    setFailed(false);
+  }
+
+  function handlePointerMove(e) {
+    if (!dragging) return;
+    setSliderX(clampFromClientX(e.clientX));
+  }
+
+  function handlePointerUp() {
+    if (!dragging) return;
+    setDragging(false);
+    if (Math.abs(sliderX - targetX) <= TOLERANCE) {
+      onSolved();
+    } else {
+      setFailed(true);
+      setSliderX(0);
+      setTimeout(() => setFailed(false), 1200);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-xs text-slate-500">{t("请拖动滑块，将拼图对齐到缺口位置", "Drag the slider to align the puzzle piece with the gap")}</div>
+      <div
+        ref={trackRef}
+        className={`relative h-11 rounded-lg bg-slate-100 border overflow-hidden select-none ${failed ? "border-rose-300" : "border-slate-200"}`}
+      >
+        {/* 缺口 (target notch) */}
+        <div
+          className="absolute top-1/2 -translate-y-1/2 h-8 w-8 rounded-md border-2 border-dashed border-slate-300 bg-slate-200/60"
+          style={{ left: `calc(${targetX}% - 16px)` }}
+        />
+        {/* 已滑过的轨道填充 */}
+        <div className="absolute inset-y-0 left-0 bg-teal-100" style={{ width: `${sliderX}%` }} />
+        {/* 拼图滑块 (draggable piece) */}
+        <div
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          className={`absolute top-1/2 -translate-y-1/2 h-9 w-9 rounded-md flex items-center justify-center text-white shadow cursor-grab active:cursor-grabbing touch-none ${failed ? "bg-rose-500" : "bg-teal-500"}`}
+          style={{ left: `calc(${sliderX}% - 18px)` }}
+        >
+          <Puzzle size={16} />
+        </div>
+      </div>
+      {failed && (
+        <div className="text-[11px] text-rose-600">{t("对齐不正确，请重试", "Not aligned — please try again")}</div>
+      )}
+    </div>
+  );
+}
+
 function LoginScreen({ t }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showCaptcha, setShowCaptcha] = useState(false);
 
-  async function handleSubmit(e) {
-    e.preventDefault();
+  async function doSignIn() {
     setError("");
     setBusy(true);
     const { error: authError } = await supabaseClient.auth.signInWithPassword({ email, password });
     setBusy(false);
-    if (authError) setError(authError.message);
+    if (authError) { setError(authError.message); setShowCaptcha(false); }
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    setShowCaptcha(true); // reveals the puzzle; doSignIn only fires once it's solved
   }
 
   return (
@@ -50,13 +133,14 @@ function LoginScreen({ t }) {
         </div>
 
         <div>
-          <label className="text-xs text-slate-500 mb-1 block">{t("邮箱", "Email")}</label>
+          <label className="text-xs text-slate-500 mb-1 block">{t("手机号 / 邮箱", "Phone / Email")}</label>
           <input
-            type="email"
+            type="text"
             required
+            disabled={showCaptcha}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400 disabled:bg-slate-50 disabled:text-slate-400"
           />
         </div>
         <div>
@@ -64,11 +148,14 @@ function LoginScreen({ t }) {
           <input
             type="password"
             required
+            disabled={showCaptcha}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400"
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal-400 disabled:bg-slate-50 disabled:text-slate-400"
           />
         </div>
+
+        {showCaptcha && !busy && <SliderCaptcha t={t} onSolved={doSignIn} />}
 
         {error && (
           <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg border bg-rose-50 text-rose-600 border-rose-200">
@@ -76,13 +163,19 @@ function LoginScreen({ t }) {
           </div>
         )}
 
-        <button
-          type="submit"
-          disabled={busy}
-          className={`w-full flex items-center justify-center gap-1.5 text-sm py-2 rounded-lg text-white ${busy ? "bg-slate-300 cursor-not-allowed" : "bg-slate-900 hover:bg-slate-800"}`}
-        >
-          <LogIn size={15} /> {busy ? t("登录中…", "Signing in…") : t("登录", "Log in")}
-        </button>
+        {!showCaptcha && (
+          <button
+            type="submit"
+            className="w-full flex items-center justify-center gap-1.5 text-sm py-2 rounded-lg text-white bg-slate-900 hover:bg-slate-800"
+          >
+            <LogIn size={15} /> {t("登录", "Log in")}
+          </button>
+        )}
+        {busy && (
+          <div className="w-full flex items-center justify-center gap-1.5 text-sm py-2 rounded-lg text-white bg-slate-300 cursor-not-allowed">
+            <LogIn size={15} /> {t("登录中…", "Signing in…")}
+          </div>
+        )}
       </form>
     </div>
   );

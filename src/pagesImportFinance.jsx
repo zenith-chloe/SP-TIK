@@ -2673,13 +2673,22 @@ export function Roles({ t }) {
                 <input value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} className="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:border-teal-400" />
               </div>
               <div>
-                <label className="block text-xs text-slate-400 mb-1">{t("登入帐号 / Email", "Login Email")}</label>
+                <label className="block text-xs text-slate-400 mb-1">{t("登录账号（手机号 / Email）", "Login Account (Phone / Email)")}</label>
                 <input
                   value={form.email}
                   onChange={(e) => setForm({ ...form, email: e.target.value })}
                   disabled={!!editingStaff}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:border-teal-400 disabled:bg-slate-50 disabled:text-slate-400"
                 />
+                {/* 2026-08-20: label accepts either, but real login still only
+                    works with a valid email format — Supabase Auth account
+                    creation requires it, and phone/WhatsApp OTP auth was
+                    explicitly not built (no third-party OTP provider
+                    connected). Entering a bare phone number here will fail
+                    at account creation, not silently succeed. */}
+                {!editingStaff && (
+                  <div className="text-[11px] text-slate-400 mt-1">{t("目前仅支持邮箱登录；手机号登录需另外接入短信/WhatsApp服务商，尚未开通", "Only email login works today; phone login needs a separate SMS/WhatsApp provider, not yet connected")}</div>
+                )}
                 {editingStaff && <div className="text-[11px] text-slate-400 mt-1">{t("邮箱创建后不可修改", "Email can't be changed after account creation")}</div>}
               </div>
               {!editingStaff && (
