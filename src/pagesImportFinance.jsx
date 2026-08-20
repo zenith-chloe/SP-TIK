@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import JsBarcode from "jsbarcode";
@@ -6,14 +6,14 @@ import { QRCodeSVG } from "qrcode.react";
 import {
   Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Info, TrendingUp,
   DollarSign, Sparkles, Bot, Send, Users, Megaphone, Printer, X, Settings, Package, GripVertical, Plus,
-  SlidersHorizontal, History, Eye,
+  SlidersHorizontal, History, Eye, ChevronDown, Search,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import {
   PRODUCTS, PLATFORM_THEME, ROLES, AD_CAMPAIGNS, AD_ROAS_THRESHOLD,
-  profit, fmt, statusLabel, warehouseLabel, supabaseClient, mapDbOrder,
+  fmt, statusLabel, warehouseLabel, supabaseClient, mapDbOrder, DEMO_TO_DB_PLATFORM,
 } from "./shared.jsx";
 import { KPICard as KPICardImpl } from "./pagesOverviewOrders.jsx";
 
@@ -388,35 +388,785 @@ export function ManualImport({ t, stores, inventory, onImport }) {
 
 /* ============================== Finance ============================== */
 
-export function Finance({ t, orders }) {
-  const byPlatform = ["Shopee", "TikTok Shop"].map((pl) => {
-    const os = orders.filter((o) => o.platform === pl && o.status !== "已取消");
-    const revenue = os.reduce((s, o) => s + o.unitPrice * o.qty, 0);
-    const fees = os.reduce((s, o) => s + o.platformFee + o.commission, 0);
-    const cost = os.reduce((s, o) => s + o.cost * o.qty, 0);
-    const netProfit = os.reduce((s, o) => s + profit(o), 0);
-    return { platform: pl, revenue, fees, cost, netProfit };
+// Estimated platform fee/commission (2026-08-18, explicit approval) —
+// `orders` has no real platform_fee/commission_fee/service_fee column at
+// all yet (confirmed: not a sync bug, this was simply never built — see
+// project_finance_revenue_page_spec memory). Until the real Shopee Escrow /
+// TikTok Settlement API is wired in, these are placeholder estimates from
+// fixed rates so 净利润 isn't silently just revenue. Deliberately scoped to
+// this Finance page only (not shared.jsx's profit(), which Overview's 净利润
+// KPI and Order Management Center still use unchanged) so no other page's
+// numbers are affected. Every value derived from this must stay visibly
+// marked "预估" per explicit instruction — never presented as a real
+// platform-charged fee.
+// ---- Fee Rate Profile (adjustable, 2026-08-19) -------------------------
+// Extracted per explicit request so a rate change is a one-line edit here,
+// nowhere else. NOT official published platform rates — Shopee/TikTok
+// don't publish one fixed %, real per-order fees vary by category/
+// campaign (confirmed against real get_escrow_detail / statement_
+// transactions responses earlier this session). service+transaction is a
+// convenience split of the old single 2% "platform fee" number this page
+// has used since the estimate was first built (still sums to 2%) — not a
+// verified official per-component breakdown, just editable independently
+// now that Commission / Service Fee / Transaction Fee are named line
+// items on the real settlement side too.
+const FEE_RATE_PROFILE = {
+  Shopee: { commission: 0.06, service: 0.01, transaction: 0.01 },
+  "TikTok Shop": { commission: 0.05, service: 0.01, transaction: 0.01 },
+};
+export function platformFeeRate(platform) {
+  const r = FEE_RATE_PROFILE[platform] || { commission: 0, service: 0, transaction: 0 };
+  return { total: r.commission + r.service + r.transaction, ...r };
+}
+// Anomaly threshold (2026-08-19, new) — once a real settlement lands,
+// flag red when it diverges from the formula estimate by more than this,
+// per explicit request ("差異超過 RM 1.00 時，以紅色標示異常").
+const FEE_ANOMALY_THRESHOLD = 1.0;
+const EST_FEE_TOOLTIP = "*预估费用，等待 API 结算账单对接（非平台真实扣款）";
+
+function estimatedFees(o) {
+  const gross = o.unitPrice * o.qty;
+  const rate = platformFeeRate(o.platform);
+  return {
+    platformFee: +(gross * (rate.service + rate.transaction)).toFixed(2),
+    commission: +(gross * rate.commission).toFixed(2),
+  };
+}
+
+// 净利润(预估) = 商品金额 + 运费收入 - 预估平台费用与佣金 - 商品成本 (explicit
+// formula, 2026-08-18) — shipping fee is treated as income here, unlike
+// shared.jsx's profit() which subtracts it; a deliberately separate
+// function/formula, not a change to profit() itself.
+function estimatedProfit(o) {
+  const { platformFee, commission } = estimatedFees(o);
+  return +(o.unitPrice * o.qty + o.shippingFee - platformFee - commission - o.cost * o.qty).toFixed(2);
+}
+
+// Shopee-Income-Details-style breakdown for one order's real settlement row
+// (2026-08-18) — every number here comes from the real stored columns /
+// raw_response written by shopee-settlement-sync / tiktok-settlement-sync,
+// nothing estimated (only rows with a real settlement are expandable at
+// all — see the chevron gating in the JSX below). The itemized fee lines
+// won't always sum to exactly Order Income to the cent (Shopee/TikTok's
+// real responses carry many more minor real fields than are broken out
+// here individually) — the bold Order Income total itself is always the
+// platform's own real escrow_amount/settlement_amount though, so that
+// number is exact even when the itemized list is a simplified view of it.
+// Shopee's get_escrow_detail has no real "payout date" field in the
+// captured response, so its date column honestly shows when WE synced the
+// row (order_settlements.synced_at), not a fabricated Shopee payout date.
+// TikTok's statement_transactions DOES carry a real statement_time/status,
+// used directly.
+// Each fee line's `pct` (2026-08-19, new) is the real effective rate for
+// THIS order — amount / merchandiseSubtotal — not a looked-up "official"
+// %, since Shopee/TikTok don't publish a fixed per-fee-type rate and the
+// real amounts already vary order to order. Computed after merchandise
+// Subtotal is known, so it's added via a small helper below rather than
+// inline in each fee list.
+function withPct(fees, base) {
+  return fees.map((f) => ({ ...f, pct: base > 0 ? (f.amount / base) * 100 : 0 }));
+}
+
+export function incomeBreakdown(o, settlement, t) {
+  const raw = settlement.raw_response;
+  if (settlement.platform === "shopee") {
+    // deno-lint-ignore no-explicit-any
+    const income = raw?.response?.order_income ?? {};
+    const buyerInfo = raw?.response ?? {};
+    const merchandiseSubtotal = Number(income.order_selling_price ?? 0);
+    const fees = withPct(
+      [
+        { label: t("佣金", "Commission Fee"), amount: Number(settlement.shopee_commission_fee ?? 0) },
+        { label: t("服务费", "Service Fee"), amount: Number(settlement.shopee_service_fee ?? 0) },
+        { label: t("交易费", "Transaction Fee"), amount: Number(settlement.shopee_transaction_fee ?? 0) },
+        { label: t("广告预扣费", "Ads Escrow Top-Up Fee"), amount: Number(settlement.shopee_ads_escrow_top_up_fee ?? 0) },
+        // Shipping Seller Protection Fee (2026-08-20, new) — a real Shopee
+        // fee field previously missing from our total entirely, confirmed
+        // live against order 260819PQN51SEU (RM0.18 — without it, total
+        // fees came in short of Shopee's own reported number).
+        { label: t("运费保障费", "Shipping Seller Protection Fee"), amount: Number(settlement.shopee_shipping_seller_protection_fee ?? 0) },
+        { label: t("AMS 联盟佣金", "AMS Commission Fee"), amount: Number(settlement.shopee_ams_commission_fee ?? 0) },
+        { label: t("运费 SST", "Shipping Fee SST"), amount: Number(settlement.shopee_shipping_fee_sst ?? 0) },
+      ].filter((f) => f.amount !== 0),
+      merchandiseSubtotal,
+    );
+    // SPayLater installment period (2026-08-20, new) — real field
+    // confirmed live (income.instalment_plan / tenure_info_list, values
+    // like "3x"/"6x"/"12x") — formatted as "(N個月)" per explicit
+    // request. Only meaningful when the real payment method is SPayLater.
+    const installmentRaw = income.instalment_plan || income.tenure_info_list?.[0]?.instalment_plan || "";
+    const installmentMonths = /^(\d+)x$/i.exec(String(installmentRaw).trim())?.[1];
+    return {
+      buyer: buyerInfo.buyer_user_name || "—",
+      paymentMethod: buyerInfo.buyer_payment_info?.buyer_payment_method || "—",
+      installmentLabel: installmentMonths ? t(`(${installmentMonths}個月)`, `(${installmentMonths}-Month)`) : "",
+      // is_final distinguishes a real FINAL settlement (money actually
+      // transferred) from a real but not-yet-final Shopee estimate on an
+      // in-flight order — saying "打款成功" on the latter would be wrong,
+      // the order hasn't been paid out yet. Non-final rows (both tabs)
+      // now show a single unified label per explicit request, replacing
+      // the old differentiated "Shopee 预估（未打款）"/"待结算" text —
+      // final/paid rows keep their own real "打款成功" text since that's
+      // factually accurate and unifying it would misrepresent money
+      // that's already been transferred.
+      statusLabel: settlement.is_final
+        ? t("打款成功", "Payment Transferred Successfully")
+        : t("等待订单完成", "Awaiting Order Completion"),
+      statementDate: settlement.synced_at,
+      statementDateIsRealPayoutDate: false,
+      merchandiseSubtotal,
+      shippingSubtotal: Number(income.buyer_paid_shipping_fee ?? 0) - Number(income.actual_shipping_fee ?? 0),
+      // Split shipping (2026-08-20, new) — Shopee's real escrow response
+      // carries both sides separately; exposed for the settlement detail
+      // page's "买家支付运费 / 物流实扣运费" line items (Shopee official
+      // bill style). null on TikTok, which only reports a net figure.
+      buyerPaidShipping: Number(income.buyer_paid_shipping_fee ?? 0),
+      logisticsShipping: Number(income.actual_shipping_fee ?? 0),
+      fees,
+      orderIncome: Number(settlement.shopee_escrow_amount ?? settlement.net_settlement ?? 0),
+    };
+  }
+  // tiktok
+  const txns = raw?.statement_transactions ?? [];
+  const first = txns[0] ?? {};
+  const merchandiseSubtotal = Number(first.net_sales_amount ?? 0);
+  const fees = withPct(
+    [
+      { label: t("平台佣金", "Platform Commission"), amount: Number(settlement.tiktok_commission_fee ?? 0) },
+      { label: t("交易费", "Transaction Fee"), amount: Number(settlement.tiktok_transaction_fee ?? 0) },
+      { label: t("达人佣金", "Affiliate Commission"), amount: Number(settlement.tiktok_affiliate_commission ?? 0) },
+      { label: t("平台折扣", "Platform Discount"), amount: Number(settlement.tiktok_platform_discount ?? 0) },
+    ].filter((f) => f.amount !== 0),
+    merchandiseSubtotal,
+  );
+  return {
+    buyer: o.customer || "—",
+    paymentMethod: o.isCod ? t("货到付款", "Cash on Delivery") : t("线上支付", "Online Payment"),
+    installmentLabel: "",
+    statusLabel: first.status === "SETTLED" ? t("已结算", "Settled") : (first.status || "—"),
+    statementDate: first.statement_time ? new Date(Number(first.statement_time) * 1000).toISOString() : settlement.synced_at,
+    statementDateIsRealPayoutDate: !!first.statement_time,
+    merchandiseSubtotal,
+    shippingSubtotal: Number(first.shipping_fee_amount ?? 0),
+    // TikTok's statement_transactions only reports a net shipping figure,
+    // no buyer-paid/logistics-charged split — left null (not fabricated).
+    buyerPaidShipping: null,
+    logisticsShipping: null,
+    fees,
+    orderIncome: Number(settlement.tiktok_settlement_amount ?? settlement.net_settlement ?? 0),
+  };
+}
+
+// Estimate-side mirror of incomeBreakdown (2026-08-19, new) — same return
+// shape (merchandiseSubtotal/shippingSubtotal/fees[with pct]/orderIncome)
+// so Pending rows can expand into the exact same panel format as Released,
+// per explicit request ("格式必須跟已結算頁面一模一樣"). Every number here
+// is still the formula estimate (FEE_RATE_PROFILE), not real platform
+// data — pct is the configured rate itself, since no real deduction
+// exists yet to derive an effective % from.
+export function estimatedBreakdown(o, t) {
+  const gross = o.unitPrice * o.qty;
+  const rate = platformFeeRate(o.platform);
+  const commissionAmt = +(gross * rate.commission).toFixed(2);
+  const serviceAmt = +(gross * rate.service).toFixed(2);
+  const transactionAmt = +(gross * rate.transaction).toFixed(2);
+  return {
+    merchandiseSubtotal: gross,
+    shippingSubtotal: o.shippingFee,
+    buyerPaidShipping: null,
+    logisticsShipping: null,
+    fees: [
+      { label: t("佣金", "Commission Fee"), amount: commissionAmt, pct: rate.commission * 100 },
+      { label: t("服务费", "Service Fee"), amount: serviceAmt, pct: rate.service * 100 },
+      { label: t("交易费", "Transaction Fee"), amount: transactionAmt, pct: rate.transaction * 100 },
+    ].filter((f) => f.amount !== 0),
+    orderIncome: +(gross + o.shippingFee - commissionAmt - serviceAmt - transactionAmt).toFixed(2),
+  };
+}
+
+// Shared expand-panel renderer (2026-08-19, new; isEstimate added 2026-08-20)
+// — used identically by the Pending, Released, and "待已结算" (compare)
+// tabs so the breakdown format is guaranteed pixel-for-pixel consistent
+// everywhere it appears, per explicit request. `detail` is either a real
+// incomeBreakdown() or an estimatedBreakdown() result — both share the
+// same shape. `isEstimate` only swaps labels/wording (never the numbers)
+// so an estimated payout is never visually mistaken for a real one, and
+// "预估平台费" (the deduction) is never mistaken for "预估到账金额" (the
+// result after deduction) — the exact confusion flagged in the request.
+export function FeeBreakdownPanel({ detail, t, isEstimate, items }) {
+  // Split shipping (2026-08-20, new) — Shopee's real escrow response
+  // separates "买家支付运费" (income into escrow) from "物流实扣运费"
+  // (Shopee's actual delivery cost, a deduction) — shown as two distinct
+  // official-bill-style line items when both are available (real Shopee
+  // orders). Falls back to a single net "运费" line for TikTok (no split
+  // in its real data) and for estimated/Pending rows (nothing to split).
+  const hasSplitShipping = detail.buyerPaidShipping != null && detail.logisticsShipping != null;
+  return (
+    <>
+      {/* Full item list (2026-08-20, bug fix) — previously this panel only
+          ever showed the aggregate 商品总额 number, with no way to see
+          which/how-many products made it up; multi-item orders (e.g.
+          260818MXYTPJ36, 2 real items) looked like they only had one
+          product anywhere in the UI. Loops over the order's real, full
+          `items` array (already fetched from order_items — see
+          mapDbOrder in shared.jsx — just never rendered here before),
+          not just the single highest-subtotal "first" item other parts
+          of the app use. */}
+      {items && items.length > 0 && (
+        <div className="space-y-2 mb-3 pb-3 border-b border-slate-200">
+          {items.map((it, idx) => (
+            <div key={idx} className="flex items-center gap-2 text-xs">
+              {it.image ? (
+                <img src={it.image} alt={it.productName} className="h-10 w-10 rounded-md object-cover border border-slate-200 shrink-0" />
+              ) : (
+                <div className="h-10 w-10 rounded-md bg-slate-100 border border-slate-200 shrink-0" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="text-slate-700 truncate">{it.productName}</div>
+                <div className="text-slate-400 truncate">{[it.sku, it.variation].filter(Boolean).join(" · ") || "—"}</div>
+              </div>
+              <div className="text-right shrink-0 text-slate-500 tabular-nums">
+                RM {fmt(it.unitPrice)} × {it.qty}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+        <div>
+          <div className="text-slate-400 mb-1">{t("商品总额", "Merchandise Subtotal")}</div>
+          <div className="font-medium tabular-nums">RM {fmt(detail.merchandiseSubtotal)}</div>
+        </div>
+        {hasSplitShipping ? (
+          <>
+            <div>
+              <div className="text-slate-400 mb-1">{t("买家支付运费", "Shipping Paid by Buyer")}</div>
+              <div className="font-medium tabular-nums">RM {fmt(detail.buyerPaidShipping)}</div>
+            </div>
+            <div>
+              <div className="text-slate-400 mb-1">{t("物流实扣运费", "Shipping Charged by Logistics")}</div>
+              <div className="font-medium tabular-nums text-rose-600">- RM {fmt(detail.logisticsShipping)}</div>
+            </div>
+          </>
+        ) : (
+          <div>
+            <div className="text-slate-400 mb-1">{t("运费", "Shipping")}</div>
+            <div className="font-medium tabular-nums">RM {fmt(detail.shippingSubtotal)}</div>
+          </div>
+        )}
+        <div>
+          <div className="text-slate-400 mb-1">{isEstimate ? t("预估到账金额", "Est. Payout Amount") : t("最终到账金额", "Order Income")}</div>
+          <div className={`font-bold tabular-nums text-base ${isEstimate ? "italic text-slate-500" : "text-emerald-600"}`}>RM {fmt(detail.orderIncome)}</div>
+        </div>
+      </div>
+      <div className="mt-3 pt-3 border-t border-slate-200">
+        <div className="text-slate-400 mb-1.5">{isEstimate ? t("预估平台费 (Estimated Fees & Charges)", "Estimated Fees & Charges") : t("费用扣除明细", "Fees & Charges")}</div>
+        {detail.fees.length === 0 ? (
+          <div className="text-slate-300">{t("此单无额外扣费", "No additional fees on this order")}</div>
+        ) : (
+          <div className="space-y-1">
+            {detail.fees.map((f) => (
+              <div key={f.label} className="flex items-center justify-between text-slate-600">
+                <span>{f.label} ({f.pct.toFixed(2)}%)</span>
+                <span className="tabular-nums text-rose-600">- RM {fmt(f.amount)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {isEstimate && (
+        <div className="mt-3 pt-3 border-t border-dashed border-slate-200 text-[11px] text-slate-400">
+          {t(
+            "公式：商品总额 + 运费小计 − 预估平台费 = 预估到账金额（尚无真实结算数据，实际到账以平台结算为准，与上方"
+              + "「预估平台费」是两个不同的数字）",
+            'Formula: Merchandise Subtotal + Shipping Subtotal − Estimated Fees = Estimated Payout Amount (no real settlement yet — actual payout is set by the platform; this is a different number from "Estimated Fees" above)',
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+// Order Settlement Detail drawer (2026-08-20, new) — replaces the old
+// inline accordion per explicit request ("不再仅限于列表内部手风琴展开").
+// Opens as a right-side slide-over when an order number is clicked from
+// any of the three tabs (Pending/Released/账单异常), reusing
+// FeeBreakdownPanel for the itemized breakdown so the numbers stay
+// identical to what was shown inline before — only the presentation
+// (dedicated panel vs. in-row expansion) changed. When the order is a
+// flagged anomaly, a red alert box with an 预估 vs 实际 comparison table
+// sits above the breakdown, per explicit request ("在詳情頁頂部用醒目提
+// 示框顯示").
+function SettlementDetailDrawer({ order, finance, detail, t, onClose }) {
+  const isReal = finance.isReal;
+  const isRealEstimate = finance.isRealEstimate;
+  const hasRealData = isReal || isRealEstimate;
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
+      <div className="bg-white w-full max-w-md h-full overflow-y-auto shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white border-b border-slate-200 px-5 py-4 flex items-center justify-between z-10">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold truncate">{order.id}</div>
+            <div className="text-[11px] text-slate-400 truncate">{(hasRealData && detail.buyer) || order.customer} · {order.platform}</div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none shrink-0 ml-2">×</button>
+        </div>
+        <div className="p-5 space-y-4">
+          {isRealEstimate && (
+            <div className="text-xs bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 text-sky-700">
+              {t("该订单尚未打款，以下为 Shopee 官方预估数字（真实 API 数据，非固定比例公式），最终以平台实际结算为准", "This order hasn't been paid out yet — figures below are Shopee's own real estimate (real API data, not a flat-rate formula); the final settlement may adjust slightly")}
+            </div>
+          )}
+          {!hasRealData && (
+            <div className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-500">
+              {t("该订单尚未收到平台真实结算账单，以下金额为系统预估（公式计算）", "This order has no real settlement data yet — figures below are a system estimate (formula-calculated)")}
+            </div>
+          )}
+          {isReal && (
+            <div className="flex items-center justify-between text-xs text-slate-500">
+              <span>{detail.statusLabel}</span>
+              <span>{new Date(detail.statementDate).toLocaleDateString()}</span>
+            </div>
+          )}
+          {isReal && finance.isAnomaly && (
+            <div className="bg-rose-50 border border-rose-200 rounded-lg p-3">
+              <div className="text-xs font-semibold text-rose-700 mb-2">
+                ⚠ {t("费用异常：预估与实际扣费不一致", "Fee Anomaly: Estimated and actual deductions don't match")}
+              </div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-rose-400">
+                    <th className="text-left font-medium py-1">{t("项目", "Item")}</th>
+                    <th className="text-right font-medium py-1">{t("预估", "Est.")}</th>
+                    <th className="text-right font-medium py-1">{t("实际", "Actual")}</th>
+                    <th className="text-right font-medium py-1">{t("差额", "Diff")}</th>
+                  </tr>
+                </thead>
+                <tbody className="text-rose-700">
+                  <tr>
+                    <td className="py-1">{t("平台费用", "Platform Fees")}</td>
+                    <td className="text-right py-1 tabular-nums">RM {finance.estFees.toFixed(2)}</td>
+                    <td className="text-right py-1 tabular-nums">RM {finance.fees.toFixed(2)}</td>
+                    <td className="text-right py-1 tabular-nums font-semibold">RM {finance.feeDiff.toFixed(2)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+          <FeeBreakdownPanel detail={detail} t={t} isEstimate={!isReal} items={order.items} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function Finance({ t, orders, stores }) {
+  // Platform/store filtering (2026-08-18, new) — same activePlatform/
+  // activeStore pattern Order Management Center uses (pagesOverviewOrders.jsx):
+  // activeStore === null means "该平台全部店铺". Reusing the exact same
+  // state shape/semantics rather than inventing a new filtering concept.
+  const [activePlatform, setActivePlatform] = useState("Shopee");
+  const [activeStore, setActiveStore] = useState(null);
+  const platformTheme = PLATFORM_THEME[activePlatform];
+  const platformStores = (stores || []).filter((s) => s.platform === activePlatform);
+  const platformAccountIds = new Set(platformStores.map((s) => s.id));
+
+  // Date filter (2026-08-18, new) — Today / Past 7 Days / Past 30 Days /
+  // Custom Range, same option shape as Order Management Center's date
+  // filter (pagesOverviewOrders.jsx's DATE_FILTER_OPTIONS) but defined
+  // locally here rather than imported, so this page's filter state stays
+  // fully independent — selecting a range here can never affect Order
+  // Management Center's own date filter or vice versa. Declared before
+  // scopedOrders (below) since its filter callback calls inDateRange
+  // synchronously on every render — dateMode etc. must already be
+  // initialized by then.
+  // Date filter options (2026-08-20, reworded per explicit request to
+  // mirror Shopee's own "我的进账" page: 本周/本月/过去三个月/选择日期
+  // instead of the previous 今天/7天/30天/自定义). Values renamed to
+  // match ("week"/"month"/"3m"/"custom") — inDateRange's logic below is
+  // the only place that reads them, so this is a self-contained rename.
+  const [dateMode, setDateMode] = useState("month");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+  function inDateRange(o) {
+    const d = o.date;
+    if (!d) return true;
+    const now = new Date();
+    if (dateMode === "week") {
+      // Start of this week (Monday), per Shopee's own "本周" convention.
+      const day = now.getDay(); // 0=Sun..6=Sat
+      const diffToMonday = (day + 6) % 7;
+      const monday = new Date(now); monday.setDate(now.getDate() - diffToMonday);
+      return d >= monday.toISOString().slice(0, 10);
+    }
+    if (dateMode === "month") {
+      const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      return d >= firstOfMonth.toISOString().slice(0, 10);
+    }
+    if (dateMode === "3m") return d >= new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    if (dateMode === "custom") {
+      if (customStart && d < customStart) return false;
+      if (customEnd && d > customEnd) return false;
+      return true;
+    }
+    return true;
+  }
+
+  const scopedOrders = orders.filter((o) =>
+    o.platform === activePlatform
+    && o.status !== "已取消"
+    && platformAccountIds.has(o.platformAccountId)
+    && (!activeStore || o.platformAccountId === activeStore)
+    && inDateRange(o),
+  );
+
+  // Real settlement data (2026-08-18) — order_settlements is populated by
+  // shopee-settlement-sync / tiktok-settlement-sync (real get_escrow_detail /
+  // GET .../statement_transactions data, verified live against real orders
+  // 260808S41FFFRT and 582623995474379880). Fetched per active platform, not
+  // scoped to activeStore, since switching stores shouldn't refetch. Orders
+  // with no row here yet (not COMPLETED, or not synced) fall back to the
+  // estimatedFees/estimatedProfit placeholder below — never silently blended
+  // together, every render below picks one or the other per order. Selects
+  // `*` (not just total_fees/net_settlement) because the Income Details
+  // accordion below (2026-08-18, new) needs the individual real fee columns
+  // + raw_response to build its breakdown.
+  const [settlements, setSettlements] = useState({}); // order_no -> row
+  useEffect(() => {
+    let cancelled = false;
+    supabaseClient
+      .from("order_settlements")
+      .select("*")
+      .eq("platform", DEMO_TO_DB_PLATFORM[activePlatform])
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) { console.error("order_settlements fetch failed", error); return; }
+        const byOrderNo = {};
+        (data || []).forEach((r) => { byOrderNo[r.order_no] = r; });
+        setSettlements(byOrderNo);
+      });
+    return () => { cancelled = true; };
+  }, [activePlatform]);
+
+  // Order Settlement Detail drawer (2026-08-20) — clicking the order
+  // number opens the full drawer. Coexists with the inline accordion
+  // below (2026-08-20, restored per explicit request to mirror Shopee's
+  // own "我的进账" page, which expands in place via a ∨ chevron) — both
+  // interactions stay available side by side, per explicit choice.
+  const [detailOrderId, setDetailOrderId] = useState(null);
+  const [expandedIds, setExpandedIds] = useState(new Set());
+  function toggleExpand(id) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  // Pending/Released/Compare tab (2026-08-18, updated 2026-08-19) — three
+  // parallel pills in one row, per explicit request ("[待結算][已結算]
+  // [待已結算]" side by side). "compare" replaces what used to be a
+  // separate "financeView" state/button — merged into this single tab
+  // state so all three are literally one tab group, not a tab bar plus a
+  // separate button. Defaults to "released" so the expandable, real-data
+  // rows are what's visible on first load.
+  const [incomeTab, setIncomeTab] = useState("released");
+
+  // Pagination (2026-08-20, new) — per explicit request to mirror Shopee's
+  // own "我的进账" page (page-number nav + page-size dropdown), since a
+  // real store can have hundreds of orders in one tab. Shared across all
+  // four tabs; reset-to-page-1 effect is declared further below, after
+  // incomeSearchQuery exists (it's one of the reset triggers).
+  const [incomePage, setIncomePage] = useState(1);
+  const [incomePageSize, setIncomePageSize] = useState(20);
+
+  // Income Details search box (2026-08-19, new; upgraded 2026-08-20 to a
+  // field-scoped dropdown+input, mirroring Order Management Center's own
+  // searchField/q pattern — pagesOverviewOrders.jsx — per explicit request
+  // ("参照订单列表的搜索组件"). Same field→column mapping precedent as that
+  // component (sellerSku/package reuse sku/tracking since there's no
+  // separate synced column for either — not fabricating new fields).
+  // Three states: which field to search, the live input value, and the
+  // committed query that actually filters — only updates on Enter or
+  // clicking the search icon, per explicit request, not live-as-you-type.
+  const [incomeSearchField, setIncomeSearchField] = useState("orderNo");
+  const [incomeSearchInput, setIncomeSearchInput] = useState("");
+  const [incomeSearchQuery, setIncomeSearchQuery] = useState("");
+  useEffect(() => {
+    setIncomePage(1);
+  }, [incomeTab, incomeSearchQuery, dateMode, customStart, customEnd, activePlatform, activeStore]);
+  // Live suggestion dropdown (2026-08-20, new) — open while the input is
+  // focused and non-empty, per explicit request ("参考 Shopee 实时搜索体
+  // 验"). Separate from incomeSearchQuery (the committed, Enter/icon-
+  // triggered filter for the tab lists below) so typing alone never
+  // narrows the tables — only opens the dropdown.
+  const [incomeSearchFocused, setIncomeSearchFocused] = useState(false);
+  function incomeSearchFieldValue(o) {
+    return (
+      incomeSearchField === "orderNo" ? o.id :
+      incomeSearchField === "sku" ? o.sku :
+      incomeSearchField === "product" ? o.product :
+      incomeSearchField === "variation" ? o.variation :
+      incomeSearchField === "sellerSku" ? o.sku :
+      incomeSearchField === "tracking" ? o.tracking :
+      incomeSearchField === "package" ? o.tracking :
+      incomeSearchField === "customer" ? o.customer :
+      incomeSearchField === "note" ? o.noteText : o.id
+    ) || "";
+  }
+  function runIncomeSearch() {
+    setIncomeSearchQuery(incomeSearchInput.trim());
+    setIncomeSearchFocused(false);
+  }
+  function matchesIncomeSearch(o) {
+    const q = incomeSearchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return incomeSearchFieldValue(o).toLowerCase().includes(q);
+  }
+
+  // Per-order real-vs-estimated resolver — real settlement wins when synced,
+  // otherwise falls back to the fixed-rate estimate (still clearly marked
+  // "*预估" in the UI below). Once real, also carries the formula estimate
+  // alongside it (estFees/feeDiff/isAnomaly, 2026-08-19) purely so the
+  // "待已结算" compare page below can filter down to mismatches — not
+  // rendered inline on the main row/table per explicit request.
+  function orderFinance(o) {
+    const real = settlements[o.id];
+    if (real && real.is_final) {
+      const fees = Number(real.total_fees) || 0;
+      // Anomaly baseline (2026-08-20, upgraded) — ONLY compares against
+      // Shopee's own real pre-settlement estimate (captured while the
+      // order was still in-flight, preserved by shopee-settlement-sync
+      // into estimated_total_fees before this row got overwritten with
+      // final numbers). Real-vs-real is the only comparison confident
+      // enough to act on — the old flat-rate formula never modeled
+      // per-order fee mix (ads/AMS/shipping-protection all vary order to
+      // order) and produced a confirmed-live near-100% false-positive
+      // rate. Per explicit request ("嚴禁將所有訂單全量塞入賬單異常列
+      // 表"), an order with NO real baseline (completed before this
+      // tracking existed — currently ~1352/1355 of historical orders)
+      // is simply not checkable and is never flagged, rather than falling
+      // back to the unreliable formula. Coverage grows automatically as
+      // orders complete going forward (shopee-pending-estimate-sync now
+      // captures a baseline for every in-flight order).
+      const hasRealBaseline = real.estimated_total_fees != null;
+      const estFees = hasRealBaseline ? Number(real.estimated_total_fees) || 0 : null;
+      // Fees-only comparison (2026-08-20, corrected) — deliberately does
+      // NOT fold in the real shipping shortfall (buyer-paid vs logistics-
+      // charged shipping) the way an earlier version of this check did.
+      // Verified live this session: that shortfall is present on nearly
+      // every real order (routine Shopee shipping-rebate/protection
+      // mechanics, e.g. shopee_shipping_seller_protection_fee applies
+      // broadly) — folding it into the trigger reproduced the same
+      // near-100% false-positive problem this whole fix exists to solve,
+      // even after switching to a real baseline. total_fees vs
+      // estimated_total_fees (both real Shopee numbers, same field,
+      // before vs after) is the one comparison confirmed live to actually
+      // agree when nothing went wrong (3/3 real examples matched exactly).
+      const feeDiff = hasRealBaseline ? +(fees - estFees).toFixed(2) : null;
+      return {
+        isReal: true,
+        fees,
+        netProfit: (Number(real.net_settlement) || 0) - o.cost * o.qty,
+        estFees,
+        hasRealBaseline,
+        realDeduction: fees,
+        feeDiff,
+        isAnomaly: hasRealBaseline && Math.abs(feeDiff) > FEE_ANOMALY_THRESHOLD,
+      };
+    }
+    if (real && !real.is_final) {
+      // Real Shopee pre-settlement estimate (2026-08-20, new) — order
+      // hasn't been paid out yet (still "待结算"), but the numbers come
+      // straight from Shopee's own get_escrow_detail response instead of
+      // the flat-rate formula, per explicit request ("請勿使用固定8%比例
+      // 硬算...改用...官方預估字段"). isReal stays false so this order
+      // correctly stays out of 已结算/账单异常 until it actually settles.
+      return {
+        isReal: false,
+        isRealEstimate: true,
+        fees: Number(real.total_fees) || 0,
+        netProfit: (Number(real.net_settlement) || 0) - o.cost * o.qty,
+      };
+    }
+    const { platformFee, commission } = estimatedFees(o);
+    return { isReal: false, fees: platformFee + commission, netProfit: estimatedProfit(o) };
+  }
+
+  // "账单异常 / 待核对" tab (2026-08-19, renamed 2026-08-20 per explicit
+  // request from "待已结算") — only real-settled orders whose actual
+  // deducted amount (fees + any real shipping shortfall) disagrees with
+  // the formula estimate by more than FEE_ANOMALY_THRESHOLD; matching
+  // orders pass silently and stay in the normal Released list, exactly as
+  // specified ("金額完全一致...靜默通過...無需特殊標記或轉移"). Computed
+  // once here so both the tab's count badge and its content use the exact
+  // same list. Also honors the search box so the count/list narrows along
+  // with Pending/Released.
+  const mismatchedOrders = scopedOrders.filter((o) => {
+    const f = orderFinance(o);
+    return f.isReal && f.isAnomaly && matchesIncomeSearch(o);
   });
 
-  const totalProfit = byPlatform.reduce((s, p) => s + p.netProfit, 0);
-  const totalRevenue = byPlatform.reduce((s, p) => s + p.revenue, 0);
+  // Current tab's full (unpaginated) row list — computed once so the tab
+  // pill counts, the pagination footer, and the table body all agree.
+  const currentTabOrders = incomeTab === "compare" ? mismatchedOrders : scopedOrders.filter((o) => {
+    if (!matchesIncomeSearch(o)) return false;
+    const isReal = orderFinance(o).isReal;
+    if (incomeTab === "released") return isReal;
+    if (incomeTab === "waiting") return !isReal && !o.lastPrintedAt;
+    if (incomeTab === "pending") return !isReal && !!o.lastPrintedAt;
+    return false;
+  });
+  // Pagination (2026-08-20, new) — page-number nav + page-size dropdown,
+  // per explicit request to mirror Shopee's own "我的进账" page.
+  const incomeTotalPages = Math.max(1, Math.ceil(currentTabOrders.length / incomePageSize));
+  const incomePageSafe = Math.min(incomePage, incomeTotalPages);
+  const pagedIncomeOrders = currentTabOrders.slice((incomePageSafe - 1) * incomePageSize, incomePageSafe * incomePageSize);
+
+  // Live suggestion dropdown (2026-08-20, new) — top 6 matches for the
+  // in-progress (uncommitted) search input, per explicit request
+  // ("参考 Shopee 实时搜索体验"). Only shown while the input is focused
+  // and non-empty; separate from incomeSearchQuery so typing alone never
+  // narrows the tab tables, only clicking a suggestion opens that order's
+  // detail drawer directly.
+  const liveSearchMatches = (incomeSearchFocused && incomeSearchInput.trim())
+    ? scopedOrders.filter((o) => incomeSearchFieldValue(o).toLowerCase().includes(incomeSearchInput.trim().toLowerCase())).slice(0, 6)
+    : [];
+
+  const byStore = platformStores.map((s) => {
+    const os = scopedOrders.filter((o) => o.platformAccountId === s.id);
+    const revenue = os.reduce((sum, o) => sum + o.unitPrice * o.qty, 0);
+    const fees = os.reduce((sum, o) => sum + orderFinance(o).fees, 0);
+    const cost = os.reduce((sum, o) => sum + o.cost * o.qty, 0);
+    const netProfit = os.reduce((sum, o) => sum + orderFinance(o).netProfit, 0);
+    const realCount = os.filter((o) => orderFinance(o).isReal).length;
+    return { storeId: s.id, store: s.name, revenue, fees, cost, netProfit, realCount, totalCount: os.length };
+  });
+
+  const totalRevenue = scopedOrders.reduce((s, o) => s + o.unitPrice * o.qty, 0);
+  const totalFees = scopedOrders.reduce((s, o) => s + orderFinance(o).fees, 0);
+  const totalProfit = scopedOrders.reduce((s, o) => s + orderFinance(o).netProfit, 0);
+  const realSettledCount = scopedOrders.filter((o) => orderFinance(o).isReal).length;
 
   return (
     <div className="space-y-6">
+      {/* Platform tabs — same look/behavior as AdsSpend's platform switcher
+          further down this file. Switching platform resets activeStore
+          (a store id from the old platform would never match anyway). */}
+      <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 gap-1">
+        {["Shopee", "TikTok Shop"].map((pf) => {
+          const pfTheme = PLATFORM_THEME[pf];
+          const active = activePlatform === pf;
+          return (
+            <button
+              key={pf}
+              onClick={() => { setActivePlatform(pf); setActiveStore(null); }}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                active ? `${pfTheme.headerBg} text-white` : "text-slate-500 hover:bg-slate-50"
+              }`}
+            >
+              <span className={`h-2 w-2 rounded-full ${active ? "bg-white/80" : pfTheme.dot}`} />
+              {pf}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Store selector — same "全部店铺" + per-store button row Order
+          Management Center uses. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => setActiveStore(null)}
+          className={`text-xs px-3 py-2 rounded-lg border ${
+            activeStore === null ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+          }`}
+        >
+          {t("全部店铺", "All Stores")}
+        </button>
+        {platformStores.map((s) => {
+          const isActive = activeStore === s.id;
+          return (
+            <button
+              key={s.id}
+              onClick={() => setActiveStore(s.id)}
+              className={`text-xs px-3 py-2 rounded-lg border ${
+                isActive ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+              }`}
+            >
+              {s.name}
+            </button>
+          );
+        })}
+        {platformStores.length === 0 && (
+          <span className="text-xs text-slate-400">{t("尚未连接任何店铺", "No stores connected yet")}</span>
+        )}
+      </div>
+
+      {/* Date filter (2026-08-18, new) — Today/Past 7 Days/Past 30 Days/
+          Custom Range. Feeds straight into scopedOrders above, so every KPI
+          card / chart / table on this page narrows together automatically. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={dateMode}
+          onChange={(e) => setDateMode(e.target.value)}
+          className="text-xs border border-slate-200 rounded-lg outline-none text-slate-600 px-2.5 py-2 bg-white"
+        >
+          <option value="week">{t("本周", "This Week")}</option>
+          <option value="month">{t("本月", "This Month")}</option>
+          <option value="3m">{t("过去三个月", "Past 3 Months")}</option>
+          <option value="custom">{t("选择日期", "Select Date")}</option>
+        </select>
+        {dateMode === "custom" && (
+          <>
+            <input
+              type="date"
+              value={customStart}
+              onChange={(e) => setCustomStart(e.target.value)}
+              className="text-xs border border-slate-200 rounded-lg outline-none text-slate-600 px-2.5 py-2 bg-white"
+            />
+            <span className="text-xs text-slate-400">{t("至", "to")}</span>
+            <input
+              type="date"
+              value={customEnd}
+              onChange={(e) => setCustomEnd(e.target.value)}
+              className="text-xs border border-slate-200 rounded-lg outline-none text-slate-600 px-2.5 py-2 bg-white"
+            />
+          </>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <KPICardImpl label={t("总营收 (RM)", "Total Revenue (RM)")} value={fmt(totalRevenue)} icon={TrendingUp} tone="bg-teal-500" />
-        <KPICardImpl label={t("平台费用+佣金 (RM)", "Platform Fees + Commission (RM)")} value={fmt(byPlatform.reduce((s, p) => s + p.fees, 0))} icon={DollarSign} tone="bg-amber-500" />
-        <KPICardImpl label={t("净利润 (RM)", "Net Profit (RM)")} value={fmt(totalProfit)} icon={TrendingUp} tone="bg-indigo-500" />
+        <KPICardImpl
+          label={realSettledCount === scopedOrders.length && scopedOrders.length > 0 ? t("平台费用+佣金 (RM)", "Platform Fees + Commission (RM)") : t("平台费用+佣金 (RM) *部分预估", "Platform Fees + Commission (RM) *Partly Est.")}
+          value={realSettledCount === scopedOrders.length && scopedOrders.length > 0
+            ? fmt(totalFees)
+            : <span className="italic text-slate-400" title={EST_FEE_TOOLTIP}>{fmt(totalFees)}</span>}
+          sub={t(`真实结算 ${realSettledCount}/${scopedOrders.length} 笔，其余为预估`, `${realSettledCount}/${scopedOrders.length} orders use real settlement data, rest estimated`)}
+          icon={DollarSign}
+          tone="bg-amber-500"
+        />
+        <KPICardImpl
+          label={realSettledCount === scopedOrders.length && scopedOrders.length > 0 ? t("净利润 (RM)", "Net Profit (RM)") : t("净利润 (RM) *部分预估", "Net Profit (RM) *Partly Est.")}
+          value={realSettledCount === scopedOrders.length && scopedOrders.length > 0
+            ? fmt(totalProfit)
+            : <span className="italic text-slate-400" title={EST_FEE_TOOLTIP}>{fmt(totalProfit)}</span>}
+          sub={realSettledCount === scopedOrders.length && scopedOrders.length > 0
+            ? t("已用平台真实结算数据", "Uses real platform settlement data")
+            : t("*部分为预估费用，非最终数字", "*Partly estimated, not final")}
+          icon={TrendingUp}
+          tone={platformTheme.headerBg}
+        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <div className="text-sm font-medium mb-3">{t("按平台利润拆分", "Profit Breakdown by Platform")}</div>
+          <div className="text-sm font-medium mb-3">{t(`${activePlatform} 按店铺利润拆分`, `${activePlatform} Profit Breakdown by Store`)}</div>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={byPlatform}>
+              <BarChart data={byStore}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
-                <XAxis dataKey="platform" tick={{ fontSize: 12 }} />
+                <XAxis dataKey="store" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip />
                 <Bar dataKey="revenue" name={t("营收", "Revenue")} fill="#0ea5a4" radius={[4, 4, 0, 0]} />
@@ -429,60 +1179,426 @@ export function Finance({ t, orders }) {
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <div className="text-sm font-medium mb-3">{t("平台明细", "Platform Detail")}</div>
+          <div className="text-sm font-medium mb-3">{t("店铺明细", "Store Detail")}</div>
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
-                <th className="py-2 font-medium">{t("平台", "Platform")}</th>
+                <th className="py-2 font-medium">{t("店铺", "Store")}</th>
                 <th className="py-2 font-medium text-right">{t("营收", "Revenue")}</th>
                 <th className="py-2 font-medium text-right">{t("成本", "Cost")}</th>
                 <th className="py-2 font-medium text-right">{t("净利润", "Net Profit")}</th>
+                <th className="py-2 font-medium text-right">{t("真实结算", "Real Data")}</th>
               </tr>
             </thead>
             <tbody>
-              {byPlatform.map((p) => (
-                <tr key={p.platform} className="border-b border-slate-100 last:border-0">
-                  <td className="py-2.5">{p.platform}</td>
-                  <td className="py-2.5 text-right tabular-nums">{fmt(p.revenue)}</td>
-                  <td className="py-2.5 text-right tabular-nums">{fmt(p.cost)}</td>
-                  <td className="py-2.5 text-right tabular-nums font-medium text-emerald-600">{fmt(p.netProfit)}</td>
-                </tr>
-              ))}
+              {byStore.map((s) => {
+                const allReal = s.realCount === s.totalCount && s.totalCount > 0;
+                return (
+                  <tr key={s.storeId} className="border-b border-slate-100 last:border-0">
+                    <td className="py-2.5">{s.store}</td>
+                    <td className="py-2.5 text-right tabular-nums">{fmt(s.revenue)}</td>
+                    <td className="py-2.5 text-right tabular-nums">{fmt(s.cost)}</td>
+                    <td className={`py-2.5 text-right tabular-nums font-medium ${allReal ? "text-emerald-600" : "italic text-slate-400"}`} title={allReal ? undefined : EST_FEE_TOOLTIP}>
+                      {fmt(s.netProfit)}
+                    </td>
+                    <td className="py-2.5 text-right text-[11px] text-slate-400 tabular-nums">{s.realCount}/{s.totalCount}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       </div>
 
+      {/* Order-level Income Details accordion (2026-08-18, restructured to
+          mirror Shopee Seller Centre's Income Details interaction; updated
+          2026-08-19 to a single 3-way tab group [待結算][已結算][待已結算]
+          per explicit request, with Pending/Compare rows now expandable
+          into the exact same FeeBreakdownPanel format as Released). */}
       <div className="bg-white border border-slate-200 rounded-xl p-4">
-        <div className="text-sm font-medium mb-3">{t("订单级利润明细（前 10 笔）", "Order-Level Profit Detail (First 10)")}</div>
+        <div className="text-sm font-medium mb-3">{t("订单收支明细", "Order Income Details")}</div>
+        {/* Three parallel pills — [待結算][已結算][账单异常] side by side,
+            per explicit request (previously "待已结算" was a separate
+            top-right button; now one tab group) — plus a field-scoped
+            search box on the right of the same row, mirroring Order
+            Management Center's own searchField/q dropdown+input pattern
+            (2026-08-20, upgraded from a single free-text box per explicit
+            request "参照订单列表的搜索组件"). Only filters on Enter or
+            clicking the search icon, not live-as-you-type. */}
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+          <div className="inline-flex bg-slate-100 rounded-lg p-1 gap-1">
+            {[
+              { key: "waiting", label: t("等结算", "Awaiting Ship"), count: scopedOrders.filter((o) => !orderFinance(o).isReal && !o.lastPrintedAt && matchesIncomeSearch(o)).length },
+              { key: "pending", label: t("待结算", "Pending"), count: scopedOrders.filter((o) => !orderFinance(o).isReal && !!o.lastPrintedAt && matchesIncomeSearch(o)).length },
+              { key: "released", label: t("已结算", "Released"), count: scopedOrders.filter((o) => orderFinance(o).isReal && matchesIncomeSearch(o)).length },
+              { key: "compare", label: t("账单异常", "Billing Anomaly"), count: mismatchedOrders.length },
+            ].map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setIncomeTab(tab.key)}
+                className={`text-xs px-3 py-1.5 rounded-md font-medium transition-colors ${
+                  incomeTab === tab.key ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {tab.label} ({tab.count})
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {/* Field dropdown — same 9 options/mapping as Order Management
+                Center's searchField (pagesOverviewOrders.jsx), per explicit
+                request ("参照订单列表的搜索组件"). */}
+            <select
+              value={incomeSearchField}
+              onChange={(e) => setIncomeSearchField(e.target.value)}
+              className="text-xs border border-slate-200 rounded-lg outline-none text-slate-600 px-2 py-1.5 bg-white shrink-0"
+            >
+              <option value="orderNo">{t("订单号", "Order No.")}</option>
+              <option value="sku">{t("店铺SKU", "Store SKU")}</option>
+              <option value="product">{t("产品名称", "Product Name")}</option>
+              <option value="variation">{t("商品 Variation", "Variation")}</option>
+              <option value="sellerSku">{t("Seller SKU", "Seller SKU")}</option>
+              <option value="tracking">{t("运单号", "Tracking No.")}</option>
+              <option value="package">{t("包裹号", "Package No.")}</option>
+              <option value="customer">{t("买家名称", "Buyer Name")}</option>
+              <option value="note">{t("备注", "Note")}</option>
+            </select>
+            <div className="relative">
+              <input
+                type="text"
+                value={incomeSearchInput}
+                onChange={(e) => setIncomeSearchInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") runIncomeSearch(); }}
+                onFocus={() => setIncomeSearchFocused(true)}
+                onBlur={() => setTimeout(() => setIncomeSearchFocused(false), 150)}
+                placeholder={t("输入关键词搜索", "Enter a keyword")}
+                className="text-xs border border-slate-200 rounded-lg pl-3 pr-8 py-1.5 w-48 focus:outline-none focus:ring-1 focus:ring-slate-300"
+              />
+              <button
+                onClick={runIncomeSearch}
+                title={t("搜索", "Search")}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <Search size={13} />
+              </button>
+              {/* Live suggestion dropdown (2026-08-20, new) — top 6 matches,
+                  Shopee-style: thumbnail + red order number + buyer name,
+                  per explicit request. Clicking opens the detail drawer
+                  directly, bypassing tab commitment. */}
+              {liveSearchMatches.length > 0 && (
+                <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-20 overflow-hidden w-72">
+                  {liveSearchMatches.map((o) => (
+                    <button
+                      key={o.id}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setDetailOrderId(o.id);
+                        setIncomeSearchFocused(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-left border-b border-slate-100 last:border-0"
+                    >
+                      {o.productImage ? (
+                        <img src={o.productImage} alt={o.product} className="h-8 w-8 rounded-md object-cover border border-slate-200 shrink-0" />
+                      ) : (
+                        <div className="h-8 w-8 rounded-md bg-slate-100 border border-slate-200 shrink-0" />
+                      )}
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-rose-600 truncate">{o.id}</div>
+                        <div className="text-[11px] text-slate-400 truncate">{o.customer}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {incomeSearchQuery && (
+              <button
+                onClick={() => { setIncomeSearchInput(""); setIncomeSearchQuery(""); }}
+                className="text-xs px-2 py-1.5 rounded-lg text-slate-400 hover:text-slate-600"
+                title={t("清除搜索", "Clear search")}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="text-xs text-slate-400 mb-3">
+          {incomeTab === "released" && t("点击订单号查看独立结算详情页，或点击 ∨ 在列表内展开明细（真实结算数据）", "Click the order number for its full settlement detail page, or ∨ to expand the breakdown inline (real settlement data)")}
+          {incomeTab === "waiting" && t("这些订单还未在 ERP 打印面单；蓝色标记为 Shopee 官方真实预估，灰色为系统公式预估", "These orders haven't had their shipping label printed in the ERP yet; blue rows use Shopee's own real estimate, gray rows use a system formula estimate")}
+          {incomeTab === "pending" && t("这些订单已打印面单，还没有打款；蓝色标记为 Shopee 官方真实预估，灰色为系统公式预估", "These orders have had their label printed but haven't been paid out yet; blue rows use Shopee's own real estimate, gray rows use a system formula estimate")}
+          {incomeTab === "compare" && t(
+            `系统自动比对 Shopee 打单前的真实预估费用与结算后的真实扣费，仅显示差额超过 RM ${FEE_ANOMALY_THRESHOLD.toFixed(2)} 的异常订单（无真实预估基准的历史订单不参与比对，不会被误判）；金额一致的订单已自动隐藏、正常归入已结算列表`,
+            `System auto-compares Shopee's real pre-settlement estimate against the real final deduction — only orders differing by more than RM ${FEE_ANOMALY_THRESHOLD.toFixed(2)} are shown here (historical orders with no real baseline are skipped, never guessed at); matching orders pass silently into the Released list`,
+          )}
+        </div>
         <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[560px]">
+        {incomeTab !== "compare" ? (
+        <table className="w-full text-sm min-w-[680px]">
           <thead>
             <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
-              <th className="py-2 pr-3 font-medium">{t("订单编号", "Order No.")}</th>
-              <th className="py-2 pr-3 font-medium">{t("平台", "Platform")}</th>
-              <th className="py-2 pr-3 font-medium text-right">{t("商品金额", "Product Amount")}</th>
-              <th className="py-2 pr-3 font-medium text-right">{t("费用+佣金", "Fees + Commission")}</th>
-              <th className="py-2 pr-3 font-medium text-right">{t("净利润", "Net Profit")}</th>
+              <th className="py-2 pr-3 font-medium">{t("订单", "Order")}</th>
+              <th className="py-2 pr-3 font-medium">{incomeTab === "released" ? t("拨款时间", "Payout Time") : t("结算/同步日期", "Statement Date")}</th>
+              <th className="py-2 pr-3 font-medium">{t("状态", "Status")}</th>
+              <th className="py-2 pr-3 font-medium">{t("支付方式", "Payment Method")}</th>
+              {incomeTab !== "released" && <th className="py-2 pr-3 font-medium">{t("预估平台费", "Est. Platform Fee")}</th>}
+              <th className="py-2 pr-3 font-medium text-right">{incomeTab !== "released" ? t("预估到账金额", "Est. Payout Amount") : t("到账金额", "Released Amount")}</th>
             </tr>
           </thead>
           <tbody>
-            {orders.slice(0, 10).map((o) => {
-              const p = profit(o);
+            {pagedIncomeOrders.map((o) => {
+              const finance = orderFinance(o);
+              const { isReal, isRealEstimate } = finance;
+              // hasRealData (2026-08-20) — true for both a final settlement
+              // AND a real (not-yet-final) Shopee estimate, so both use the
+              // real incomeBreakdown() instead of the flat formula. Only
+              // orders with genuinely no Shopee data at all (not yet
+              // synced, or TikTok) fall back to estimatedBreakdown().
+              const hasRealData = isReal || isRealEstimate;
+              const real = settlements[o.id];
+              const detail = hasRealData ? incomeBreakdown(o, real, t) : estimatedBreakdown(o, t);
+              const rate = platformFeeRate(o.platform);
+              const expanded = expandedIds.has(o.id);
               return (
-                <tr key={o.id} className="border-b border-slate-100 last:border-0">
-                  <td className="py-2.5 pr-3 font-medium">{o.id}</td>
-                  <td className="py-2.5 pr-3">{o.platform}</td>
-                  <td className="py-2.5 pr-3 text-right tabular-nums">{fmt(o.unitPrice * o.qty)}</td>
-                  <td className="py-2.5 pr-3 text-right tabular-nums">{fmt(o.platformFee + o.commission)}</td>
-                  <td className={`py-2.5 pr-3 text-right tabular-nums font-medium ${p >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{fmt(p)}</td>
+                <Fragment key={o.id}>
+                <tr className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                  <td className="py-2.5 pr-3">
+                    <div className="flex items-center gap-2">
+                      {o.productImage ? (
+                        <img src={o.productImage} alt={o.product} className="h-9 w-9 rounded-lg object-cover border border-slate-200 shrink-0" />
+                      ) : (
+                        <div className="h-9 w-9 rounded-lg bg-slate-100 border border-slate-200 shrink-0" />
+                      )}
+                      <div className="min-w-0">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setDetailOrderId(o.id); }}
+                          className="font-medium truncate text-teal-600 hover:underline block"
+                        >
+                          {o.id}
+                        </button>
+                        <div className="text-[11px] text-slate-400 truncate">{(hasRealData && detail.buyer) || o.customer}</div>
+                        {(o.sku || o.variation) && (
+                          <div className="text-[10px] text-slate-300 truncate">{[o.sku, o.variation].filter(Boolean).join(" · ")}</div>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="py-2.5 pr-3 text-xs text-slate-500">
+                    {hasRealData ? new Date(detail.statementDate).toLocaleDateString() : "—"}
+                    {hasRealData && !detail.statementDateIsRealPayoutDate && (
+                      <span className="ml-1 text-slate-300" title={t("Shopee 真实数据无实际拨款日期字段，此为同步时间", "Shopee's real API has no payout-date field; this is our sync time")}>*</span>
+                    )}
+                  </td>
+                  <td className="py-2.5 pr-3 text-xs">
+                    {isReal ? (
+                      <span className="text-emerald-600">{detail.statusLabel}</span>
+                    ) : isRealEstimate ? (
+                      <span className="text-sky-600">{detail.statusLabel}</span>
+                    ) : (
+                      <span className="text-slate-400">{t("等待订单完成", "Awaiting Order Completion")}</span>
+                    )}
+                  </td>
+                  <td className="py-2.5 pr-3 text-xs text-slate-500">
+                    {hasRealData ? detail.paymentMethod : "—"}
+                    {hasRealData && detail.installmentLabel && (
+                      <div className="text-[10px] text-slate-400">{detail.installmentLabel}</div>
+                    )}
+                  </td>
+                  {incomeTab !== "released" && (
+                    <td className="py-2.5 pr-3 text-xs text-slate-500">
+                      {isRealEstimate
+                        ? t(`Shopee 预估 RM ${finance.fees.toFixed(2)}`, `Shopee Est. RM ${finance.fees.toFixed(2)}`)
+                        : t(`系统预估 (${(rate.total * 100).toFixed(2)}%) RM ${finance.fees.toFixed(2)}`, `System Est. (${(rate.total * 100).toFixed(2)}%) RM ${finance.fees.toFixed(2)}`)}
+                    </td>
+                  )}
+                  <td className="py-2.5 pr-3 text-right">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleExpand(o.id); }}
+                      className="flex items-center justify-end gap-1.5 w-full"
+                      title={t("展开明细", "Expand breakdown")}
+                    >
+                      <span
+                        className={`tabular-nums font-medium ${isReal ? "text-emerald-600" : isRealEstimate ? "text-sky-600" : "italic text-slate-400"}`}
+                        title={isReal ? undefined : isRealEstimate ? t(
+                          "Shopee 官方预估到账金额（真实 API 数据，订单尚未打款，金额可能在结算前微调）",
+                          "Shopee's own estimated payout amount (real API data — order not yet paid out, figure may shift slightly before final settlement)",
+                        ) : t(
+                          "预估到账金额，按标准费率算出（商品总额+运费小计−预估平台费），并非平台真实结算数字",
+                          "Estimated payout amount, calculated from the standard rate (Merchandise + Shipping − Estimated Fees) — not a real platform settlement figure",
+                        )}
+                      >
+                        RM {fmt(detail.orderIncome)}
+                      </span>
+                      <ChevronDown size={14} className={`text-slate-400 transition-transform ${expanded ? "rotate-180" : ""}`} />
+                    </button>
+                  </td>
                 </tr>
+                {expanded && (
+                  <tr className="border-b border-slate-100 last:border-0">
+                    <td colSpan={incomeTab !== "released" ? 6 : 5} className="bg-slate-50 px-4 py-4">
+                      <FeeBreakdownPanel detail={detail} t={t} isEstimate={!isReal} items={o.items} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>
         </table>
+        ) : mismatchedOrders.length === 0 ? (
+          <div className="text-sm text-slate-400 py-8 text-center">{t("目前没有发现金额不一致的订单", "No mismatched orders found")}</div>
+        ) : (
+        <table className="w-full text-sm min-w-[600px]">
+          <thead>
+            <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+              <th className="py-2 pr-3 font-medium">{t("订单", "Order")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("预估扣除金额", "Estimated Deduction")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("实际扣除金额", "Actual Deduction")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("差额", "Diff")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pagedIncomeOrders.map((o) => {
+              const finance = orderFinance(o);
+              const rate = platformFeeRate(o.platform);
+              const real = settlements[o.id];
+              const detail = incomeBreakdown(o, real, t);
+              const expanded = expandedIds.has(o.id);
+              return (
+                <Fragment key={o.id}>
+                <tr className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                  <td className="py-2.5 pr-3">
+                    <div className="flex items-center gap-2">
+                      {o.productImage ? (
+                        <img src={o.productImage} alt={o.product} className="h-9 w-9 rounded-lg object-cover border border-slate-200 shrink-0" />
+                      ) : (
+                        <div className="h-9 w-9 rounded-lg bg-slate-100 border border-slate-200 shrink-0" />
+                      )}
+                      <div className="min-w-0">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setDetailOrderId(o.id); }}
+                          className="font-medium truncate text-teal-600 hover:underline block"
+                        >
+                          {o.id}
+                        </button>
+                        <div className="text-[11px] text-slate-400 truncate">{detail.buyer || o.customer}</div>
+                        {(o.sku || o.variation) && (
+                          <div className="text-[10px] text-slate-300 truncate">{[o.sku, o.variation].filter(Boolean).join(" · ")}</div>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="py-2.5 pr-3 text-right tabular-nums text-slate-500">
+                    ({(rate.total * 100).toFixed(2)}%) RM {finance.estFees.toFixed(2)}
+                  </td>
+                  <td className="py-2.5 pr-3 text-right tabular-nums text-slate-700 font-medium">RM {finance.realDeduction.toFixed(2)}</td>
+                  <td className="py-2.5 pr-3 text-right">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleExpand(o.id); }}
+                      className="flex items-center justify-end gap-1.5 w-full"
+                      title={t("展开明细", "Expand breakdown")}
+                    >
+                      <span className="tabular-nums text-rose-600 font-semibold">RM {finance.feeDiff.toFixed(2)}</span>
+                      <ChevronDown size={14} className={`text-slate-400 transition-transform ${expanded ? "rotate-180" : ""}`} />
+                    </button>
+                  </td>
+                </tr>
+                {expanded && (
+                  <tr className="border-b border-slate-100 last:border-0">
+                    <td colSpan={4} className="bg-slate-50 px-4 py-4">
+                      <FeeBreakdownPanel detail={detail} t={t} items={o.items} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+        )}
         </div>
+        {/* Pagination footer (2026-08-20, new) — page-number nav + page-size
+            dropdown, per explicit request to mirror Shopee's own "我的进账"
+            page. Shared across all four tabs (currentTabOrders/pagedIncome
+            Orders already point at whichever tab is active). */}
+        {currentTabOrders.length > 0 && (
+          <div className="flex items-center justify-between flex-wrap gap-2 mt-3 pt-3 border-t border-slate-100">
+            <div className="text-xs text-slate-400">
+              {t(`共 ${currentTabOrders.length} 笔`, `${currentTabOrders.length} total`)}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setIncomePage((p) => Math.max(1, p - 1))}
+                  disabled={incomePageSafe <= 1}
+                  className="px-2 py-1 text-xs rounded-md border border-slate-200 text-slate-500 disabled:opacity-30 hover:bg-slate-50"
+                >
+                  ‹
+                </button>
+                {(() => {
+                  const pages = [];
+                  const total = incomeTotalPages;
+                  const cur = incomePageSafe;
+                  const add = (n) => pages.push(n);
+                  add(1);
+                  if (cur - 1 > 2) pages.push("…l");
+                  for (let n = Math.max(2, cur - 1); n <= Math.min(total - 1, cur + 1); n++) add(n);
+                  if (cur + 1 < total - 1) pages.push("…r");
+                  if (total > 1) add(total);
+                  return pages.map((p, idx) =>
+                    typeof p === "number" ? (
+                      <button
+                        key={p}
+                        onClick={() => setIncomePage(p)}
+                        className={`px-2.5 py-1 text-xs rounded-md ${p === cur ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50 border border-slate-200"}`}
+                      >
+                        {p}
+                      </button>
+                    ) : (
+                      <span key={p + idx} className="px-1 text-xs text-slate-300">…</span>
+                    )
+                  );
+                })()}
+                <button
+                  onClick={() => setIncomePage((p) => Math.min(incomeTotalPages, p + 1))}
+                  disabled={incomePageSafe >= incomeTotalPages}
+                  className="px-2 py-1 text-xs rounded-md border border-slate-200 text-slate-500 disabled:opacity-30 hover:bg-slate-50"
+                >
+                  ›
+                </button>
+              </div>
+              <select
+                value={incomePageSize}
+                onChange={(e) => { setIncomePageSize(Number(e.target.value)); setIncomePage(1); }}
+                className="text-xs border border-slate-200 rounded-lg outline-none text-slate-600 px-2 py-1 bg-white"
+              >
+                <option value={10}>10 {t("条/页", "/ page")}</option>
+                <option value={20}>20 {t("条/页", "/ page")}</option>
+                <option value={50}>50 {t("条/页", "/ page")}</option>
+              </select>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Order Settlement Detail drawer (2026-08-20, new) — see
+          SettlementDetailDrawer above. Looked up from scopedOrders so it
+          works no matter which of the three tabs the click came from. */}
+      {detailOrderId && (() => {
+        const o = scopedOrders.find((ord) => ord.id === detailOrderId);
+        if (!o) return null;
+        const finance = orderFinance(o);
+        const real = settlements[o.id];
+        const detail = (finance.isReal || finance.isRealEstimate) ? incomeBreakdown(o, real, t) : estimatedBreakdown(o, t);
+        return (
+          <SettlementDetailDrawer
+            order={o}
+            finance={finance}
+            detail={detail}
+            t={t}
+            onClose={() => setDetailOrderId(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Check, X, AlertTriangle, XCircle, SlidersHorizontal, Truck, Wifi, ShoppingBag, Music2, ChevronDown, LogIn, Store } from "lucide-react";
+import { Plus, Check, X, AlertTriangle, XCircle, SlidersHorizontal, Truck, Wifi, ShoppingBag, Music2, ChevronDown, LogIn, Store, Settings, Pencil } from "lucide-react";
 import { supabaseClient } from "./shared.jsx";
 import { PlatformLoginConnect, StoreManagement } from "./pagesMove.jsx";
 
@@ -252,8 +252,181 @@ const QUICK_ACTIONS = [
   { zh: "系统日志", en: "System Log" },
 ];
 
-export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, myRole, onCreate, onApprove, onReject, cancellationRecords, onFinalizeCancellation, orders, goTo, onRefresh, onConnectStore, onSetSyncMode }) {
-  const [card, setCard] = useState(null); // null | "cancel" | "adjust" | "autocountdo" | "connect" | "login"
+const DEFAULT_BADGE_COLOR = { Shopee: "#f97316", "TikTok Shop": "#111827" };
+const FONT_STYLE_OPTIONS = [
+  { value: "normal", zh: "常规", en: "Normal" },
+  { value: "bold", zh: "粗体", en: "Bold" },
+  { value: "italic", zh: "斜体", en: "Italic" },
+];
+
+// Store card settings editor — opened via the ⚙️ button on the "店铺列表 /
+// 手动导入" screen. Writes platform_accounts.account_name / logo_url /
+// font_color / font_style / badge_color / shop_note (via onUpdateStoreName +
+// onUpdateStoreAppearance, wired to updateStoreName / updateStoreAppearance
+// in erp-mvp-demo.jsx). Purely cosmetic/ERP-display fields — never touches
+// token, shop_id, status, hidden, orders, or any sync/cron logic.
+function StoreCardSettings({ t, stores, onUpdateStoreName, onUpdateStoreAppearance, onBack }) {
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(null); // { name, logoUrl, fontColor, fontStyle, badgeColor, shopNote }
+
+  function startEdit(s) {
+    setEditingId(s.id);
+    setDraft({
+      name: s.name || "",
+      logoUrl: s.logoUrl || "",
+      fontColor: s.fontColor || "#0f172a",
+      fontStyle: s.fontStyle || "normal",
+      badgeColor: s.badgeColor || DEFAULT_BADGE_COLOR[s.platform] || "#64748b",
+      shopNote: s.shopNote || "",
+    });
+  }
+
+  function save(id) {
+    if (!draft) return;
+    const name = draft.name.trim();
+    if (name) onUpdateStoreName(id, name);
+    onUpdateStoreAppearance(id, {
+      logoUrl: draft.logoUrl.trim(),
+      fontColor: draft.fontColor,
+      fontStyle: draft.fontStyle,
+      badgeColor: draft.badgeColor,
+      shopNote: draft.shopNote.trim(),
+    });
+    setEditingId(null);
+    setDraft(null);
+  }
+
+  return (
+    <div className="space-y-4">
+      <button onClick={onBack} className="text-xs text-slate-500 hover:text-slate-700">{t("← 返回", "← Back")}</button>
+      <div className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-100">
+        <div className="px-4 py-3 text-sm font-medium">{t("店铺卡片设置", "Store Card Settings")}</div>
+        {stores.length === 0 && (
+          <div className="px-4 py-6 text-xs text-slate-400 text-center">{t("暂无已连接店铺", "No connected stores")}</div>
+        )}
+        {stores.map((s) => (
+          <div key={s.id} className="px-4 py-3">
+            <div className="flex items-center gap-3">
+              {s.logoUrl ? (
+                <img src={s.logoUrl} alt="" className="h-8 w-8 rounded-full object-cover shrink-0 border border-slate-200" />
+              ) : (
+                <div className="h-8 w-8 rounded-full bg-slate-100 shrink-0" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium truncate" style={{ color: s.fontColor, fontWeight: s.fontStyle === "bold" ? 700 : 500, fontStyle: s.fontStyle === "italic" ? "italic" : "normal" }}>
+                  {s.name}
+                </div>
+                <div className="text-[11px] text-slate-400">{s.platform} · Shop ID: {s.shopId || "—"}</div>
+              </div>
+              {editingId !== s.id && (
+                <button onClick={() => startEdit(s)} className="shrink-0 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1">
+                  <Pencil size={12} /> {t("编辑", "Edit")}
+                </button>
+              )}
+            </div>
+
+            {editingId === s.id && draft && (
+              <div className="mt-3 pl-11 space-y-3">
+                <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">{t("店铺名称", "Store Name")}</label>
+                  <input
+                    value={draft.name}
+                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                    autoFocus
+                    className="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg outline-none focus:border-teal-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">{t("圆形 Logo", "Circular Logo")}</label>
+                  <div className="flex items-center gap-2">
+                    {draft.logoUrl ? (
+                      <img src={draft.logoUrl} alt="" className="h-9 w-9 rounded-full object-cover shrink-0 border border-slate-200" />
+                    ) : (
+                      <div className="h-9 w-9 rounded-full bg-slate-100 shrink-0" />
+                    )}
+                    <label className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer">
+                      {t("选择图片", "Choose Photo")}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => setDraft((prev) => (prev ? { ...prev, logoUrl: reader.result } : prev));
+                          reader.readAsDataURL(file);
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                    {draft.logoUrl && (
+                      <button onClick={() => setDraft({ ...draft, logoUrl: "" })} className="text-xs text-slate-400 hover:text-rose-500">
+                        {t("移除", "Remove")}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <label className="block text-[11px] text-slate-400 mb-1">{t("名称字体颜色", "Name Font Color")}</label>
+                    <input
+                      type="color"
+                      value={draft.fontColor}
+                      onChange={(e) => setDraft({ ...draft, fontColor: e.target.value })}
+                      className="h-8 w-full rounded-lg border border-slate-300 cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[11px] text-slate-400 mb-1">{t("字体风格", "Font Style")}</label>
+                    <select
+                      value={draft.fontStyle}
+                      onChange={(e) => setDraft({ ...draft, fontStyle: e.target.value })}
+                      className="w-full h-8 px-2 text-sm border border-slate-300 rounded-lg outline-none focus:border-teal-400"
+                    >
+                      {FONT_STYLE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{t(o.zh, o.en)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[11px] text-slate-400 mb-1">{t("专属标签颜色", "Badge Color")}</label>
+                    <input
+                      type="color"
+                      value={draft.badgeColor}
+                      onChange={(e) => setDraft({ ...draft, badgeColor: e.target.value })}
+                      className="h-8 w-full rounded-lg border border-slate-300 cursor-pointer"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">{t("店铺备忘录", "Shop Note")}</label>
+                  <textarea
+                    value={draft.shopNote}
+                    onChange={(e) => setDraft({ ...draft, shopNote: e.target.value })}
+                    placeholder={t("例如：主要卖零件 / 官方旗舰店", "e.g. Mainly sells parts / Official flagship store")}
+                    rows={2}
+                    className="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg outline-none focus:border-teal-400 resize-none"
+                  />
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => { setEditingId(null); setDraft(null); }} className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
+                    {t("取消", "Cancel")}
+                  </button>
+                  <button onClick={() => save(s.id)} className="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800 flex items-center gap-1">
+                    <Check size={12} /> {t("保存", "Save")}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, myRole, onCreate, onApprove, onReject, cancellationRecords, onFinalizeCancellation, orders, goTo, onRefresh, onConnectStore, onSetSyncMode, onUpdateStoreName, onUpdateStoreAppearance }) {
+  const [card, setCard] = useState(null); // null | "cancel" | "adjust" | "autocountdo" | "connect" | "login" | "storelist" | "storesettings"
   const [platform, setPlatform] = useState("Shopee");
   const [selectedStore, setSelectedStore] = useState(""); // "" = 该平台全部店铺
   const [checkedStoreIds, setCheckedStoreIds] = useState(() => new Set());
@@ -342,14 +515,31 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
                         onChange={() => toggleStoreChecked(s.id)}
                         className="h-3.5 w-3.5 mt-1 rounded border-slate-300 shrink-0"
                       />
-                      <PfLogo size={16} className={`mt-0.5 shrink-0 ${pf === "Shopee" ? "text-orange-500" : "text-slate-700"}`} />
+                      {s.logoUrl ? (
+                        <img src={s.logoUrl} alt="" className="h-6 w-6 rounded-full object-cover mt-0.5 shrink-0 border border-slate-200" />
+                      ) : (
+                        <PfLogo size={16} className={`mt-0.5 shrink-0 ${pf === "Shopee" ? "text-orange-500" : "text-slate-700"}`} />
+                      )}
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate">{s.name}</div>
+                        <div className="flex items-center gap-1.5">
+                          <div
+                            className="text-sm truncate"
+                            style={{ color: s.fontColor || undefined, fontWeight: s.fontStyle === "bold" ? 700 : 500, fontStyle: s.fontStyle === "italic" ? "italic" : "normal" }}
+                          >
+                            {s.name}
+                          </div>
+                          <span
+                            className="shrink-0 h-2 w-2 rounded-full"
+                            style={{ backgroundColor: s.badgeColor || DEFAULT_BADGE_COLOR[pf] || "#64748b" }}
+                            title={pf}
+                          />
+                        </div>
                         <div className="text-[11px] text-slate-400">{pf}</div>
                         <div className="text-[11px] text-slate-400">Shop ID: {s.shopId || "—"}</div>
                         <div className="text-[11px] text-emerald-600">{s.status}</div>
                         <div className="text-[11px] text-slate-400">{t("订单数量：0", "Orders: 0")}</div>
                         <div className="text-[11px] text-slate-400">{t("最后同步：", "Last sync: ")}{sync.lastSyncedAt || t("从未同步", "Never")}</div>
+                        {s.shopNote && <div className="text-[11px] text-slate-500 mt-1 italic truncate">{s.shopNote}</div>}
                         {sync.status === "syncing" && <div className="text-[11px] text-blue-500 mt-1">{t("同步中…", "Syncing…")}</div>}
                         {sync.status === "success" && <div className="text-[11px] text-emerald-600 mt-1">{sync.message}</div>}
                         {sync.status === "error" && <div className="text-[11px] text-rose-600 mt-1">{sync.message}</div>}
@@ -392,9 +582,30 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
   if (card === "storelist") {
     return (
       <div className="space-y-4">
-        <button onClick={() => setCard(null)} className="text-xs text-slate-500 hover:text-slate-700">{t("← 返回", "← Back")}</button>
+        <div className="flex items-center justify-between">
+          <button onClick={() => setCard(null)} className="text-xs text-slate-500 hover:text-slate-700">{t("← 返回", "← Back")}</button>
+          <button
+            onClick={() => setCard("storesettings")}
+            title={t("店铺名称设置", "Store Name Settings")}
+            className="h-7 w-7 flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"
+          >
+            <Settings size={14} />
+          </button>
+        </div>
         <StoreManagement t={t} stores={stores} onConnect={onConnectStore} onSetSyncMode={onSetSyncMode} onRefresh={onRefresh} />
       </div>
+    );
+  }
+
+  if (card === "storesettings") {
+    return (
+      <StoreCardSettings
+        t={t}
+        stores={stores}
+        onUpdateStoreName={onUpdateStoreName}
+        onUpdateStoreAppearance={onUpdateStoreAppearance}
+        onBack={() => setCard("storelist")}
+      />
     );
   }
 

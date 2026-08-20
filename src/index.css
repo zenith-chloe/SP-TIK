@@ -1,3 +1,120 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ============================================================
+   Premium style layer (2026-08-05) — CSS-only, no new deps.
+   Style mix: 50% Apple Liquid Glass (frosted surfaces, soft
+   continuous corners, gentle light diffusion) + 30% Linear
+   (crisp thin borders, restrained neutral surfaces) + 20%
+   premium pseudo-3D (layered shadow depth, gradient icon
+   badges). Adds depth/glass/hover polish on top of existing
+   Tailwind utility classes already on each element — never
+   changes layout, spacing, or markup structure, purely
+   box-shadow/gradient/transform/transition additions, opt-in
+   via these class names so nothing not explicitly touched is
+   affected.
+   ============================================================ */
+
+@layer utilities {
+  .transition-3d {
+    transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      background-color 220ms ease, border-color 220ms ease, opacity 220ms ease;
+  }
+}
+
+@layer components {
+  /* Card surface: soft diffused shadow at rest (glass, not hard-edged),
+     lifts gently on hover. */
+  .card-3d {
+    @apply transition-3d;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 10px 24px -14px rgba(15, 23, 42, 0.14);
+  }
+  .card-3d:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 4px 8px rgba(15, 23, 42, 0.06), 0 22px 38px -16px rgba(15, 23, 42, 0.2);
+  }
+
+  /* Icon badge: glossy top highlight + soft outer shadow, reads as a
+     raised glass/gradient tile regardless of whether the element behind
+     it is a flat Tailwind color or a bg-gradient-to-br utility. */
+  .icon-badge-3d {
+    @apply transition-3d;
+    position: relative;
+    background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0) 55%);
+    background-blend-mode: overlay;
+    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), inset 0 -8px 12px -8px rgba(15, 23, 42, 0.18),
+      0 4px 10px -3px rgba(15, 23, 42, 0.28);
+  }
+  .card-3d:hover .icon-badge-3d,
+  .icon-badge-3d:hover {
+    transform: translateY(-1px) scale(1.06);
+  }
+
+  /* Buttons: tactile raised surface with press feedback — works on flat
+     or gradient backgrounds alike. */
+  .btn-3d {
+    @apply transition-3d;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08), 0 6px 14px -6px rgba(15, 23, 42, 0.26);
+  }
+  .btn-3d:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(15, 23, 42, 0.1), 0 12px 20px -8px rgba(15, 23, 42, 0.32);
+    filter: brightness(1.04);
+  }
+  .btn-3d:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+    filter: brightness(0.98);
+  }
+  .btn-3d:disabled {
+    box-shadow: none;
+  }
+
+  /* Apple-style frosted glass surface: translucent + blurred, for
+     sidebars, sticky headers, search bars, modals. */
+  .glass-panel {
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0));
+  }
+  .glass-surface {
+    @apply transition-3d;
+    backdrop-filter: blur(12px) saturate(160%);
+    -webkit-backdrop-filter: blur(12px) saturate(160%);
+    background-color: rgba(255, 255, 255, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 20px -12px rgba(15, 23, 42, 0.14);
+  }
+
+  /* Sidebar nav item depth + the Apple-style "white pill" active state. */
+  .nav-item-3d {
+    @apply transition-3d;
+  }
+  .nav-item-3d:hover {
+    transform: translateX(2px);
+  }
+  .nav-item-3d.is-active {
+    background-color: #fff;
+    box-shadow: 0 6px 16px -6px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.1);
+  }
+
+  /* Inputs: subtle inset depth + glow on focus, glassy fill. */
+  .input-3d {
+    @apply transition-3d;
+    background-color: rgba(255, 255, 255, 0.9);
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+  }
+  .input-3d:focus {
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06), 0 0 0 3px rgba(99, 102, 241, 0.15);
+  }
+
+  /* Table / list row hover depth. */
+  .row-3d {
+    @apply transition-3d;
+  }
+  .row-3d:hover {
+    box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.9), 0 2px 10px -4px rgba(15, 23, 42, 0.1);
+  }
+}

@@ -155,6 +155,11 @@ export default function App() {
   const [cancellationRecords, setCancellationRecords] = useState([]);
   const [stores, setStores] = useState([]);
   const [tab, setTab] = useState("overview");
+  // One-shot navigation-intent state: set by the Dashboard's "待处理订单"
+  // card popup so 订单管理中心 opens pre-selected to the chosen platform;
+  // Orders consumes and clears it on mount. Pure UI nav state, not
+  // persisted, not touching orders/DB.
+  const [ordersEntryFilter, setOrdersEntryFilter] = useState(null);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [printOrders, setPrintOrders] = useState(null);
   // true when print was triggered from the Orders page (or its drawer) — no
@@ -199,7 +204,7 @@ export default function App() {
       .then(({ data }) => setMyRole(data?.role || "staff"));
   }, [session]);
 
-  const ORDER_COLUMNS = "id, order_no, platform, platform_account_id, buyer_name, buyer_phone, shipping_address, tracking_no, courier, order_status, platform_status, warehouse_stage, cancel_stage, is_cod, shipping_fee, order_date, print_count, last_printed_at, last_printed_by, note_color, note_text, updated_at";
+  const ORDER_COLUMNS = "id, order_no, platform, platform_account_id, buyer_name, buyer_phone, shipping_address, buyer_user_id, buyer_username, tracking_no, courier, order_status, platform_status, warehouse_stage, cancel_stage, is_cod, shipping_fee, order_date, ship_deadline, delivery_option, print_count, last_printed_at, last_printed_by, note_color, note_text, updated_at";
 
   // Supabase's REST API caps any single response at 1000 rows and a `.in()`
   // filter with thousands of ids blows past sane URL length limits, so once
@@ -258,7 +263,7 @@ export default function App() {
       : ordersQuery.order("order_date", { ascending: false }).limit(5000);
 
     const [accountsRes, productsRes, suppliersRes, purchaseOrdersRes, ordersRes, transferLogsRes, warehouseLocationsRes, adjustmentRequestsRes, cancellationRecordsRes] = await Promise.all([
-      supabaseClient.from("platform_accounts").select("id, platform, account_name, shop_id, created_at, token_expires_at, seller_name, seller_address, seller_phone"),
+      supabaseClient.from("platform_accounts").select("id, platform, account_name, shop_id, created_at, token_expires_at, seller_name, seller_address, seller_phone, logo_url, font_color, font_style, badge_color, shop_note").eq("hidden", false),
       supabaseClient.from("products").select("id, sku, name, warehouse_a_qty, warehouse_b_qty, listed_shop_id, location, location_id, price, weight_kg, unit, image_url, category, brand, part_number, barcode, cost_price, status, autocount_item_code"),
       supabaseClient.from("suppliers").select("id, name, contact_person, phone, email, address, payment_terms, status, notes"),
       supabaseClient.from("purchase_orders").select("id, po_no, supplier_id, supplier_name, status, order_date, expected_date, total_amount, notes, purchase_order_items(id, product_id, sku, product_name, qty, unit_cost, subtotal)").order("created_at", { ascending: false }),
@@ -905,6 +910,33 @@ export default function App() {
       .then(({ error }) => error && console.error("updateStoreSellerInfo failed", error));
   }
 
+  // Store display name (platform_accounts.account_name) shown on the store
+  // list cards — separate from seller info above (that's for shipping label
+  // sender text). Only touches account_name; token/shop_id/status/hidden and
+  // any sync logic are untouched.
+  function updateStoreName(storeId, name) {
+    setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, name } : s)));
+    supabaseClient
+      .from("platform_accounts")
+      .update({ account_name: name })
+      .eq("id", storeId)
+      .then(({ error }) => error && console.error("updateStoreName failed", error));
+  }
+
+  // Store card appearance (logo/font color+style/badge color/note) — cosmetic
+  // only, same pattern as updateStoreName above. Never touches token,
+  // shop_id, status, hidden, orders, or any sync/cron logic.
+  function updateStoreAppearance(storeId, { logoUrl, fontColor, fontStyle, badgeColor, shopNote }) {
+    setStores((prev) =>
+      prev.map((s) => (s.id === storeId ? { ...s, logoUrl, fontColor, fontStyle, badgeColor, shopNote } : s)),
+    );
+    supabaseClient
+      .from("platform_accounts")
+      .update({ logo_url: logoUrl, font_color: fontColor, font_style: fontStyle, badge_color: badgeColor, shop_note: shopNote })
+      .eq("id", storeId)
+      .then(({ error }) => error && console.error("updateStoreAppearance failed", error));
+  }
+
   async function importOrders(newOrders) {
     setOrders((prev) => [...newOrders, ...prev]);
 
@@ -1120,6 +1152,27 @@ export default function App() {
       .insert(ids.map((id) => ({ order_id: id, action: "packed", from_stage: "picked", to_stage: "ready_ship", staff_email: staffEmail })))
       .then(({ error: logErr }) => logErr && console.error("warehouse_action_log insert (packed) failed", logErr));
 
+    // Push shipment to Shopee for orders reaching ready_ship (Phase 2,
+    // approved 2026-08-11) — fire-and-forget, doesn't block the UI. All
+    // Shopee API logic, idempotency, and error handling live entirely in
+    // the edge function; this call site only decides WHEN to ask it to try.
+    // On success (2026-08-17, explicitly authorized) the edge function also
+    // writes orders.platform_status=PROCESSED and returns it back here, so
+    // the local order list reflects the shipment immediately instead of
+    // waiting for the next cron sync — cron still re-syncs Shopee's real
+    // status afterwards regardless, this is a display-latency fix only.
+    dbOrders
+      .filter((o) => o.platform === "shopee")
+      .forEach((o) => {
+        supabaseClient.functions.invoke("shopee-push-fulfillment", { body: { orderId: o.id } })
+          .then(({ data: pushData, error: pushErr }) => {
+            if (pushErr) { console.error("shopee-push-fulfillment invoke failed", pushErr); return; }
+            if (pushData?.success && pushData.platformStatus) {
+              setOrders((prev) => prev.map((row) => (row.id === o.order_no ? { ...row, platformStatus: pushData.platformStatus } : row)));
+            }
+          });
+      });
+
     const orderNoSet = new Set(dbOrders.map((o) => o.order_no));
     const pendingOrderNoSet = new Set(dbOrders.filter((o) => o.order_status === "pending").map((o) => o.order_no));
     setOrders((prev) => prev.map((o) => (orderNoSet.has(o.id) ? { ...o, warehouseStage: "ready_ship", orderStatus: pendingOrderNoSet.has(o.id) ? "processing" : o.orderStatus } : o)));
@@ -1188,13 +1241,13 @@ export default function App() {
 
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-64 shrink-0 bg-violet-900 text-violet-100 flex flex-col transition-transform duration-200 md:static md:z-auto md:w-56 md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 w-64 shrink-0 bg-gradient-to-b from-violet-700 via-violet-800 to-violet-950 text-violet-100 flex flex-col transition-transform duration-200 md:static md:z-auto md:w-56 md:translate-x-0 glass-panel shadow-[4px_0_24px_-8px_rgba(0,0,0,0.35)] ${
           mobileNavOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
         <div className="px-5 py-5 border-b border-violet-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-md bg-teal-500 flex items-center justify-center">
+            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-teal-300 to-teal-500 flex items-center justify-center icon-badge-3d">
               <Boxes size={18} className="text-violet-900" />
             </div>
             <div>
@@ -1206,7 +1259,7 @@ export default function App() {
             <X size={18} />
           </button>
         </div>
-        <nav className="flex-1 py-3 overflow-y-auto">
+        <nav className="flex-1 py-3 px-3 overflow-y-auto space-y-1">
           {NAV.filter((item) => myRole === "owner" || !OWNER_ONLY_TAB_KEYS.includes(item.key)).map((item) => {
             const Icon = item.icon;
             const active = tab === item.key;
@@ -1214,8 +1267,8 @@ export default function App() {
               <button
                 key={item.key}
                 onClick={() => { setTab(item.key); setMobileNavOpen(false); }}
-                className={`w-full flex items-center gap-3 px-5 py-2.5 text-sm transition-colors ${
-                  active ? "bg-violet-800 text-white border-r-2 border-teal-400" : "text-violet-300 hover:text-white hover:bg-violet-800/60"
+                className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm rounded-xl nav-item-3d ${
+                  active ? "is-active text-violet-700 font-medium" : "text-violet-300 hover:text-white hover:bg-white/10"
                 }`}
               >
                 <Icon size={16} />
@@ -1224,14 +1277,15 @@ export default function App() {
             );
           })}
         </nav>
-        <div className="px-5 py-4 border-t border-violet-800 text-[11px] text-violet-400">
-          {t("MVP 演示版 · 模拟数据", "MVP Demo · Mock Data")}
+        <div className="mx-3 mb-3 mt-1 rounded-xl bg-white/10 border border-white/10 px-3 py-2.5 glass-panel">
+          <div className="text-xs font-medium text-white truncate">{session?.user?.email}</div>
+          <div className="text-[10px] text-violet-300 mt-0.5">{t("MVP 演示版 · 模拟数据", "MVP Demo · Mock Data")}</div>
         </div>
       </aside>
 
       {/* Main */}
-      <main className="flex-1 min-w-0">
-        <header className="h-14 border-b border-slate-200 bg-white flex items-center px-3 md:px-6 justify-between gap-2">
+      <main className="flex-1 min-w-0 bg-gradient-to-br from-violet-50/40 via-white to-white min-h-screen">
+        <header className="h-14 border-b border-slate-200 bg-white flex items-center px-3 md:px-6 justify-between gap-2 shadow-[0_1px_3px_rgba(15,23,42,0.06)] relative z-10">
           <div className="flex items-center gap-2 min-w-0">
             <button onClick={() => setMobileNavOpen(true)} className="text-slate-500 hover:text-slate-800 md:hidden shrink-0">
               <Menu size={20} />
@@ -1246,8 +1300,8 @@ export default function App() {
           <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
             <div className="hidden md:block text-xs text-slate-400">{session.user.email}</div>
             <button
-              onClick={loadRealData}
-              className="flex items-center gap-1.5 text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
+              onClick={() => loadRealData(false)}
+              className="flex items-center gap-1.5 text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50 btn-3d"
               title={t("重新读取数据", "Reload data")}
             >
               <RefreshCw size={13} />
@@ -1255,14 +1309,14 @@ export default function App() {
             </button>
             <button
               onClick={() => setLang((prev) => (prev === "zh" ? "en" : "zh"))}
-              className="text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
+              className="text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50 btn-3d"
               title={t("切换语言", "Switch language")}
             >
               {lang === "zh" ? "中 / EN" : "EN / 中"}
             </button>
             <button
               onClick={() => supabaseClient.auth.signOut()}
-              className="flex items-center gap-1.5 text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50"
+              className="flex items-center gap-1.5 text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50 btn-3d"
               title={t("登出", "Log out")}
             >
               <LogOut size={13} />
@@ -1272,9 +1326,19 @@ export default function App() {
         </header>
 
         <div className="p-3 md:p-6">
-          {tab === "overview" && <Overview t={t} orders={orders} inventory={inventory} stores={stores} onOpenOrder={setSelectedOrder} goTo={setTab} />}
+          {tab === "overview" && (
+            <Overview
+              t={t}
+              orders={orders}
+              inventory={inventory}
+              stores={stores}
+              onOpenOrder={setSelectedOrder}
+              goTo={setTab}
+              onGoToOrdersToShip={(platform) => { setOrdersEntryFilter({ platform, status: "__to_ship__" }); setTab("orders"); }}
+            />
+          )}
           {tab === "orders" && (
-            <Orders t={t} orders={orders} stores={stores} onOpenOrder={setSelectedOrder} onPrint={openLockedPrint} onConfirmProcess={confirmProcess} onUpdateStatus={updateOrderStatus} onUpdateNote={updateOrderNote} onMarkPicked={markPicked} onMarkPacked={markPacked} goTo={setTab} />
+            <Orders t={t} orders={orders} stores={stores} onOpenOrder={setSelectedOrder} onPrint={openLockedPrint} onConfirmProcess={confirmProcess} onUpdateStatus={updateOrderStatus} onUpdateNote={updateOrderNote} onMarkPicked={markPicked} onMarkPacked={markPacked} goTo={setTab} entryFilter={ordersEntryFilter} onConsumeEntryFilter={() => setOrdersEntryFilter(null)} />
           )}
           {tab === "manualimport" && (
             <AutoImportHub
@@ -1294,6 +1358,8 @@ export default function App() {
               onRefresh={() => loadRealData(true)}
               onConnectStore={connectStore}
               onSetSyncMode={setStoreSyncMode}
+              onUpdateStoreName={updateStoreName}
+              onUpdateStoreAppearance={updateStoreAppearance}
             />
           )}
           {tab === "products" && <ProductMaster t={t} inventory={inventory} onCreate={createProduct} onUpdate={updateProductMaster} onDelete={deleteProduct} />}
@@ -1334,7 +1400,7 @@ export default function App() {
               onMoveShop={moveProductToShop}
             />
           )}
-          {tab === "finance" && <Finance t={t} orders={orders} />}
+          {tab === "finance" && <Finance t={t} orders={orders} stores={stores} />}
           {tab === "ads" && <AdsSpend t={t} />}
           {tab === "ai" && <AIPanel t={t} orders={orders} inventory={inventory} />}
           {tab === "labels" && <LabelPrinting t={t} orders={orders} stores={stores} onPrint={openDesignPrint} onReprint={reprintFromHistory} onUpdateSellerInfo={updateStoreSellerInfo} />}

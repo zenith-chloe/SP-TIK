@@ -249,6 +249,21 @@ async function upsertOrderPage(
           total_amount: Number(o.payment?.total_amount ?? 0),
           shipping_fee: Number(o.payment?.shipping_fee ?? 0),
           order_date: o.create_time ? new Date(Number(o.create_time) * 1000).toISOString() : new Date().toISOString(),
+          // Real TikTok ship-by deadline — verified live against the actual
+          // Search Orders response (2026-08-09): `cancel_order_sla_time` is
+          // the real field present (not `rts_time`, which doesn't appear in
+          // this endpoint's response), matching Seller Center's own "To
+          // ship by 23:59" cutoff. Same order object already being read
+          // above, no new API call. Left null when TikTok doesn't return it
+          // for a given order; the frontend falls back to its existing
+          // date-based estimate for those rows.
+          ship_deadline: o.cancel_order_sla_time ? new Date(Number(o.cancel_order_sla_time) * 1000).toISOString() : null,
+          // Real TikTok delivery option label (e.g. "Instant", "Next-day
+          // delivery", "Standard shipping") — same order object already
+          // being read above, no new API call. Confirmed real via a live
+          // TikTok Seller Centre order showing "Delivery option: Instant"
+          // (order 584451043333343056, 2026-08-09).
+          delivery_option: o.delivery_option_name ?? null,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "platform,order_no" },
@@ -559,8 +574,38 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  // Auth gate: mirrors shopee-sync-orders/index.ts exactly (see that file for
+  // the full rationale). verify_jwt at the platform level already rejects
+  // any request without a valid Supabase JWT before this code runs — this
+  // block only decides what a *valid* JWT is allowed to do.
+  //   - role "authenticated" = a logged-in ERP user's session JWT
+  //     (supabaseClient.functions.invoke() attaches it automatically, no
+  //     frontend change needed) -> let it straight through.
+  //   - role "anon" = cron's anon-key JWT -> must additionally present a
+  //     matching x-sync-secret header.
+  //   - anything else (service_role, malformed/missing JWT) -> rejected.
+  function jwtRole(authHeader: string | null): string | undefined {
+    const token = authHeader?.replace(/^Bearer\s+/i, "");
+    const payload = token?.split(".")[1];
+    if (!payload) return undefined;
+    try {
+      return JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/")))?.role;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const role = jwtRole(req.headers.get("Authorization"));
   const requiredSecret = Deno.env.get("SYNC_TRIGGER_SECRET");
-  if (requiredSecret && req.headers.get("x-sync-secret") !== requiredSecret) {
+  let authorized: boolean;
+  if (role === "authenticated") {
+    authorized = true;
+  } else if (role === "anon") {
+    authorized = !!requiredSecret && req.headers.get("x-sync-secret") === requiredSecret;
+  } else {
+    authorized = false;
+  }
+  if (!authorized) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
