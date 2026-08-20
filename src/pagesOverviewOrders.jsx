@@ -5,7 +5,7 @@ import {
   CheckCircle, Printer, Clock, Info, MapPin, PackagePlus, PackageMinus, SlidersHorizontal,
   Plus, Trash2, Warehouse as WarehouseIcon, ChevronDown,
   Package, CreditCard, ShoppingCart, RotateCcw, XCircle, PackageOpen, PackageCheck,
-  ShoppingBag, Music2, Send, Zap,
+  ShoppingBag, Music2, Send, Zap, Copy,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -2349,37 +2349,46 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
           <div className="text-sm">
             <div className="text-xs text-slate-400 mb-1">{t("买家信息", "Buyer Info")}</div>
             <div className="font-medium mb-2">{order.customer}</div>
-            <button
-              onClick={async () => {
-                // Shopee MY webchat inbox, order_sn copy-to-clipboard
-                // (2026-08-20) — /webchat/conversations is the one path
-                // already confirmed live NOT to 404 (unlike the two
-                // internal-route attempts before it). Copies the real
-                // order_sn (order.platformOrderId, the same order_no
-                // synced from Shopee) so it can be pasted into Shopee's
-                // own chat search box to find the exact order/buyer.
-                if (order.platform === "Shopee") {
+            <div className="flex items-center gap-2">
+              {/* 复制订单号 (2026-08-20, split from 即时聊天) — pure
+                  copy-to-clipboard, no navigation. Shopee only, same
+                  order.platformOrderId (real order_sn) used before. */}
+              <button
+                onClick={async () => {
                   const orderSn = order.platformOrderId;
-                  if (orderSn) {
-                    try {
-                      await navigator.clipboard.writeText(orderSn);
-                      setChatToast(t(`已复制订单号 ${orderSn}，已为您开启 Shopee Chat！请在搜索框粘贴订单号即可找到买家。`, `Copied order number ${orderSn} — opening Shopee Chat! Paste it into the search box to find the buyer.`));
-                    } catch {
-                      setChatToast(t("复制失败，请手动复制订单号", "Copy failed — please copy the order number manually"));
-                    }
-                  } else {
+                  if (!orderSn) {
                     setChatToast(t("此订单暂无订单号数据", "No order number available for this order"));
+                    setTimeout(() => setChatToast(null), 2500);
+                    return;
+                  }
+                  try {
+                    await navigator.clipboard.writeText(orderSn);
+                    setChatToast(t("订单号已复制", "Order number copied"));
+                  } catch {
+                    setChatToast(t("复制失败，请手动复制订单号", "Copy failed — please copy the order number manually"));
                   }
                   setTimeout(() => setChatToast(null), 2500);
-                  window.open("https://seller.shopee.com.my/webchat/conversations", "_blank", "noopener,noreferrer");
-                } else {
-                  window.alert(t("即时聊天功能暂未开通", "Live chat isn't available yet"));
-                }
-              }}
-              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
-            >
-              <Send size={13} /> {t("即时聊天", "Live Chat")}
-            </button>
+                }}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
+              >
+                <Copy size={13} /> {t("复制订单号", "Copy Order No.")}
+              </button>
+              {/* 即时聊天 (2026-08-20, split) — pure navigation now, no
+                  clipboard side effect. /webchat/conversations is the one
+                  path already confirmed live NOT to 404. */}
+              <button
+                onClick={() => {
+                  if (order.platform === "Shopee") {
+                    window.open("https://seller.shopee.com.my/webchat/conversations", "_blank", "noopener,noreferrer");
+                  } else {
+                    window.alert(t("即时聊天功能暂未开通", "Live chat isn't available yet"));
+                  }
+                }}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
+              >
+                <Send size={13} /> {t("即时聊天", "Live Chat")}
+              </button>
+            </div>
             {chatToast && (
               <div className="fixed bottom-6 right-6 z-[60] bg-slate-900 text-white text-xs px-4 py-2.5 rounded-lg shadow-lg max-w-xs">
                 {chatToast}
