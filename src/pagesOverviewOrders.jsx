@@ -2137,7 +2137,9 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
   const lang = t("zh", "en");
   const [settlement, setSettlement] = useState(null);
   const [settlementLoading, setSettlementLoading] = useState(true);
-  const [showIncomeDetail, setShowIncomeDetail] = useState(false);
+  // Default-expanded (2026-08-20, explicit request) — was collapsed by
+  // default, requiring an extra click every time to see the estimate.
+  const [showIncomeDetail, setShowIncomeDetail] = useState(true);
   const [showPaymentDetail, setShowPaymentDetail] = useState(false);
   // 即时聊天 copy-to-clipboard toast (2026-08-20) — see button below. Local,
   // self-dismissing (2.5s), scoped to this drawer only.
@@ -2199,16 +2201,19 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
 
   return (
     <>
-      <div className={`flex items-center justify-between px-5 py-4 border-b border-slate-200 ${theme.bgWash}`}>
+      {/* Compact header (2026-08-20, explicit request) — was py-4 with a
+          text-sm order id; tightened padding/font/gap to free up vertical
+          space for the order/item content below. */}
+      <div className={`flex items-center justify-between px-5 py-2.5 border-b border-slate-200 ${theme.bgWash}`}>
         <div>
-          <div className="text-sm font-semibold flex items-center gap-2">
-            <span className={`h-2 w-2 rounded-full ${theme.dot}`} />
+          <div className="text-xs font-semibold flex items-center gap-1.5">
+            <span className={`h-1.5 w-1.5 rounded-full ${theme.dot}`} />
             {order.id}
           </div>
-          <div className="text-xs text-slate-400">{order.platform} · {order.date}</div>
+          <div className="text-[11px] text-slate-400">{order.platform} · {order.date}</div>
         </div>
         <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
-          <X size={18} />
+          <X size={16} />
         </button>
       </div>
 
@@ -2312,15 +2317,6 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
             <div className="text-slate-700 font-medium">{order.customer}</div>
             <div className="text-slate-500">{order.phone}</div>
             <div className="text-slate-500">{order.address}</div>
-            {/* Real Shopee API behavior, not local masking — order/get_order_detail
-                redacts buyer PII to "****" by default (buyer information
-                protection policy); confirmed live 2026-08-20 (1382/1383 synced
-                Shopee orders masked, 0/8158 TikTok orders masked). Unmasking
-                would need a different Shopee endpoint (shipping-document
-                download) — out of scope here per "其他數據算式與API保持不變". */}
-            {order.platform === "Shopee" && order.customer === "****" && (
-              <div className="text-[11px] text-amber-600 mt-1">{t("⚠ Shopee 隐藏买家信息以保护隐私，需另接打印面单 API 才能显示真实地址", "⚠ Shopee masks buyer info for privacy; real address needs a separate shipping-label API")}</div>
-            )}
           </div>
         </div>
 
@@ -2347,8 +2343,9 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
           </div>
 
           <div className="text-sm">
-            <div className="text-xs text-slate-400 mb-1">{t("买家信息", "Buyer Info")}</div>
-            <div className="font-medium mb-2">{order.customer}</div>
+            {/* 买家信息标签 + order.customer 占位（2026-08-20, removed per
+                explicit request） — 买家收件地址 already shows the same
+                (masked) customer value above; this was a redundant repeat. */}
             <div className="flex items-center gap-2">
               {/* 复制订单号 (2026-08-20, split from 即时聊天) — pure
                   copy-to-clipboard, no navigation. Shopee only, same
