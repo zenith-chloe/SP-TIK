@@ -2366,6 +2366,17 @@ export function AIPanel({ t, orders, inventory }) {
 // role_permissions matrix is a real table, editable, but Plan A scope: it
 // records intent only, doesn't yet gate any other module's actual RLS.
 
+// 手机号虚拟 Email 显示还原 (2026-08-20) — accounts created from a bare
+// phone number are stored as phone@myerp.local (see admin-manage-staff's
+// toAuthEmail, same convention/domain), so the list shows the raw phone
+// number instead of a confusing fake-looking email address.
+const VIRTUAL_EMAIL_DOMAIN = "myerp.local";
+function displayAccount(email) {
+  if (!email) return "";
+  const suffix = `@${VIRTUAL_EMAIL_DOMAIN}`;
+  return email.endsWith(suffix) ? email.slice(0, -suffix.length) : email;
+}
+
 const ROLE_META = {
   admin: { zh: "管理员", en: "Admin" },
   purchasing: { zh: "采购专员", en: "Purchasing" },
@@ -2457,7 +2468,7 @@ export function Roles({ t }) {
 
   function openEditModal(s) {
     setEditingStaff(s);
-    setForm({ fullName: s.fullName, email: s.email, password: "", role: ROLE_KEYS.includes(s.role) ? s.role : ROLE_KEYS[0], status: s.status, storeIds: s.storeIds || [] });
+    setForm({ fullName: s.fullName, email: displayAccount(s.email), password: "", role: ROLE_KEYS.includes(s.role) ? s.role : ROLE_KEYS[0], status: s.status, storeIds: s.storeIds || [] });
     setErrorMsg("");
     setModalOpen(true);
   }
@@ -2576,7 +2587,7 @@ export function Roles({ t }) {
                 {staff.map((s) => (
                   <tr key={s.id} className="border-b border-slate-100 last:border-0">
                     <td className="py-2.5 pr-3 font-medium">{s.fullName}</td>
-                    <td className="py-2.5 pr-3 text-slate-500">{s.email}</td>
+                    <td className="py-2.5 pr-3 text-slate-500">{displayAccount(s.email)}</td>
                     <td className="py-2.5 pr-3">
                       {ROLE_KEYS.includes(s.role)
                         ? <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{t(ROLE_META[s.role].zh, ROLE_META[s.role].en)}</span>
@@ -2776,7 +2787,7 @@ export function Roles({ t }) {
             <div className="space-y-3 text-sm">
               <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
                 <div className="font-medium">{resetTarget.fullName}</div>
-                <div className="text-xs text-slate-500">{resetTarget.email}</div>
+                <div className="text-xs text-slate-500">{displayAccount(resetTarget.email)}</div>
               </div>
               <div>
                 <label className="block text-xs text-slate-400 mb-1">{t("新密码", "New Password")}</label>

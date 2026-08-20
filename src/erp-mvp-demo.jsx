@@ -108,7 +108,13 @@ function LoginScreen({ t }) {
   async function doSignIn() {
     setError("");
     setBusy(true);
-    const { error: authError } = await supabaseClient.auth.signInWithPassword({ email, password });
+    // 手机号虚拟 Email (2026-08-20) — a staff account created from a bare
+    // phone number is stored as phone@myerp.local (see admin-manage-staff's
+    // toAuthEmail, same convention/domain); apply the identical conversion
+    // here so typing just the phone number actually matches that account.
+    // Real email logins are untouched (already contain "@").
+    const authEmail = email.trim().includes("@") ? email.trim() : `${email.trim()}@myerp.local`;
+    const { error: authError } = await supabaseClient.auth.signInWithPassword({ email: authEmail, password });
     setBusy(false);
     if (authError) { setError(authError.message); setShowCaptcha(false); }
   }

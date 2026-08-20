@@ -33,6 +33,23 @@ const corsHeaders = {
 // requested (existing 'staff' rows are untouched, just not assignable here).
 const ALLOWED_ROLES = ["admin", "purchasing", "warehouse", "finance", "customer_service"];
 
+// 手机号虚拟 Email (2026-08-20) — Supabase Auth's createUser rejects any
+// address that isn't valid email format ("Unable to validate email
+// address: invalid format"), confirmed live when entering a bare phone
+// number like "0122119959". Since real phone/SMS OTP auth was explicitly
+// not built, phone-number accounts still authenticate via
+// signInWithPassword underneath — this synthesizes a valid-format email
+// (phone@myerp.local) so createUser accepts it. Login (erp-mvp-demo.jsx's
+// LoginScreen) applies the exact same conversion before calling
+// signInWithPassword, so a phone-created account can actually sign back
+// in — matching logic duplicated there since it's a different runtime,
+// not shared code.
+const VIRTUAL_EMAIL_DOMAIN = "myerp.local";
+function toAuthEmail(input: string): string {
+  const trimmed = input.trim();
+  return trimmed.includes("@") ? trimmed : `${trimmed}@${VIRTUAL_EMAIL_DOMAIN}`;
+}
+
 // 店铺权限授权 (2026-08-20) — validates any storeIds payload against real
 // platform_accounts rows before writing profiles.store_ids, so a client
 // can never smuggle in an id that doesn't correspond to a real connected
@@ -141,7 +158,7 @@ Deno.serve(async (req: Request) => {
       // isn't part of that trigger though, so it's set in a follow-up update
       // right after the profiles row exists.
       const { data, error } = await supabase.auth.admin.createUser({
-        email,
+        email: toAuthEmail(email),
         password,
         email_confirm: true,
         user_metadata: { full_name: fullName, role },
