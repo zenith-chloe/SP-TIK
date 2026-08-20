@@ -2408,6 +2408,13 @@ export function Roles({ t }) {
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [toast, setToast] = useState(null);
+  // 重置密码弹窗 (2026-08-20, fixed) — was window.prompt(), which the user
+  // reported as a silent no-op on click; a real modal (same pattern as the
+  // create/edit modal) doesn't depend on the browser's native prompt().
+  const [resetTarget, setResetTarget] = useState(null); // staff row being reset, or null
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetError, setResetError] = useState("");
 
   function showToast(msg) {
     setToast(msg);
@@ -2473,13 +2480,21 @@ export function Roles({ t }) {
     }
   }
 
-  async function handleResetPassword(s) {
-    const pwd = window.prompt(t(`为「${s.fullName}」设置新密码（至少6位）：`, `Set a new password for "${s.fullName}" (min 6 characters):`));
-    if (!pwd) return;
-    if (pwd.length < 6) { window.alert(t("密码至少需要6位", "Password must be at least 6 characters")); return; }
-    const { error } = await callStaffApi("resetPassword", { userId: s.id, newPassword: pwd });
-    if (error) { window.alert(error); return; }
-    showToast(t("密码已重置", "Password has been reset"));
+  function openResetPasswordModal(s) {
+    setResetTarget(s);
+    setResetPassword("");
+    setResetError("");
+  }
+
+  async function submitResetPassword() {
+    if (!resetTarget) return;
+    if (resetPassword.length < 6) { setResetError(t("密码至少需要6位", "Password must be at least 6 characters")); return; }
+    setResetBusy(true);
+    const { error } = await callStaffApi("resetPassword", { userId: resetTarget.id, newPassword: resetPassword });
+    setResetBusy(false);
+    if (error) { setResetError(error); return; }
+    setResetTarget(null);
+    showToast(t("密码重置成功", "Password reset successfully"));
   }
 
   async function handleToggleStatus(s) {
@@ -2563,7 +2578,7 @@ export function Roles({ t }) {
                     <td className="py-2.5 pr-3">
                       <div className="flex items-center justify-end gap-1.5">
                         <button onClick={() => openEditModal(s)} title={t("编辑", "Edit")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Pencil size={13} /></button>
-                        <button onClick={() => handleResetPassword(s)} title={t("重置密码", "Reset Password")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><KeyRound size={13} /></button>
+                        <button onClick={() => openResetPasswordModal(s)} title={t("重置密码", "Reset Password")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><KeyRound size={13} /></button>
                         <button onClick={() => handleToggleStatus(s)} title={s.status === "active" ? t("禁用", "Disable") : t("启用", "Enable")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Ban size={13} /></button>
                         <button onClick={() => handleDelete(s)} title={t("删除", "Delete")} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50"><Trash2 size={13} /></button>
                       </div>
@@ -2674,6 +2689,43 @@ export function Roles({ t }) {
               <button onClick={() => setModalOpen(false)} className="text-xs px-3 py-2 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
               <button onClick={submitModal} disabled={busy} className="text-xs px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50">
                 {busy ? t("处理中…", "Working…") : t("保存", "Save")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 重置密码弹窗 (2026-08-20) — real modal, not window.prompt() (which
+          the user found silently did nothing on click). */}
+      {resetTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4">
+          <div className="bg-white rounded-xl w-full max-w-sm p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold flex items-center gap-1.5"><KeyRound size={15} className="text-slate-500" /> {t("重置员工密码", "Reset Staff Password")}</div>
+              <button onClick={() => setResetTarget(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+            </div>
+            <div className="space-y-3 text-sm">
+              <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                <div className="font-medium">{resetTarget.fullName}</div>
+                <div className="text-xs text-slate-500">{resetTarget.email}</div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">{t("新密码", "New Password")}</label>
+                <input
+                  type="text"
+                  value={resetPassword}
+                  onChange={(e) => setResetPassword(e.target.value)}
+                  placeholder={t("至少6位", "Min 6 characters")}
+                  autoFocus
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:border-teal-400"
+                />
+              </div>
+              {resetError && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">{resetError}</div>}
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={() => setResetTarget(null)} className="text-xs px-3 py-2 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
+              <button onClick={submitResetPassword} disabled={resetBusy} className="text-xs px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50">
+                {resetBusy ? t("处理中…", "Working…") : t("确定", "Confirm")}
               </button>
             </div>
           </div>
