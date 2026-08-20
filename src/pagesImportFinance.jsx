@@ -6,13 +6,13 @@ import { QRCodeSVG } from "qrcode.react";
 import {
   Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Info, TrendingUp,
   DollarSign, Sparkles, Bot, Send, Users, Megaphone, Printer, X, Settings, Package, GripVertical, Plus,
-  SlidersHorizontal, History, Eye, ChevronDown, Search,
+  SlidersHorizontal, History, Eye, ChevronDown, Search, Pencil, Trash2, KeyRound, Ban, ShieldCheck,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import {
-  PRODUCTS, PLATFORM_THEME, ROLES, AD_CAMPAIGNS, AD_ROAS_THRESHOLD,
+  PRODUCTS, PLATFORM_THEME, AD_CAMPAIGNS, AD_ROAS_THRESHOLD,
   fmt, statusLabel, warehouseLabel, supabaseClient, mapDbOrder, DEMO_TO_DB_PLATFORM,
 } from "./shared.jsx";
 import { KPICard as KPICardImpl } from "./pagesOverviewOrders.jsx";
@@ -2360,39 +2360,325 @@ export function AIPanel({ t, orders, inventory }) {
 }
 
 /* ============================== Roles ============================== */
+// 员工帐号管理 + 角色权限设定 (2026-08-20, Plan A, approved) — real Supabase
+// Auth accounts via the admin-manage-staff Edge Function (only server-side
+// code ever touches auth.admin.*, this component only calls the function);
+// role_permissions matrix is a real table, editable, but Plan A scope: it
+// records intent only, doesn't yet gate any other module's actual RLS.
 
-const ROLE_EN = { 管理员: "Admin", 运营专员: "Operations", 仓管: "Warehouse", 财务: "Finance", 客服: "Customer Service" };
+const ROLE_META = {
+  admin: { zh: "管理员", en: "Admin" },
+  purchasing: { zh: "采购专员", en: "Purchasing" },
+  warehouse: { zh: "仓管", en: "Warehouse" },
+  finance: { zh: "财务", en: "Finance" },
+  customer_service: { zh: "客服", en: "Customer Service" },
+};
+const ROLE_KEYS = Object.keys(ROLE_META);
 const MODULE_EN = { 订单: "Orders", 库存: "Inventory", 财务: "Finance", AI: "AI", 权限: "Roles" };
+const MODULES = ["订单", "库存", "财务", "AI", "权限"];
+
+// Reads the real error message out of a non-2xx admin-manage-staff response
+// — supabase-js's functions.invoke() only gives a generic "non-2xx" error by
+// default, the actual { error: "..." } body lives on error.context (a real
+// Response object) and has to be read separately.
+async function callStaffApi(action, extra) {
+  const { data, error } = await supabaseClient.functions.invoke("admin-manage-staff", { body: { action, ...extra } });
+  if (error) {
+    let message = error.message;
+    try {
+      if (error.context && typeof error.context.json === "function") {
+        const body = await error.context.json();
+        if (body?.error) message = body.error;
+      }
+    } catch { /* fall back to the generic message */ }
+    return { data: null, error: message };
+  }
+  if (data?.error) return { data: null, error: data.error };
+  return { data, error: null };
+}
 
 export function Roles({ t }) {
-  const modules = ["订单", "库存", "财务", "AI", "权限"];
+  const lang = t("zh", "en");
+  const [staff, setStaff] = useState([]);
+  const [staffLoading, setStaffLoading] = useState(true);
+  const [permissions, setPermissions] = useState([]);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingStaff, setEditingStaff] = useState(null); // null = create mode
+  const [form, setForm] = useState({ fullName: "", email: "", password: "", role: ROLE_KEYS[0], status: "active" });
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [toast, setToast] = useState(null);
+
+  function showToast(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2500);
+  }
+
+  async function loadStaff() {
+    setStaffLoading(true);
+    const { data, error } = await callStaffApi("list", {});
+    if (!error) setStaff(data.staff || []);
+    else console.error("loadStaff failed", error);
+    setStaffLoading(false);
+  }
+
+  async function loadPermissions() {
+    const { data, error } = await supabaseClient.from("role_permissions").select("role, module, allowed");
+    if (!error) setPermissions(data || []);
+    else console.error("loadPermissions failed", error);
+  }
+
+  useEffect(() => { loadStaff(); loadPermissions(); }, []);
+
+  function openCreateModal() {
+    setEditingStaff(null);
+    setForm({ fullName: "", email: "", password: "", role: ROLE_KEYS[0], status: "active" });
+    setErrorMsg("");
+    setModalOpen(true);
+  }
+
+  function openEditModal(s) {
+    setEditingStaff(s);
+    setForm({ fullName: s.fullName, email: s.email, password: "", role: ROLE_KEYS.includes(s.role) ? s.role : ROLE_KEYS[0], status: s.status });
+    setErrorMsg("");
+    setModalOpen(true);
+  }
+
+  async function submitModal() {
+    setErrorMsg("");
+    if (!form.fullName.trim()) { setErrorMsg(t("请输入员工姓名", "Please enter a name")); return; }
+    setBusy(true);
+    if (editingStaff) {
+      const { error } = await callStaffApi("update", { userId: editingStaff.id, fullName: form.fullName, role: form.role });
+      if (error) { setBusy(false); setErrorMsg(error); return; }
+      if (form.status !== editingStaff.status) {
+        const { error: statusErr } = await callStaffApi("setStatus", { userId: editingStaff.id, status: form.status });
+        if (statusErr) { setBusy(false); setErrorMsg(statusErr); return; }
+      }
+      setBusy(false);
+      setModalOpen(false);
+      showToast(t("已更新工作人员", "Staff account updated"));
+      loadStaff();
+    } else {
+      if (!form.email.trim() || !form.password) { setBusy(false); setErrorMsg(t("请填写登入帐号与预设密码", "Please fill in the login email and default password")); return; }
+      const { data, error } = await callStaffApi("create", { fullName: form.fullName, email: form.email, password: form.password, role: form.role });
+      if (error) { setBusy(false); setErrorMsg(error); return; }
+      if (form.status === "disabled" && data?.id) {
+        await callStaffApi("setStatus", { userId: data.id, status: "disabled" });
+      }
+      setBusy(false);
+      setModalOpen(false);
+      showToast(t("已创建工作人员帐号", "Staff account created"));
+      loadStaff();
+    }
+  }
+
+  async function handleResetPassword(s) {
+    const pwd = window.prompt(t(`为「${s.fullName}」设置新密码（至少6位）：`, `Set a new password for "${s.fullName}" (min 6 characters):`));
+    if (!pwd) return;
+    if (pwd.length < 6) { window.alert(t("密码至少需要6位", "Password must be at least 6 characters")); return; }
+    const { error } = await callStaffApi("resetPassword", { userId: s.id, newPassword: pwd });
+    if (error) { window.alert(error); return; }
+    showToast(t("密码已重置", "Password has been reset"));
+  }
+
+  async function handleToggleStatus(s) {
+    const nextStatus = s.status === "active" ? "disabled" : "active";
+    if (nextStatus === "disabled" && !window.confirm(t(`确定要禁用「${s.fullName}」的帐号吗？禁用后该帐号将无法登入。`, `Disable "${s.fullName}"'s account? They won't be able to log in while disabled.`))) return;
+    const { error } = await callStaffApi("setStatus", { userId: s.id, status: nextStatus });
+    if (error) { window.alert(error); return; }
+    loadStaff();
+  }
+
+  async function handleDelete(s) {
+    if (!window.confirm(t(`确定要删除工作人员「${s.fullName}」吗？此操作无法撤销。`, `Delete staff account "${s.fullName}"? This cannot be undone.`))) return;
+    const { error } = await callStaffApi("delete", { userId: s.id });
+    if (error) { window.alert(error); return; }
+    showToast(t("已删除工作人员", "Staff account deleted"));
+    loadStaff();
+  }
+
+  // Plan A: real, persisted, owner-editable — but display-only intent, not
+  // yet wired into any other table's RLS (see module comment above).
+  async function togglePermission(role, module) {
+    const current = permissions.find((p) => p.role === role && p.module === module);
+    const nextAllowed = !(current?.allowed ?? false);
+    setPermissions((prev) => {
+      const exists = prev.some((p) => p.role === role && p.module === module);
+      if (exists) return prev.map((p) => (p.role === role && p.module === module ? { ...p, allowed: nextAllowed } : p));
+      return [...prev, { role, module, allowed: nextAllowed }];
+    });
+    const { error } = await supabaseClient.from("role_permissions")
+      .upsert({ role, module, allowed: nextAllowed, updated_at: new Date().toISOString() }, { onConflict: "role,module" });
+    if (error) { console.error("togglePermission failed", error); loadPermissions(); }
+  }
+
+  const userCountByRole = ROLE_KEYS.reduce((acc, r) => { acc[r] = staff.filter((s) => s.role === r).length; return acc; }, {});
+
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-4">
-      <div className="flex items-center gap-1.5 text-sm font-medium mb-3"><Users size={14} className="text-slate-500"/> {t("角色与权限矩阵", "Roles & Permissions Matrix")}</div>
-      <div className="overflow-x-auto">
-      <table className="w-full text-sm min-w-[500px]">
-        <thead>
-          <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
-            <th className="py-2 pr-3 font-medium">{t("角色", "Role")}</th>
-            <th className="py-2 pr-3 font-medium">{t("用户数", "Users")}</th>
-            {modules.map((m) => (<th key={m} className="py-2 pr-3 font-medium text-center">{t(m, MODULE_EN[m] || m)}</th>))}
-          </tr>
-        </thead>
-        <tbody>
-          {ROLES.map((r) => (
-            <tr key={r.role} className="border-b border-slate-100 last:border-0">
-              <td className="py-2.5 pr-3 font-medium">{t(r.role, ROLE_EN[r.role] || r.role)}</td>
-              <td className="py-2.5 pr-3 tabular-nums text-slate-500">{r.users}</td>
-              {modules.map((m) => (
-                <td key={m} className="py-2.5 pr-3 text-center">
-                  {r.perms[m] ? <CheckCircle2 size={15} className="text-emerald-500 inline" /> : <span className="text-slate-200">—</span>}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="space-y-4">
+      {/* 员工帐号管理 */}
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-1.5 text-sm font-medium"><Users size={14} className="text-slate-500" /> {t("员工帐号管理", "Staff Account Management")}</div>
+          <button onClick={openCreateModal} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-teal-600 text-white hover:bg-teal-700">
+            <Plus size={13} /> {t("新增工作人员", "Add Staff")}
+          </button>
+        </div>
+        {staffLoading ? (
+          <div className="text-xs text-slate-400 py-6 text-center">{t("加载中…", "Loading…")}</div>
+        ) : staff.length === 0 ? (
+          <div className="text-xs text-slate-400 py-6 text-center">{t("暂无工作人员", "No staff accounts yet")}</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[700px]">
+              <thead>
+                <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+                  <th className="py-2 pr-3 font-medium">{t("姓名", "Name")}</th>
+                  <th className="py-2 pr-3 font-medium">{t("账号", "Email")}</th>
+                  <th className="py-2 pr-3 font-medium">{t("角色", "Role")}</th>
+                  <th className="py-2 pr-3 font-medium">{t("状态", "Status")}</th>
+                  <th className="py-2 pr-3 font-medium">{t("最后登录时间", "Last Login")}</th>
+                  <th className="py-2 pr-3 font-medium text-right">{t("操作", "Actions")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {staff.map((s) => (
+                  <tr key={s.id} className="border-b border-slate-100 last:border-0">
+                    <td className="py-2.5 pr-3 font-medium">{s.fullName}</td>
+                    <td className="py-2.5 pr-3 text-slate-500">{s.email}</td>
+                    <td className="py-2.5 pr-3">
+                      {ROLE_KEYS.includes(s.role)
+                        ? <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{t(ROLE_META[s.role].zh, ROLE_META[s.role].en)}</span>
+                        : <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-400">{s.role}</span>}
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <span className={`text-xs px-2 py-0.5 rounded-full border ${s.status === "active" ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-400 border-slate-200"}`}>
+                        {s.status === "active" ? t("启用", "Active") : t("禁用", "Disabled")}
+                      </span>
+                    </td>
+                    <td className="py-2.5 pr-3 text-slate-500 text-xs tabular-nums">
+                      {s.lastSignInAt ? new Date(s.lastSignInAt).toLocaleString(lang === "zh" ? "zh-CN" : "en-US") : t("从未登录", "Never")}
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button onClick={() => openEditModal(s)} title={t("编辑", "Edit")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Pencil size={13} /></button>
+                        <button onClick={() => handleResetPassword(s)} title={t("重置密码", "Reset Password")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><KeyRound size={13} /></button>
+                        <button onClick={() => handleToggleStatus(s)} title={s.status === "active" ? t("禁用", "Disable") : t("启用", "Enable")} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Ban size={13} /></button>
+                        <button onClick={() => handleDelete(s)} title={t("删除", "Delete")} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50"><Trash2 size={13} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
+
+      {/* 角色与权限矩阵 */}
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="flex items-center gap-1.5 text-sm font-medium mb-3"><ShieldCheck size={14} className="text-slate-500" /> {t("角色与权限矩阵", "Roles & Permissions Matrix")}</div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[500px]">
+            <thead>
+              <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
+                <th className="py-2 pr-3 font-medium">{t("角色", "Role")}</th>
+                <th className="py-2 pr-3 font-medium">{t("用户数", "Users")}</th>
+                {MODULES.map((m) => (<th key={m} className="py-2 pr-3 font-medium text-center">{t(m, MODULE_EN[m] || m)}</th>))}
+              </tr>
+            </thead>
+            <tbody>
+              {ROLE_KEYS.map((roleKey) => (
+                <tr key={roleKey} className="border-b border-slate-100 last:border-0">
+                  <td className="py-2.5 pr-3 font-medium">{t(ROLE_META[roleKey].zh, ROLE_META[roleKey].en)}</td>
+                  <td className="py-2.5 pr-3 tabular-nums text-slate-500">{userCountByRole[roleKey]}</td>
+                  {MODULES.map((m) => {
+                    const perm = permissions.find((p) => p.role === roleKey && p.module === m);
+                    const allowed = perm?.allowed ?? false;
+                    return (
+                      <td key={m} className="py-2.5 pr-3 text-center">
+                        <button onClick={() => togglePermission(roleKey, m)} className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-slate-50">
+                          {allowed ? <CheckCircle2 size={16} className="text-emerald-500" /> : <span className="inline-block h-3.5 w-3.5 rounded border border-slate-300" />}
+                        </button>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="text-[11px] text-slate-400 mt-3">
+          {t("提示：以上权限矩阵目前仅作记录用途，尚未与各模块的实际访问权限联动。", "Note: this matrix currently records intent only — it doesn't yet gate actual access to other modules.")}
+        </div>
+      </div>
+
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-[60] bg-slate-900 text-white text-xs px-4 py-2.5 rounded-lg shadow-lg">{toast}</div>
+      )}
+
+      {modalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4">
+          <div className="bg-white rounded-xl w-full max-w-md p-5 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold">{editingStaff ? t("编辑工作人员", "Edit Staff") : t("新增工作人员", "Add Staff")}</div>
+              <button onClick={() => setModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+            </div>
+            <div className="space-y-3 text-sm">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">{t("员工姓名", "Full Name")}</label>
+                <input value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} className="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:border-teal-400" />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">{t("登入帐号 / Email", "Login Email")}</label>
+                <input
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  disabled={!!editingStaff}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:border-teal-400 disabled:bg-slate-50 disabled:text-slate-400"
+                />
+                {editingStaff && <div className="text-[11px] text-slate-400 mt-1">{t("邮箱创建后不可修改", "Email can't be changed after account creation")}</div>}
+              </div>
+              {!editingStaff && (
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">{t("预设密码", "Default Password")}</label>
+                  <input
+                    type="text"
+                    value={form.password}
+                    onChange={(e) => setForm({ ...form, password: e.target.value })}
+                    placeholder={t("至少6位", "Min 6 characters")}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:border-teal-400"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">{t("所属角色", "Role")}</label>
+                <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:border-teal-400">
+                  {ROLE_KEYS.map((r) => (<option key={r} value={r}>{t(ROLE_META[r].zh, ROLE_META[r].en)}</option>))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">{t("帐号状态", "Account Status")}</label>
+                <button
+                  onClick={() => setForm({ ...form, status: form.status === "active" ? "disabled" : "active" })}
+                  className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border ${form.status === "active" ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-500 border-slate-200"}`}
+                >
+                  {form.status === "active" ? <CheckCircle2 size={13} /> : <Ban size={13} />}
+                  {form.status === "active" ? t("启用", "Active") : t("禁用", "Disabled")}
+                </button>
+              </div>
+              {errorMsg && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">{errorMsg}</div>}
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={() => setModalOpen(false)} className="text-xs px-3 py-2 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
+              <button onClick={submitModal} disabled={busy} className="text-xs px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50">
+                {busy ? t("处理中…", "Working…") : t("保存", "Save")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
