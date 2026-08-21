@@ -2147,23 +2147,39 @@ const CANCELLABLE_PLATFORM_STATUSES = new Set([
 ]);
 
 // TikTok Shop MY commission is NOT a flat rate in reality — it varies by
-// product category, Marketplace vs. Mall store type, and BXP participation
-// (roughly ~4% to 15.66%+ per TikTok's published fee schedule). Neither
-// `order` nor `order.items[]` currently carries a category or a real
-// per-item commission rate (see mapDbOrder in shared.jsx — no `category`/
-// `commissionRate` field is synced onto order_items today), so this map is
-// NOT yet live-wired to any real order — it's a configurable placeholder,
-// ready to be looked up by item.category the moment that field exists.
-// **Rates below are illustrative placeholders spanning TikTok's known
-// range, not independently verified against TikTok's real current rate
-// card — confirm/replace before treating them as authoritative.**
+// product category, Marketplace vs. Mall store type, and BXP participation.
+// Neither `order` nor `order.items[]` currently carries a category or a
+// real per-item commission rate (see mapDbOrder in shared.jsx — no
+// `category`/`commissionRate` field is synced onto order_items today), so
+// this map is NOT yet live-wired to any real order — a configurable
+// placeholder, ready to be looked up by item.category the moment that field
+// exists. **Rates sourced 2026-08-21 from TikTok Shop MY's published fee
+// schedule via third-party seller-fee guides (Inseller, EZCON, TechNave —
+// not TikTok's own dashboard, since no login is available in this
+// environment) — treat as a good-faith estimate, not an authoritative
+// number pulled directly from TikTok.**
 const TIKTOK_CATEGORY_COMMISSION_RATES = {
-  "摩托车配件": 0.05,
-  "机油/化学品": 0.06,
-  "头盔/护具": 0.08,
-  "轮胎": 0.05,
+  "电子/3C": 0.0702,
+  "时尚/日用百货": 0.0837, // also this file's DEFAULT_TIKTOK_COMMISSION_RATE
+  "食品饮料": 0.1026,
 };
-const DEFAULT_TIKTOK_COMMISSION_RATE = platformFeeRate("TikTok Shop").commission; // 0.05, existing known real fallback rate
+const DEFAULT_TIKTOK_COMMISSION_RATE = 0.0837; // Fashion/General-goods tier — closest fit for motor parts among the sourced tiers
+
+// Real per-order-value fee components sourced the same way/date as the
+// commission map above (Inseller/EZCON/TechNave, 2026-08-21) — not pulled
+// from TikTok's own dashboard directly:
+// - Transaction Fee: 3.78% of order value (SST-inclusive per source).
+// - BXP (Bonus Cashback / Voucher Xtra service fee): ~4.86%, only actually
+//   charged to sellers enrolled in TikTok's Bonus Extra Programme. No
+//   per-store BXP-enrollment flag exists in this codebase yet, so this is
+//   applied by default (matches the common case) — set to 0 below if a
+//   given store is confirmed NOT enrolled.
+// - Platform Support Fee: a FLAT RM0.50 + 8% SST = RM0.54 per successfully
+//   delivered order (not a %, doesn't scale with order value), effective
+//   2026-02-15 per TikTok's own Seller University page.
+const TIKTOK_TRANSACTION_FEE_RATE = 0.0378;
+const TIKTOK_BXP_RATE = 0.0486;
+const TIKTOK_PLATFORM_SUPPORT_FEE_FLAT = 0.54;
 
 // Resolves the commission rate for one order item, in priority order:
 // (1) an explicit per-item rate if the order API ever supplies one,
@@ -2179,48 +2195,103 @@ function resolveTikTokCommissionRate(item) {
   return DEFAULT_TIKTOK_COMMISSION_RATE;
 }
 
-// TikTok-only pre-settlement estimate, rebuilt 2026-08-21 to mirror TikTok
+// Affiliate commission ONLY ever appears here if the order/item actually
+// carries real creator-attribution data — never a guessed default rate,
+// per explicit instruction (self-sold orders are legitimately 0, and a
+// flat fake % would misstate them). Checks, in order: (1) an explicit
+// per-item amount, (2) a per-item rate combined with the order-level
+// isAffiliateOrder flag, (3) falls through to 0 with no fee line at all.
+// None of these fields exist in mapDbOrder (shared.jsx) or order_items
+// today — this only activates once a real TikTok affiliate/creator sync is
+// built; until then every order correctly computes to exactly 0 here.
+function resolveTikTokAffiliateCommission(o, lineItems) {
+  return +lineItems
+    .reduce((sum, it) => {
+      if (it.affiliateCommission != null) return sum + Number(it.affiliateCommission);
+      if (o.isAffiliateOrder && it.affiliateRate != null) return sum + it.unitPrice * it.qty * Number(it.affiliateRate);
+      return sum;
+    }, 0)
+    .toFixed(2);
+}
+
+// BXP (2026-08-21, tightened per explicit instruction) — like affiliate
+// commission above, this is an OPTIONAL programme fee, not a standard
+// per-order charge every seller pays, so it must never apply unless the
+// order payload explicitly confirms enrollment. No such flag
+// (`o.isBxpParticipant` or similar) exists in mapDbOrder/order_items today
+// — so this now always computes to 0 until a real flag is wired up,
+// replacing the earlier "applied by default" placeholder.
+function resolveTikTokBxpFee(o, revenue) {
+  if (!o.isBxpParticipant) return 0;
+  return +(revenue * TIKTOK_BXP_RATE).toFixed(2);
+}
+
+// TikTok-only pre-settlement ESTIMATE, rebuilt 2026-08-21 to mirror TikTok
 // Seller Center's real "Order Settlement" breakdown structure, scoped
 // strictly to this Order Drawer — does NOT touch pagesImportFinance.jsx's
 // shared estimatedBreakdown()/platformFeeRate() (Finance page keeps using
-// those exactly as before, Shopee untouched). Est. Revenue = subtotal after
-// seller discounts; no per-order seller-discount field is tracked yet, so
-// this is simply gross, summed across every real order item (order.items,
-// falling back to the single order.unitPrice*qty if items is empty) rather
-// than just the one representative item. Total = Est. Revenue - sum of
-// Est. Fees, matching TikTok's real "预估结算金额" formula. Commission is
-// now itemized per line (resolveTikTokCommissionRate above) and summed, so
-// it's ready to reflect real per-category rates once that data exists —
-// today it's the flat default for every item, so the total is unchanged
-// from before. Transaction Fee (1%) reuses platformFeeRate()'s known real
-// rate; Est. Seller Shipping Fee reuses order.shippingFee, the only real
-// per-order shipping figure available pre-settlement (same fallback
-// incomeBreakdown() uses for TikTok's real net-shipping field). Affiliate
-// Commission / BXP (Bonus Cashback + Voucher Xtra Service Fee) / Platform
-// Support Fee have NO real per-order data source yet (affiliate depends on
-// which creator drove the order, BXP/support fee depend on which campaigns
-// applied) — left at 0 rather than fabricated, and simply drop out of the
-// list via the existing zero-amount filter below (RM0 → hidden) until real
-// order-level data for them is wired up.
+// its own, older flat 5%/1%/1% rates exactly as before; Shopee untouched).
+// This function only ever runs for orders that do NOT yet have a real
+// settlement row (see ShopeeStyleOrderDrawerContent below: `hasRealData ?
+// incomeBreakdown(...) : tiktokEstimatedBreakdown(...)`).
+//
+// A previous version of this function checked `o.settlement_detail`/
+// `o.financial_breakdown` on the ORDER object for an exact pass-through —
+// removed 2026-08-21 after live-verifying (read-only SQL against
+// order_settlements) that this was never the real mechanism and could
+// never fire: TikTok's REAL settlement data already flows through a
+// completely different, already-working path — ShopeeStyleOrderDrawerContent
+// live-queries the `order_settlements` table directly (see `settlement`
+// state above) and, once a row exists, calls incomeBreakdown() instead of
+// this function entirely. That live query confirmed order_settlements
+// already has real, populated tiktok_commission_fee/tiktok_transaction_fee/
+// tiktok_affiliate_commission/tiktok_platform_discount/
+// tiktok_seller_shipping_fee columns (synced by whatever process writes
+// this table — no matching edge function exists in this repo checkout, so
+// it was deployed directly to Supabase, consistent with this project's
+// established ad-hoc-then-undocumented deploy pattern) — real affiliate
+// commission and seller shipping fee are BOTH already present on real
+// settled orders (e.g. order 584955514059129965: affiliate RM0.98, seller
+// shipping RM1.30). incomeBreakdown() (pagesImportFinance.jsx) reads the
+// first 4 of those 5 columns already; tiktok_seller_shipping_fee is real
+// and synced but wasn't being surfaced as a fee line — fixed below via a
+// local addition in the real-data branch instead of editing that shared
+// function, per explicit "don't touch pagesImportFinance.jsx" scope (see
+// incomeDetail below). The same live check found NO bxp_service_fee /
+// platform_support_fee field anywhere in TikTok's real synced
+// statement_transactions payload — confirms those two genuinely have no
+// real per-order data source today, not just "not wired up yet".
+//
+// Est. Revenue = subtotal after seller discounts; no per-order seller-
+// discount field is tracked yet, so this is simply gross, summed across
+// every real order item. Commission/Transaction Fee/Platform Support Fee
+// are TikTok's real standard per-order rates (not optional programmes) —
+// always computed. BXP and Affiliate Commission are OPTIONAL programme
+// fees and only ever compute to a non-zero amount when the order payload
+// explicitly confirms participation (resolveTikTokBxpFee /
+// resolveTikTokAffiliateCommission above) — both correctly resolve to 0 on
+// every real (still-unsettled) order today, no fallback guess rate,
+// matching the mandate that no fee line may ever be a guessed default.
+// Total = Est. Revenue - sum of Est. Fees; zero-amount lines drop out of
+// the list automatically.
 function tiktokEstimatedBreakdown(o, t) {
   const lineItems = o.items && o.items.length > 0 ? o.items : [{ unitPrice: o.unitPrice, qty: o.qty }];
   const revenue = +lineItems.reduce((sum, it) => sum + it.unitPrice * it.qty, 0).toFixed(2);
   const commissionAmt = +lineItems
     .reduce((sum, it) => sum + it.unitPrice * it.qty * resolveTikTokCommissionRate(it), 0)
     .toFixed(2);
-  const rate = platformFeeRate("TikTok Shop");
-  const transactionAmt = +(revenue * rate.transaction).toFixed(2);
+  const transactionAmt = +(revenue * TIKTOK_TRANSACTION_FEE_RATE).toFixed(2);
+  const bxpAmt = resolveTikTokBxpFee(o, revenue);
+  const platformSupportAmt = TIKTOK_PLATFORM_SUPPORT_FEE_FLAT;
   const shippingAmt = +(o.shippingFee || 0).toFixed(2);
-  const affiliateAmt = 0;
-  const bxpAmt = 0;
-  const platformSupportAmt = 0;
+  const affiliateAmt = Number(resolveTikTokAffiliateCommission(o, lineItems));
   const fees = [
     { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
-    { label: t("预估交易费", "Est. Transaction Fee"), amount: transactionAmt, pct: rate.transaction * 100 },
+    { label: t("预估交易费", "Est. Transaction Fee"), amount: transactionAmt, pct: TIKTOK_TRANSACTION_FEE_RATE * 100 },
+    { label: t("红利返现/超级福袋服务费 (BXP)", "Bonus Cashback / Voucher Xtra Service Fee (BXP)"), amount: bxpAmt, pct: revenue > 0 ? (bxpAmt / revenue) * 100 : 0 },
+    { label: t("平台支持费", "Platform Support Fee"), amount: platformSupportAmt, pct: revenue > 0 ? (platformSupportAmt / revenue) * 100 : 0 },
     { label: t("预估卖家运费", "Est. Seller Shipping Fee"), amount: shippingAmt, pct: revenue > 0 ? (shippingAmt / revenue) * 100 : 0 },
-    { label: t("预估达人佣金", "Est. Affiliate Commission"), amount: affiliateAmt, pct: 0 },
-    { label: t("红利返现/超级福袋服务费 (BXP)", "Bonus Cashback / Voucher Xtra Service Fee (BXP)"), amount: bxpAmt, pct: 0 },
-    { label: t("平台扶持费", "Platform Support Fee"), amount: platformSupportAmt, pct: 0 },
+    { label: t("预估达人佣金", "Est. Affiliate Commission"), amount: affiliateAmt, pct: revenue > 0 ? (affiliateAmt / revenue) * 100 : 0 },
   ].filter((f) => f.amount !== 0);
   const totalFees = +fees.reduce((sum, f) => sum + f.amount, 0).toFixed(2);
   return {
@@ -2274,9 +2345,28 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
   // just `!hasRealData` mislabeled that as "最终到账金额" (Final) instead
   // of "预估到账金额" (Estimate) the first time this was wired up.
   const isFinalSettlement = !!(settlement && settlement.is_final);
-  const incomeDetail = hasRealData
-    ? incomeBreakdown(order, settlement, t)
-    : (order.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(order, t) : estimatedBreakdown(order, t));
+  const incomeDetail = (() => {
+    const base = hasRealData
+      ? incomeBreakdown(order, settlement, t)
+      : (order.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(order, t) : estimatedBreakdown(order, t));
+    // TikTok real 卖家运费 (2026-08-21) — order_settlements.tiktok_seller_shipping_fee
+    // is real, already-synced data (verified live via SQL) and already
+    // counted inside the platform's own real settlement_amount/total_fees,
+    // but incomeBreakdown() (pagesImportFinance.jsx) doesn't itemize it as
+    // a visible fee line yet. Appended here instead of editing that shared
+    // function, per explicit "don't touch pagesImportFinance.jsx" scope —
+    // purely additive/cosmetic, does not change orderIncome (still the
+    // platform's own real number), just surfaces a real deduction that was
+    // previously invisible in this breakdown.
+    if (hasRealData && order.platform === "TikTok Shop") {
+      const shippingFee = Number(settlement.tiktok_seller_shipping_fee || 0);
+      if (shippingFee !== 0) {
+        const pct = base.merchandiseSubtotal > 0 ? (shippingFee / base.merchandiseSubtotal) * 100 : 0;
+        return { ...base, fees: [...base.fees, { label: t("卖家运费", "Seller Shipping Fee"), amount: shippingFee, pct }] };
+      }
+    }
+    return base;
+  })();
   // Real buyer_payment_info (2026-08-20) — Shopee's own get_escrow_detail
   // response, same raw_response already stored by shopee-pending-estimate-sync.
   const buyerPaymentInfo = settlement?.raw_response?.response?.buyer_payment_info || null;
