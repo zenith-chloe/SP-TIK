@@ -2345,45 +2345,15 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
   // just `!hasRealData` mislabeled that as "最终到账金额" (Final) instead
   // of "预估到账金额" (Estimate) the first time this was wired up.
   const isFinalSettlement = !!(settlement && settlement.is_final);
-  const incomeDetail = (() => {
-    const base = hasRealData
-      ? incomeBreakdown(order, settlement, t)
-      : (order.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(order, t) : estimatedBreakdown(order, t));
-    if (!(hasRealData && order.platform === "TikTok Shop")) return base;
-
-    // TikTok real 卖家运费 (2026-08-21) — order_settlements.tiktok_seller_shipping_fee
-    // is real, already-synced data (verified live via SQL) and already
-    // counted inside the platform's own real settlement_amount/total_fees,
-    // but incomeBreakdown() (pagesImportFinance.jsx) doesn't itemize it as
-    // a visible fee line yet. Appended here instead of editing that shared
-    // function, per explicit "don't touch pagesImportFinance.jsx" scope —
-    // purely additive/cosmetic, does not change orderIncome (still the
-    // platform's own real number), just surfaces a real deduction that was
-    // previously invisible in this breakdown.
-    const shippingFee = Number(settlement.tiktok_seller_shipping_fee || 0);
-    const fees = shippingFee !== 0
-      ? [...base.fees, { label: t("卖家运费", "Seller Shipping Fee"), amount: shippingFee, pct: base.merchandiseSubtotal > 0 ? (shippingFee / base.merchandiseSubtotal) * 100 : 0 }]
-      : base.fees;
-
-    // Reconciliation plug (2026-08-21) — TikTok's real synced payload has NO
-    // bxp_service_fee/platform_support_fee field (confirmed live, see commit
-    // aee1ef6), yet those ARE real deductions TikTok applies before paying
-    // out — they're just baked into the platform's own real
-    // tiktok_settlement_amount without ever being broken out to us as named
-    // line items. This is NOT a guessed rate: every number in the formula
-    // (merchandiseSubtotal, each itemized fee, orderIncome) is already real
-    // synced data — the residual is derived, not estimated, so the totals
-    // always balance exactly by construction. Only shown when positive and
-    // above a 1-cent floating-point tolerance (never fabricated when the
-    // real numbers already reconcile on their own, as most sampled orders do).
-    const itemizedSum = +fees.reduce((sum, f) => sum + f.amount, 0).toFixed(2);
-    const residual = +(base.merchandiseSubtotal - itemizedSum - base.orderIncome).toFixed(2);
-    const fullFees = residual > 0.01
-      ? [...fees, { label: t("其他平台费用 (BXP/支持费)", "Other Platform Fees (BXP / Support Fee)"), amount: residual, pct: base.merchandiseSubtotal > 0 ? (residual / base.merchandiseSubtotal) * 100 : 0 }]
-      : fees;
-
-    return { ...base, fees: fullFees };
-  })();
+  // Seller Shipping Fee + reconciliation catch-all (2026-08-21) — used to be
+  // patched on locally here; moved into incomeBreakdown() itself
+  // (pagesImportFinance.jsx, user-authorized) 2026-08-21 so the Finance page
+  // shows the identical itemized breakdown instead of a shorter one — see
+  // that function's comments for the real-data verification. Nothing left
+  // to do here now; incomeBreakdown()'s result already includes both.
+  const incomeDetail = hasRealData
+    ? incomeBreakdown(order, settlement, t)
+    : (order.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(order, t) : estimatedBreakdown(order, t));
   // Real buyer_payment_info (2026-08-20) — Shopee's own get_escrow_detail
   // response, same raw_response already stored by shopee-pending-estimate-sync.
   const buyerPaymentInfo = settlement?.raw_response?.response?.buyer_payment_info || null;

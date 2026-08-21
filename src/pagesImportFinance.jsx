@@ -530,15 +530,54 @@ export function incomeBreakdown(o, settlement, t) {
   const txns = raw?.statement_transactions ?? [];
   const first = txns[0] ?? {};
   const merchandiseSubtotal = Number(first.net_sales_amount ?? 0);
+  // Real settlement_amount (2026-08-21) — TikTok's own authoritative payout
+  // number, independent of how we itemize fees below.
+  const settlementAmount = Number(settlement.tiktok_settlement_amount ?? settlement.net_settlement ?? 0);
+  const namedFees = [
+    { label: t("平台佣金", "Platform Commission"), amount: Number(settlement.tiktok_commission_fee ?? 0) },
+    { label: t("交易费", "Transaction Fee"), amount: Number(settlement.tiktok_transaction_fee ?? 0) },
+    { label: t("达人佣金", "Affiliate Commission"), amount: Number(settlement.tiktok_affiliate_commission ?? 0) },
+    // 卖家承担运费 (2026-08-21, moved here from pagesOverviewOrders.jsx's
+    // Order Drawer so both pages show it identically) — real, already-synced
+    // tiktok_seller_shipping_fee column.
+    { label: t("卖家承担运费", "Seller Shipping Fee"), amount: Number(settlement.tiktok_seller_shipping_fee ?? 0) },
+  ].filter((f) => f.amount !== 0);
+  // Reconciliation catch-all (2026-08-21, moved here from pagesOverviewOrders.jsx
+  // for the same reason) — TikTok's real raw_response `fee_amount` field is
+  // its own authoritative total deduction, which can be larger than the sum
+  // of the named fields we itemize above (e.g. real order 585582289461216754:
+  // named fees summed to RM10.08, but merchandiseSubtotal - settlementAmount
+  // = RM23.03 — the gap is real TikTok-side deductions with no individually
+  // named/synced field, likely BXP/platform support fee per TikTok's own fee
+  // schedule). Every number in this formula is already real synced data
+  // (merchandiseSubtotal, each named fee, settlementAmount) — the residual is
+  // derived, not guessed, so it only ever appears when positive and above a
+  // 1-cent floating-point tolerance (never fabricated when the real numbers
+  // already reconcile on their own).
+  const namedFeesSum = +namedFees.reduce((sum, f) => sum + f.amount, 0).toFixed(2);
+  const reconciliation = +(merchandiseSubtotal - namedFeesSum - settlementAmount).toFixed(2);
   const fees = withPct(
-    [
-      { label: t("平台佣金", "Platform Commission"), amount: Number(settlement.tiktok_commission_fee ?? 0) },
-      { label: t("交易费", "Transaction Fee"), amount: Number(settlement.tiktok_transaction_fee ?? 0) },
-      { label: t("达人佣金", "Affiliate Commission"), amount: Number(settlement.tiktok_affiliate_commission ?? 0) },
-      { label: t("平台折扣", "Platform Discount"), amount: Number(settlement.tiktok_platform_discount ?? 0) },
-    ].filter((f) => f.amount !== 0),
+    reconciliation > 0.01
+      ? [...namedFees, { label: t("其他平台费用 (BXP/支持费)", "Other Platform Fees (BXP / Support Fee)"), amount: reconciliation }]
+      : namedFees,
     merchandiseSubtotal,
   );
+  // Platform Discount bug fix (2026-08-21, live-verified against real order
+  // 585582289461216754): tiktok_platform_discount was previously listed
+  // inside `fees` (a deduction, rendered in red with a "-" prefix), but
+  // TikTok's real raw_response shows this is money TikTok itself subsidizes
+  // on the seller's behalf (a coupon/discount TikTok funds, not a cost the
+  // seller pays) — real numbers confirm it: merchandiseSubtotal(143.55) -
+  // commission(10.08) - platformDiscount(31.29) = 102.18, which is LESS
+  // than the real orderIncome (120.52) — i.e. treating it as a deduction
+  // made the math impossible to reconcile, the opposite of a subsidy's real
+  // effect. Moved to a separate `credits` array (positive, green "+RM" in
+  // FeeBreakdownPanel) instead of `fees`. Checked Shopee's incomeBreakdown
+  // branch above for the same flaw — it has no discount-shaped field at
+  // all, so this fix is TikTok-only, nothing shared to harmonize.
+  const credits = [
+    { label: t("平台折扣补贴", "Platform Discount Subsidy"), amount: Number(settlement.tiktok_platform_discount ?? 0) },
+  ].filter((c) => c.amount !== 0);
   return {
     buyer: o.customer || "—",
     paymentMethod: o.isCod ? t("货到付款", "Cash on Delivery") : t("线上支付", "Online Payment"),
@@ -547,13 +586,17 @@ export function incomeBreakdown(o, settlement, t) {
     statementDate: first.statement_time ? new Date(Number(first.statement_time) * 1000).toISOString() : settlement.synced_at,
     statementDateIsRealPayoutDate: !!first.statement_time,
     merchandiseSubtotal,
-    shippingSubtotal: Number(first.shipping_fee_amount ?? 0),
+    // Shipping is now itemized as a fee line above ("卖家承担运费", same
+    // source field) instead of also shown as a separate net-shipping info
+    // line here — avoids double-displaying the same real number.
+    shippingSubtotal: 0,
     // TikTok's statement_transactions only reports a net shipping figure,
     // no buyer-paid/logistics-charged split — left null (not fabricated).
     buyerPaidShipping: null,
     logisticsShipping: null,
     fees,
-    orderIncome: Number(settlement.tiktok_settlement_amount ?? settlement.net_settlement ?? 0),
+    credits,
+    orderIncome: settlementAmount,
   };
 }
 
@@ -674,6 +717,24 @@ export function FeeBreakdownPanel({ detail, t, isEstimate, items }) {
           </div>
         )}
       </div>
+      {/* Credits (2026-08-21, new) — platform-funded subsidies/reimbursements
+          (e.g. TikTok's real platform_discount) that ADD to what the seller
+          keeps, shown separately from `fees` so they're never mistaken for a
+          cost. Optional field, empty/absent on every other detail shape
+          (Shopee, estimates) — nothing renders here for those. */}
+      {detail.credits && detail.credits.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-slate-200">
+          <div className="text-slate-400 mb-1.5">{t("平台补贴", "Platform Credits")}</div>
+          <div className="space-y-1">
+            {detail.credits.map((c) => (
+              <div key={c.label} className="flex items-center justify-between text-slate-600">
+                <span>{c.label}</span>
+                <span className="tabular-nums text-emerald-600">+ RM {fmt(c.amount)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {isEstimate && (
         <div className="mt-3 pt-3 border-t border-dashed border-slate-200 text-[11px] text-slate-400">
           {t(
