@@ -2146,36 +2146,76 @@ const CANCELLABLE_PLATFORM_STATUSES = new Set([
   "UNPAID", "READY_TO_SHIP", "AWAITING_SHIPMENT", "PROCESSED", "AWAITING_COLLECTION",
 ]);
 
+// TikTok Shop MY commission is NOT a flat rate in reality — it varies by
+// product category, Marketplace vs. Mall store type, and BXP participation
+// (roughly ~4% to 15.66%+ per TikTok's published fee schedule). Neither
+// `order` nor `order.items[]` currently carries a category or a real
+// per-item commission rate (see mapDbOrder in shared.jsx — no `category`/
+// `commissionRate` field is synced onto order_items today), so this map is
+// NOT yet live-wired to any real order — it's a configurable placeholder,
+// ready to be looked up by item.category the moment that field exists.
+// **Rates below are illustrative placeholders spanning TikTok's known
+// range, not independently verified against TikTok's real current rate
+// card — confirm/replace before treating them as authoritative.**
+const TIKTOK_CATEGORY_COMMISSION_RATES = {
+  "摩托车配件": 0.05,
+  "机油/化学品": 0.06,
+  "头盔/护具": 0.08,
+  "轮胎": 0.05,
+};
+const DEFAULT_TIKTOK_COMMISSION_RATE = platformFeeRate("TikTok Shop").commission; // 0.05, existing known real fallback rate
+
+// Resolves the commission rate for one order item, in priority order:
+// (1) an explicit per-item rate if the order API ever supplies one,
+// (2) a category lookup in TIKTOK_CATEGORY_COMMISSION_RATES if the item
+// carries a category, (3) the flat default. Today every real item falls
+// through to (3) since neither (1) nor (2)'s source fields exist yet — this
+// function is the single place to update once they do.
+function resolveTikTokCommissionRate(item) {
+  if (item.commissionRate != null) return Number(item.commissionRate);
+  if (item.category && TIKTOK_CATEGORY_COMMISSION_RATES[item.category] != null) {
+    return TIKTOK_CATEGORY_COMMISSION_RATES[item.category];
+  }
+  return DEFAULT_TIKTOK_COMMISSION_RATE;
+}
+
 // TikTok-only pre-settlement estimate, rebuilt 2026-08-21 to mirror TikTok
 // Seller Center's real "Order Settlement" breakdown structure, scoped
 // strictly to this Order Drawer — does NOT touch pagesImportFinance.jsx's
 // shared estimatedBreakdown()/platformFeeRate() (Finance page keeps using
 // those exactly as before, Shopee untouched). Est. Revenue = subtotal after
 // seller discounts; no per-order seller-discount field is tracked yet, so
-// this is simply gross (unitPrice*qty), same base incomeBreakdown() uses
-// for the real settled merchandiseSubtotal. Total = Est. Revenue - sum of
-// Est. Fees, matching TikTok's real "预估结算金额" formula. Commission
-// (5%) and Transaction Fee (1%) reuse the existing known real rates from
-// platformFeeRate(); Est. Seller Shipping Fee reuses order.shippingFee, the
-// only real per-order shipping figure available pre-settlement (same
-// fallback incomeBreakdown() uses for TikTok's real net-shipping field).
-// Affiliate Commission / BXP (Bonus Cashback + Voucher Xtra Service Fee) /
-// Platform Support Fee have NO real per-order data source yet (affiliate
-// depends on which creator drove the order, BXP/support fee depend on which
-// campaigns applied) — left at 0 rather than fabricated, and simply drop
-// out of the list via the existing zero-amount filter below until real
+// this is simply gross, summed across every real order item (order.items,
+// falling back to the single order.unitPrice*qty if items is empty) rather
+// than just the one representative item. Total = Est. Revenue - sum of
+// Est. Fees, matching TikTok's real "预估结算金额" formula. Commission is
+// now itemized per line (resolveTikTokCommissionRate above) and summed, so
+// it's ready to reflect real per-category rates once that data exists —
+// today it's the flat default for every item, so the total is unchanged
+// from before. Transaction Fee (1%) reuses platformFeeRate()'s known real
+// rate; Est. Seller Shipping Fee reuses order.shippingFee, the only real
+// per-order shipping figure available pre-settlement (same fallback
+// incomeBreakdown() uses for TikTok's real net-shipping field). Affiliate
+// Commission / BXP (Bonus Cashback + Voucher Xtra Service Fee) / Platform
+// Support Fee have NO real per-order data source yet (affiliate depends on
+// which creator drove the order, BXP/support fee depend on which campaigns
+// applied) — left at 0 rather than fabricated, and simply drop out of the
+// list via the existing zero-amount filter below (RM0 → hidden) until real
 // order-level data for them is wired up.
 function tiktokEstimatedBreakdown(o, t) {
-  const revenue = o.unitPrice * o.qty;
+  const lineItems = o.items && o.items.length > 0 ? o.items : [{ unitPrice: o.unitPrice, qty: o.qty }];
+  const revenue = +lineItems.reduce((sum, it) => sum + it.unitPrice * it.qty, 0).toFixed(2);
+  const commissionAmt = +lineItems
+    .reduce((sum, it) => sum + it.unitPrice * it.qty * resolveTikTokCommissionRate(it), 0)
+    .toFixed(2);
   const rate = platformFeeRate("TikTok Shop");
-  const commissionAmt = +(revenue * rate.commission).toFixed(2);
   const transactionAmt = +(revenue * rate.transaction).toFixed(2);
   const shippingAmt = +(o.shippingFee || 0).toFixed(2);
   const affiliateAmt = 0;
   const bxpAmt = 0;
   const platformSupportAmt = 0;
   const fees = [
-    { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: rate.commission * 100 },
+    { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
     { label: t("预估交易费", "Est. Transaction Fee"), amount: transactionAmt, pct: rate.transaction * 100 },
     { label: t("预估卖家运费", "Est. Seller Shipping Fee"), amount: shippingAmt, pct: revenue > 0 ? (shippingAmt / revenue) * 100 : 0 },
     { label: t("预估达人佣金", "Est. Affiliate Commission"), amount: affiliateAmt, pct: 0 },
@@ -2435,22 +2475,31 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
               >
                 <Copy size={13} /> {t("复制订单号", "Copy Order No.")}
               </button>
-              {/* 即时聊天 (2026-08-20, split; TikTok enabled 2026-08-21) —
-                  pure navigation, no clipboard side effect, no order/buyer
-                  data in the URL (kept generic per no-PII-in-URL policy).
-                  Shopee's /webchat/conversations path was confirmed live NOT
-                  to 404. TikTok's /im path is the user-confirmed choice but
-                  NOT independently verified live in this environment (no
-                  TikTok seller login available here) — flag to the user if
-                  it 404s or redirects unexpectedly. */}
+              {/* 即时聊天 (2026-08-20, split; TikTok reworked 2026-08-21) —
+                  Shopee: pure navigation, unchanged, /webchat/conversations
+                  confirmed live NOT to 404. TikTok: no real deep-link URL
+                  scheme exists (researched — TikTok only exposes a
+                  full OAuth-scoped Customer Service API for this, not a URL
+                  param), so instead of guessing a broken deep link this
+                  copies the order id to the clipboard (same field/pattern as
+                  复制订单号 above) then opens the seller center homepage, so
+                  staff can paste-search it once there. */}
               <button
-                onClick={() => {
+                onClick={async () => {
                   if (order.platform === "Shopee") {
                     window.open("https://seller.shopee.com.my/webchat/conversations", "_blank", "noopener,noreferrer");
                   } else if (order.platform === "TikTok Shop") {
-                    // /im returned "No matching route" live (user-confirmed
-                    // 2026-08-21) — switched to the seller center homepage.
-                    window.open("https://seller-my.tiktok.com/homepage", "_blank", "noopener,noreferrer");
+                    const orderSn = order.platformOrderId || order.id;
+                    if (orderSn) {
+                      try {
+                        await navigator.clipboard.writeText(orderSn);
+                        setChatToast(t("订单号已复制，请在 TikTok 卖家中心粘贴搜索", "Order ID copied! Paste in TikTok Chat to search."));
+                      } catch {
+                        setChatToast(t("复制失败，请手动复制订单号", "Copy failed — please copy the order number manually"));
+                      }
+                      setTimeout(() => setChatToast(null), 2500);
+                    }
+                    window.open("https://seller-my.tiktok.com/", "_blank", "noopener,noreferrer");
                   } else {
                     window.alert(t("即时聊天功能暂未开通", "Live chat isn't available yet"));
                   }
