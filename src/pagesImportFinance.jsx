@@ -641,10 +641,19 @@ export function estimatedBreakdown(o, t) {
 // number pulled directly from TikTok.**
 const TIKTOK_CATEGORY_COMMISSION_RATES = {
   "电子/3C": 0.0702,
-  "时尚/日用百货": 0.0837, // also this file's DEFAULT_TIKTOK_COMMISSION_RATE
+  "时尚/日用百货": 0.0837,
   "食品饮料": 0.1026,
 };
-const DEFAULT_TIKTOK_COMMISSION_RATE = 0.0837; // Fashion/General-goods tier — closest fit for motor parts among the sourced tiers
+// Default changed 0.0837 -> 0.0702 (2026-08-22, user-confirmed) — reverse-
+// solved against real order 585636172703433891 (unsettled, user compared
+// against TikTok Seller Center's own estimate): with transaction(3.78%)
+// and platform support(flat RM0.54) fixed and known-correct, and BXP
+// applied at 4.86%, the only commission rate that makes
+// commission+transaction+BXP+support sum to TikTok's real stated RM19.01
+// total (on RM118 revenue) is exactly 7.02% — matches to the cent. Treated
+// as this store's real effective rate for motorcycle/automotive parts
+// (this store's actual catalog), not a general TikTok-wide claim.
+const DEFAULT_TIKTOK_COMMISSION_RATE = 0.0702;
 
 // Real per-order-value fee components sourced the same way/date as the
 // commission map above (Inseller/EZCON/TechNave, 2026-08-21) — not pulled
@@ -695,13 +704,17 @@ function resolveTikTokAffiliateCommission(o, lineItems) {
     .toFixed(2);
 }
 
-// BXP is an OPTIONAL programme fee, not a standard per-order charge every
-// seller pays, so it must never apply unless the order payload explicitly
-// confirms enrollment. No such flag (`o.isBxpParticipant` or similar)
-// exists in mapDbOrder/order_items today — so this always computes to 0
-// until a real flag is wired up, never a guessed default.
+// BXP now applies by default for every TikTok estimate (2026-08-22,
+// user-confirmed — was previously gated behind a non-existent
+// `o.isBxpParticipant` flag and always computed to 0). Reverse-solved
+// against real order 585636172703433891 (see DEFAULT_TIKTOK_COMMISSION_RATE
+// above for the full derivation): TikTok's real stated estimate for this
+// store only reconciles to the cent when BXP is included at 4.86% — the
+// user confirmed this store is an active BXP participant. `o.isBxpParticipant`
+// still short-circuits to 0 if a future real per-store flag is wired up and
+// explicitly set false, so this isn't a dead code path.
 function resolveTikTokBxpFee(o, revenue) {
-  if (!o.isBxpParticipant) return 0;
+  if (o.isBxpParticipant === false) return 0;
   return +(revenue * TIKTOK_BXP_RATE).toFixed(2);
 }
 
