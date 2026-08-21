@@ -243,6 +243,20 @@ async function syncFulfillmentToPlatform(_order) {
 export default function App() {
   const [session, setSession] = useState(undefined); // undefined = checking, null = logged out
   const [myRole, setMyRole] = useState(null);
+  const [myStoreIds, setMyStoreIds] = useState([]);
+  // 数据范围过滤 (2026-08-20) — loadRealData is called from a bunch of
+  // places (the initial-load effect, the 20s silent-refresh setInterval,
+  // and every mutation function's `loadRealData(true)` afterward), several
+  // of which capture a loadRealData closure once and never refresh it (the
+  // interval effect below only depends on [session], not myRole/
+  // myStoreIds). Reading myRole/myStoreIds directly out of state inside
+  // loadRealData would mean some of those captured closures see a stale
+  // (possibly still-null) role forever. Refs sidestep that: the object
+  // identity never changes, only .current, so every call site — no matter
+  // which render's closure is invoked — always reads the latest resolved
+  // value.
+  const myRoleRef = useRef(null);
+  const myStoreIdsRef = useRef([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [orders, setOrders] = useState([]);
   const [inventory, setInventory] = useState([]);
@@ -296,12 +310,17 @@ export default function App() {
   // (not part of the current warehouse/staff workflow) — this is the only
   // place the frontend needs to know its own role, purely for hiding nav
   // items and gating these two tabs. Actual write protection already lives
-  // in RLS regardless of this.
+  // in RLS regardless of this. store_ids fetched alongside role (2026-08-20)
+  // for the data-scope filtering below — same one query, same lifecycle,
+  // so the two never resolve out of sync with each other.
   useEffect(() => {
-    if (!session) { setMyRole(null); return; }
-    supabaseClient.from("profiles").select("role").eq("id", session.user.id).maybeSingle()
-      .then(({ data }) => setMyRole(data?.role || "staff"));
+    if (!session) { setMyRole(null); setMyStoreIds([]); return; }
+    supabaseClient.from("profiles").select("role, store_ids").eq("id", session.user.id).maybeSingle()
+      .then(({ data }) => { setMyRole(data?.role || "staff"); setMyStoreIds(data?.store_ids || []); });
   }, [session]);
+
+  useEffect(() => { myRoleRef.current = myRole; }, [myRole]);
+  useEffect(() => { myStoreIdsRef.current = myStoreIds; }, [myStoreIds]);
 
   const ORDER_COLUMNS = "id, order_no, platform, platform_account_id, buyer_name, buyer_phone, shipping_address, buyer_user_id, buyer_username, tracking_no, courier, order_status, platform_status, warehouse_stage, cancel_stage, is_cod, shipping_fee, order_date, ship_deadline, delivery_option, print_count, last_printed_at, last_printed_by, note_color, note_text, updated_at";
 
@@ -356,14 +375,47 @@ export default function App() {
     // full reload so it stays a reliable "get me the real state" escape hatch.
     const isIncremental = silent && lastSyncAtRef.current;
 
+    // 数据范围过滤 (2026-08-20, approved) — non-owner staff only see orders/
+    // products/stores belonging to their profiles.store_ids. Reads from the
+    // refs (see myRoleRef/myStoreIdsRef above), never the raw state, so
+    // every call site gets the current value regardless of which render's
+    // closure invoked it. isOwner === true bypasses ALL filtering below —
+    // this is the one condition that must never be wrong, so it's checked
+    // once here and reused, not re-derived per query.
+    const isOwner = myRoleRef.current === "owner";
+    // A syntactically-valid but unassignable UUID — used instead of an
+    // empty array for .in() so "owner-less / zero stores assigned" reliably
+    // returns zero rows via a real WHERE clause, rather than depending on
+    // PostgREST's handling of `.in(col, [])` (inconsistent across versions,
+    // not worth relying on for an access-control boundary).
+    const NO_MATCH_ID = "00000000-0000-0000-0000-000000000000";
+    const scopedStoreIds = myStoreIdsRef.current.length > 0 ? myStoreIdsRef.current : [NO_MATCH_ID];
+
     let ordersQuery = supabaseClient.from("orders").select(ORDER_COLUMNS);
     ordersQuery = isIncremental
       ? ordersQuery.gt("updated_at", lastSyncAtRef.current)
       : ordersQuery.order("order_date", { ascending: false }).limit(5000);
+    if (!isOwner) ordersQuery = ordersQuery.in("platform_account_id", scopedStoreIds);
+
+    let accountsQuery = supabaseClient.from("platform_accounts").select("id, platform, account_name, shop_id, created_at, token_expires_at, seller_name, seller_address, seller_phone, logo_url, font_color, font_style, badge_color, shop_note").eq("hidden", false);
+    if (!isOwner) accountsQuery = accountsQuery.in("id", scopedStoreIds);
+
+    // Products deliberately NOT store-filtered (2026-08-20) — checked live:
+    // all 23 real products have listed_shop_id = null (an unused/legacy
+    // column, never actually populated by any real workflow), and this
+    // business's real model is one physical SKU listed across multiple
+    // stores/platforms at once (confirmed earlier this session — the same
+    // SKU appears in order_items across different Shopee shops and TikTok
+    // simultaneously), not a SKU "belonging" to exactly one store. Filtering
+    // Product Master by listed_shop_id would make it permanently empty for
+    // every non-owner regardless of correct store_ids — a regression, not a
+    // real access-control boundary. Left unfiltered pending a real decision
+    // on what "product access scope" should even mean for this business.
+    const productsQuery = supabaseClient.from("products").select("id, sku, name, warehouse_a_qty, warehouse_b_qty, listed_shop_id, location, location_id, price, weight_kg, unit, image_url, category, brand, part_number, barcode, cost_price, status, autocount_item_code");
 
     const [accountsRes, productsRes, suppliersRes, purchaseOrdersRes, ordersRes, transferLogsRes, warehouseLocationsRes, adjustmentRequestsRes, cancellationRecordsRes] = await Promise.all([
-      supabaseClient.from("platform_accounts").select("id, platform, account_name, shop_id, created_at, token_expires_at, seller_name, seller_address, seller_phone, logo_url, font_color, font_style, badge_color, shop_note").eq("hidden", false),
-      supabaseClient.from("products").select("id, sku, name, warehouse_a_qty, warehouse_b_qty, listed_shop_id, location, location_id, price, weight_kg, unit, image_url, category, brand, part_number, barcode, cost_price, status, autocount_item_code"),
+      accountsQuery,
+      productsQuery,
       supabaseClient.from("suppliers").select("id, name, contact_person, phone, email, address, payment_terms, status, notes"),
       supabaseClient.from("purchase_orders").select("id, po_no, supplier_id, supplier_name, status, order_date, expected_date, total_amount, notes, purchase_order_items(id, product_id, sku, product_name, qty, unit_cost, subtotal)").order("created_at", { ascending: false }),
       ordersQuery,
@@ -411,9 +463,17 @@ export default function App() {
     if (!silent) setDataLoading(false);
   }
 
+  // 2026-08-20: waits for myRole to resolve (not just session) before the
+  // first real load — loadRealData below filters by role/store_ids, and
+  // firing it while myRole is still null (profile fetch hasn't returned
+  // yet) would either show unfiltered data to a non-owner for one frame or
+  // require a separate "unknown role" branch. Simplest correct fix: just
+  // don't call it until both are known. This effect only fires once more
+  // than before (once on session, once when myRole resolves from null to
+  // its real value) — not a new poll loop.
   useEffect(() => {
-    if (session) loadRealData();
-  }, [session]);
+    if (session && myRole !== null) loadRealData();
+  }, [session, myRole]);
 
   useEffect(() => {
     if (!session) return;

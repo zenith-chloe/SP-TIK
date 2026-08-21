@@ -1049,26 +1049,39 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
     return () => { cancelled = true; };
   }, [activePlatform, activeStore, visibleAccountIds]);
 
-  // COMPLETED card — real platform_status === "COMPLETED", both platforms
-  // at once (unlike cardCounts above, this isn't scoped to activePlatform,
-  // since the card shows Shopee+TikTok side by side regardless of which
-  // platform tab is active). Same `{count:"exact",head:true}` pattern as
-  // cardCounts — true full-table counts, fetched once on mount, not on
-  // every platform/store switch.
+  // 2026-08-20 fix: this ran a raw platform-wide count with NO store
+  // scoping at all — not even the hidden-store exclusion base() below
+  // already had, let alone the new store_ids data-scope filter. Confirmed
+  // live: a non-owner restricted to one Shopee store still saw the real
+  // full-site TikTok completed-order count here even though every other
+  // number on this page was correctly scoped. Fixed by scoping to each
+  // platform's currently-visible (hidden-excluded, permission-filtered —
+  // `stores` prop is already both) account ids, same as base() does for
+  // the status cards. Skips the query entirely for a platform with zero
+  // visible stores (e.g. a non-owner with only Shopee access) rather than
+  // calling .in() with an empty array, whose PostgREST semantics aren't
+  // worth relying on for a scope boundary.
   const [completedCounts, setCompletedCounts] = useState({ Shopee: 0, "TikTok Shop": 0 });
   useEffect(() => {
     let cancelled = false;
+    const idsByPlatform = {
+      Shopee: stores.filter((s) => s.platform === "Shopee").map((s) => s.id),
+      "TikTok Shop": stores.filter((s) => s.platform === "TikTok Shop").map((s) => s.id),
+    };
     Promise.all(
-      ["Shopee", "TikTok Shop"].map((p) =>
-        supabaseClient.from("orders").select("id", { count: "exact", head: true })
-          .eq("platform", DEMO_TO_DB_PLATFORM[p]).eq("platform_status", "COMPLETED"),
-      ),
+      ["Shopee", "TikTok Shop"].map((p) => {
+        const ids = idsByPlatform[p];
+        if (ids.length === 0) return Promise.resolve({ count: 0 });
+        return supabaseClient.from("orders").select("id", { count: "exact", head: true })
+          .eq("platform", DEMO_TO_DB_PLATFORM[p]).eq("platform_status", "COMPLETED")
+          .in("platform_account_id", ids);
+      }),
     ).then(([shopee, tiktok]) => {
       if (cancelled) return;
       setCompletedCounts({ Shopee: shopee.count ?? 0, "TikTok Shop": tiktok.count ?? 0 });
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [stores]);
 
   // COD Orders — real is_cod flag (mapped to isCod in shared.jsx's
   // mapDbOrder), from the already-loaded `orders` prop — no new query.
