@@ -627,6 +627,145 @@ export function estimatedBreakdown(o, t) {
   };
 }
 
+// TikTok Shop MY commission is NOT a flat rate in reality — it varies by
+// product category, Marketplace vs. Mall store type, and BXP participation.
+// Neither `order` nor `order.items[]` currently carries a category or a
+// real per-item commission rate (see mapDbOrder in shared.jsx — no
+// `category`/`commissionRate` field is synced onto order_items today), so
+// this map is NOT yet live-wired to any real order — a configurable
+// placeholder, ready to be looked up by item.category the moment that field
+// exists. **Rates sourced 2026-08-21 from TikTok Shop MY's published fee
+// schedule via third-party seller-fee guides (Inseller, EZCON, TechNave —
+// not TikTok's own dashboard, since no login is available in this
+// environment) — treat as a good-faith estimate, not an authoritative
+// number pulled directly from TikTok.**
+const TIKTOK_CATEGORY_COMMISSION_RATES = {
+  "电子/3C": 0.0702,
+  "时尚/日用百货": 0.0837, // also this file's DEFAULT_TIKTOK_COMMISSION_RATE
+  "食品饮料": 0.1026,
+};
+const DEFAULT_TIKTOK_COMMISSION_RATE = 0.0837; // Fashion/General-goods tier — closest fit for motor parts among the sourced tiers
+
+// Real per-order-value fee components sourced the same way/date as the
+// commission map above (Inseller/EZCON/TechNave, 2026-08-21) — not pulled
+// from TikTok's own dashboard directly:
+// - Transaction Fee: 3.78% of order value (SST-inclusive per source).
+// - BXP (Bonus Cashback / Voucher Xtra service fee): ~4.86%, only actually
+//   charged to sellers enrolled in TikTok's Bonus Extra Programme. No
+//   per-store BXP-enrollment flag exists in this codebase yet, so this is
+//   applied by default (matches the common case) — set to 0 below if a
+//   given store is confirmed NOT enrolled.
+// - Platform Support Fee: a FLAT RM0.50 + 8% SST = RM0.54 per successfully
+//   delivered order (not a %, doesn't scale with order value), effective
+//   2026-02-15 per TikTok's own Seller University page.
+const TIKTOK_TRANSACTION_FEE_RATE = 0.0378;
+const TIKTOK_BXP_RATE = 0.0486;
+const TIKTOK_PLATFORM_SUPPORT_FEE_FLAT = 0.54;
+
+// Resolves the commission rate for one order item, in priority order:
+// (1) an explicit per-item rate if the order API ever supplies one,
+// (2) a category lookup in TIKTOK_CATEGORY_COMMISSION_RATES if the item
+// carries a category, (3) the flat default. Today every real item falls
+// through to (3) since neither (1) nor (2)'s source fields exist yet — this
+// function is the single place to update once they do.
+function resolveTikTokCommissionRate(item) {
+  if (item.commissionRate != null) return Number(item.commissionRate);
+  if (item.category && TIKTOK_CATEGORY_COMMISSION_RATES[item.category] != null) {
+    return TIKTOK_CATEGORY_COMMISSION_RATES[item.category];
+  }
+  return DEFAULT_TIKTOK_COMMISSION_RATE;
+}
+
+// Affiliate commission ONLY ever appears here if the order/item actually
+// carries real creator-attribution data — never a guessed default rate
+// (self-sold orders are legitimately 0, and a flat fake % would misstate
+// them). Checks, in order: (1) an explicit per-item amount, (2) a per-item
+// rate combined with the order-level isAffiliateOrder flag, (3) falls
+// through to 0 with no fee line at all. None of these fields exist in
+// mapDbOrder (shared.jsx) or order_items today — this only activates once a
+// real TikTok affiliate/creator sync is built; until then every order
+// correctly computes to exactly 0 here.
+function resolveTikTokAffiliateCommission(o, lineItems) {
+  return +lineItems
+    .reduce((sum, it) => {
+      if (it.affiliateCommission != null) return sum + Number(it.affiliateCommission);
+      if (o.isAffiliateOrder && it.affiliateRate != null) return sum + it.unitPrice * it.qty * Number(it.affiliateRate);
+      return sum;
+    }, 0)
+    .toFixed(2);
+}
+
+// BXP is an OPTIONAL programme fee, not a standard per-order charge every
+// seller pays, so it must never apply unless the order payload explicitly
+// confirms enrollment. No such flag (`o.isBxpParticipant` or similar)
+// exists in mapDbOrder/order_items today — so this always computes to 0
+// until a real flag is wired up, never a guessed default.
+function resolveTikTokBxpFee(o, revenue) {
+  if (!o.isBxpParticipant) return 0;
+  return +(revenue * TIKTOK_BXP_RATE).toFixed(2);
+}
+
+// TikTok-only pre-settlement ESTIMATE, mirrors TikTok Seller Center's real
+// "Order Settlement" breakdown structure. Moved here 2026-08-21 (was
+// previously a local copy inside pagesOverviewOrders.jsx's Order Drawer) so
+// the Finance page and Order Drawer use the exact same estimate formula —
+// they had silently diverged (Order Drawer using these sourced rates,
+// Finance page still calling the older flat-5% estimatedBreakdown() above
+// for TikTok orders), producing two different "Estimated Payout" numbers
+// for the same unsettled order. Now both pages call this one function for
+// TikTok; `estimatedBreakdown()` above is used for Shopee only.
+//
+// Est. Revenue = subtotal after seller discounts; no per-order seller-
+// discount field is tracked yet, so this is simply gross, summed across
+// every real order item. Commission/Transaction Fee/Platform Support Fee
+// are TikTok's real standard per-order rates (not optional programmes) —
+// always computed. BXP and Affiliate Commission are OPTIONAL programme
+// fees and only ever compute to a non-zero amount when the order payload
+// explicitly confirms participation — both correctly resolve to 0 on every
+// real (still-unsettled) order today, no fallback guess rate. Total =
+// Est. Revenue - sum of Est. Fees; zero-amount lines drop out automatically.
+export function tiktokEstimatedBreakdown(o, t) {
+  const lineItems = o.items && o.items.length > 0 ? o.items : [{ unitPrice: o.unitPrice, qty: o.qty }];
+  const revenue = +lineItems.reduce((sum, it) => sum + it.unitPrice * it.qty, 0).toFixed(2);
+  const commissionAmt = +lineItems
+    .reduce((sum, it) => sum + it.unitPrice * it.qty * resolveTikTokCommissionRate(it), 0)
+    .toFixed(2);
+  const transactionAmt = +(revenue * TIKTOK_TRANSACTION_FEE_RATE).toFixed(2);
+  const bxpAmt = resolveTikTokBxpFee(o, revenue);
+  const platformSupportAmt = TIKTOK_PLATFORM_SUPPORT_FEE_FLAT;
+  const shippingAmt = +(o.shippingFee || 0).toFixed(2);
+  const affiliateAmt = Number(resolveTikTokAffiliateCommission(o, lineItems));
+  const fees = [
+    { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
+    { label: t("预估交易费", "Est. Transaction Fee"), amount: transactionAmt, pct: TIKTOK_TRANSACTION_FEE_RATE * 100 },
+    { label: t("红利返现/超级福袋服务费 (BXP)", "Bonus Cashback / Voucher Xtra Service Fee (BXP)"), amount: bxpAmt, pct: revenue > 0 ? (bxpAmt / revenue) * 100 : 0 },
+    { label: t("平台支持费", "Platform Support Fee"), amount: platformSupportAmt, pct: revenue > 0 ? (platformSupportAmt / revenue) * 100 : 0 },
+    { label: t("预估卖家运费", "Est. Seller Shipping Fee"), amount: shippingAmt, pct: revenue > 0 ? (shippingAmt / revenue) * 100 : 0 },
+    { label: t("预估达人佣金", "Est. Affiliate Commission"), amount: affiliateAmt, pct: revenue > 0 ? (affiliateAmt / revenue) * 100 : 0 },
+  ].filter((f) => f.amount !== 0);
+  const totalFees = +fees.reduce((sum, f) => sum + f.amount, 0).toFixed(2);
+  return {
+    merchandiseSubtotal: revenue,
+    // Shipping is now represented as a fee line (deduction) above, matching
+    // TikTok's real settlement structure — not shown again as a separate
+    // net-shipping info line here, to avoid double-displaying the same number.
+    shippingSubtotal: 0,
+    buyerPaidShipping: null,
+    logisticsShipping: null,
+    fees,
+    orderIncome: +(revenue - totalFees).toFixed(2),
+  };
+}
+
+// Picks the correct pre-settlement estimate function per platform — TikTok
+// gets the real-rate-sourced tiktokEstimatedBreakdown() above, everything
+// else (Shopee) keeps using the flat-rate estimatedBreakdown(). Single
+// switch point so Finance page and Order Drawer can never diverge on which
+// function they call for a given platform again.
+export function estimateBreakdownForPlatform(o, t) {
+  return o.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(o, t) : estimatedBreakdown(o, t);
+}
+
 // Shared expand-panel renderer (2026-08-19, new; isEstimate added 2026-08-20)
 // — used identically by the Pending, Released, and "待已结算" (compare)
 // tabs so the breakdown format is guaranteed pixel-for-pixel consistent
@@ -1416,8 +1555,19 @@ export function Finance({ t, orders, stores }) {
               // synced, or TikTok) fall back to estimatedBreakdown().
               const hasRealData = isReal || isRealEstimate;
               const real = settlements[o.id];
-              const detail = hasRealData ? incomeBreakdown(o, real, t) : estimatedBreakdown(o, t);
+              const detail = hasRealData ? incomeBreakdown(o, real, t) : estimateBreakdownForPlatform(o, t);
               const rate = platformFeeRate(o.platform);
+              // Row-summary total (2026-08-21) — derived from `detail.fees`
+              // (the same estimateBreakdownForPlatform() result the expanded
+              // row below renders) instead of the separate finance.fees/
+              // rate.total from orderFinance()/estimatedFees(), which still
+              // used the old flat 5% TikTok rate — that mismatch was
+              // exactly the "two different numbers for the same order" bug
+              // reported live (Order Drawer RM30.65 vs Finance RM33.02).
+              // Only affects this collapsed-row display; orderFinance()'s
+              // own net-profit/anomaly-detection math is untouched.
+              const estTotalFees = !hasRealData ? +detail.fees.reduce((sum, f) => sum + f.amount, 0).toFixed(2) : finance.fees;
+              const estTotalPct = !hasRealData && detail.merchandiseSubtotal > 0 ? (estTotalFees / detail.merchandiseSubtotal) * 100 : rate.total * 100;
               const expanded = expandedIds.has(o.id);
               return (
                 <Fragment key={o.id}>
@@ -1468,7 +1618,7 @@ export function Finance({ t, orders, stores }) {
                     <td className="py-2.5 pr-3 text-xs text-slate-500">
                       {isRealEstimate
                         ? t(`Shopee 预估 RM ${finance.fees.toFixed(2)}`, `Shopee Est. RM ${finance.fees.toFixed(2)}`)
-                        : t(`系统预估 (${(rate.total * 100).toFixed(2)}%) RM ${finance.fees.toFixed(2)}`, `System Est. (${(rate.total * 100).toFixed(2)}%) RM ${finance.fees.toFixed(2)}`)}
+                        : t(`系统预估 (${estTotalPct.toFixed(2)}%) RM ${estTotalFees.toFixed(2)}`, `System Est. (${estTotalPct.toFixed(2)}%) RM ${estTotalFees.toFixed(2)}`)}
                     </td>
                   )}
                   <td className="py-2.5 pr-3 text-right">
@@ -1649,7 +1799,7 @@ export function Finance({ t, orders, stores }) {
         if (!o) return null;
         const finance = orderFinance(o);
         const real = settlements[o.id];
-        const detail = (finance.isReal || finance.isRealEstimate) ? incomeBreakdown(o, real, t) : estimatedBreakdown(o, t);
+        const detail = (finance.isReal || finance.isRealEstimate) ? incomeBreakdown(o, real, t) : estimateBreakdownForPlatform(o, t);
         return (
           <SettlementDetailDrawer
             order={o}
