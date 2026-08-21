@@ -2146,6 +2146,56 @@ const CANCELLABLE_PLATFORM_STATUSES = new Set([
   "UNPAID", "READY_TO_SHIP", "AWAITING_SHIPMENT", "PROCESSED", "AWAITING_COLLECTION",
 ]);
 
+// TikTok-only pre-settlement estimate, rebuilt 2026-08-21 to mirror TikTok
+// Seller Center's real "Order Settlement" breakdown structure, scoped
+// strictly to this Order Drawer — does NOT touch pagesImportFinance.jsx's
+// shared estimatedBreakdown()/platformFeeRate() (Finance page keeps using
+// those exactly as before, Shopee untouched). Est. Revenue = subtotal after
+// seller discounts; no per-order seller-discount field is tracked yet, so
+// this is simply gross (unitPrice*qty), same base incomeBreakdown() uses
+// for the real settled merchandiseSubtotal. Total = Est. Revenue - sum of
+// Est. Fees, matching TikTok's real "预估结算金额" formula. Commission
+// (5%) and Transaction Fee (1%) reuse the existing known real rates from
+// platformFeeRate(); Est. Seller Shipping Fee reuses order.shippingFee, the
+// only real per-order shipping figure available pre-settlement (same
+// fallback incomeBreakdown() uses for TikTok's real net-shipping field).
+// Affiliate Commission / BXP (Bonus Cashback + Voucher Xtra Service Fee) /
+// Platform Support Fee have NO real per-order data source yet (affiliate
+// depends on which creator drove the order, BXP/support fee depend on which
+// campaigns applied) — left at 0 rather than fabricated, and simply drop
+// out of the list via the existing zero-amount filter below until real
+// order-level data for them is wired up.
+function tiktokEstimatedBreakdown(o, t) {
+  const revenue = o.unitPrice * o.qty;
+  const rate = platformFeeRate("TikTok Shop");
+  const commissionAmt = +(revenue * rate.commission).toFixed(2);
+  const transactionAmt = +(revenue * rate.transaction).toFixed(2);
+  const shippingAmt = +(o.shippingFee || 0).toFixed(2);
+  const affiliateAmt = 0;
+  const bxpAmt = 0;
+  const platformSupportAmt = 0;
+  const fees = [
+    { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: rate.commission * 100 },
+    { label: t("预估交易费", "Est. Transaction Fee"), amount: transactionAmt, pct: rate.transaction * 100 },
+    { label: t("预估卖家运费", "Est. Seller Shipping Fee"), amount: shippingAmt, pct: revenue > 0 ? (shippingAmt / revenue) * 100 : 0 },
+    { label: t("预估达人佣金", "Est. Affiliate Commission"), amount: affiliateAmt, pct: 0 },
+    { label: t("红利返现/超级福袋服务费 (BXP)", "Bonus Cashback / Voucher Xtra Service Fee (BXP)"), amount: bxpAmt, pct: 0 },
+    { label: t("平台扶持费", "Platform Support Fee"), amount: platformSupportAmt, pct: 0 },
+  ].filter((f) => f.amount !== 0);
+  const totalFees = +fees.reduce((sum, f) => sum + f.amount, 0).toFixed(2);
+  return {
+    merchandiseSubtotal: revenue,
+    // Shipping is now represented as a fee line (deduction) above, matching
+    // TikTok's real settlement structure — not shown again as a separate
+    // net-shipping info line here, to avoid double-displaying the same number.
+    shippingSubtotal: 0,
+    buyerPaidShipping: null,
+    logisticsShipping: null,
+    fees,
+    orderIncome: +(revenue - totalFees).toFixed(2),
+  };
+}
+
 function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateStatus, onRequestCancel, stepIdx, theme, isAwaitingShip }) {
   const lang = t("zh", "en");
   const [settlement, setSettlement] = useState(null);
@@ -2184,7 +2234,9 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
   // just `!hasRealData` mislabeled that as "最终到账金额" (Final) instead
   // of "预估到账金额" (Estimate) the first time this was wired up.
   const isFinalSettlement = !!(settlement && settlement.is_final);
-  const incomeDetail = hasRealData ? incomeBreakdown(order, settlement, t) : estimatedBreakdown(order, t);
+  const incomeDetail = hasRealData
+    ? incomeBreakdown(order, settlement, t)
+    : (order.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(order, t) : estimatedBreakdown(order, t));
   // Real buyer_payment_info (2026-08-20) — Shopee's own get_escrow_detail
   // response, same raw_response already stored by shopee-pending-estimate-sync.
   const buyerPaymentInfo = settlement?.raw_response?.response?.buyer_payment_info || null;
@@ -2383,13 +2435,22 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
               >
                 <Copy size={13} /> {t("复制订单号", "Copy Order No.")}
               </button>
-              {/* 即时聊天 (2026-08-20, split) — pure navigation now, no
-                  clipboard side effect. /webchat/conversations is the one
-                  path already confirmed live NOT to 404. */}
+              {/* 即时聊天 (2026-08-20, split; TikTok enabled 2026-08-21) —
+                  pure navigation, no clipboard side effect, no order/buyer
+                  data in the URL (kept generic per no-PII-in-URL policy).
+                  Shopee's /webchat/conversations path was confirmed live NOT
+                  to 404. TikTok's /im path is the user-confirmed choice but
+                  NOT independently verified live in this environment (no
+                  TikTok seller login available here) — flag to the user if
+                  it 404s or redirects unexpectedly. */}
               <button
                 onClick={() => {
                   if (order.platform === "Shopee") {
                     window.open("https://seller.shopee.com.my/webchat/conversations", "_blank", "noopener,noreferrer");
+                  } else if (order.platform === "TikTok Shop") {
+                    // /im returned "No matching route" live (user-confirmed
+                    // 2026-08-21) — switched to the seller center homepage.
+                    window.open("https://seller-my.tiktok.com/homepage", "_blank", "noopener,noreferrer");
                   } else {
                     window.alert(t("即时聊天功能暂未开通", "Live chat isn't available yet"));
                   }

@@ -396,6 +396,8 @@ export function StoreManagement({ t, stores, onConnect, onSetSyncMode, onRefresh
 
   return (
     <div className="space-y-4">
+      <PlatformLoginConnect t={t} stores={stores} onRefresh={onRefresh} />
+
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="text-sm font-medium mb-3 flex items-center gap-1.5">
           <Link2 size={14} className="text-teal-500" /> {t("手动连接新店铺（现阶段实际使用的方式）", "Manually Connect a New Store (current real workflow)")}

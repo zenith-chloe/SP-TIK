@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Boxes, RefreshCw, LogIn, LogOut, AlertTriangle, Menu, X, Puzzle } from "lucide-react";
+import { Boxes, RefreshCw, LogIn, LogOut, AlertTriangle, Menu, X, Puzzle, Info } from "lucide-react";
 import {
   supabaseClient, mapDbStore, mapDbProduct, mapDbSupplier, mapDbPurchaseOrder, mapDbOrder, mapDbTransferLog,
   mapDbAdjustmentRequest, mapDbCancellationRecord, DEMO_TO_DB_STATUS, DEMO_TO_DB_PLATFORM, NAV,
@@ -29,18 +29,61 @@ const OWNER_ONLY_TAB_KEYS = ["suppliers", "purchaseorders", "shiptest", "roles"]
 // just resets the piece and lets them retry. This is a UX/basic-bot-
 // friction gate, not a security boundary — real access control is still
 // entirely Supabase Auth's password check underneath it.
+// Shopee-style photo puzzle (2026-08-21 UI upgrade) — same "cookie-cutter"
+// clip-path shape used for both the darkened hole and the floating piece, so
+// the piece is a real crop of the photo (fixed background-position) that only
+// visually lands in place once sliderX reaches targetX. Still a pure client-
+// side UX/bot-friction gate, not a security boundary — see comment below.
+const PUZZLE_PIECE_W = 56;
+const PUZZLE_CARD_H = 160;
+const PUZZLE_CLIP =
+  "polygon(0% 0%, 0% 30%, 15% 38%, 15% 62%, 0% 70%, 0% 100%, 100% 100%, 100% 70%, 115% 62%, 115% 38%, 100% 30%, 100% 0%)";
+
+function randomPuzzleImage() {
+  const seed = Math.random().toString(36).slice(2, 10);
+  return `https://picsum.photos/seed/${seed}/480/280`;
+}
+
 function SliderCaptcha({ t, onSolved }) {
   const trackRef = useRef(null);
-  const [targetX, setTargetX] = useState(() => 55 + Math.random() * 30); // 55%-85%
-  const [sliderX, setSliderX] = useState(0);
+  const cardRef = useRef(null);
+  const [imgUrl, setImgUrl] = useState(randomPuzzleImage);
+  const [cardW, setCardW] = useState(0);
+  const [targetX, setTargetX] = useState(0); // px, within [0, cardW - PUZZLE_PIECE_W]
+  const [sliderX, setSliderX] = useState(0); // px, same range
   const [dragging, setDragging] = useState(false);
   const [failed, setFailed] = useState(false);
-  const TOLERANCE = 4; // percent
+  const TOLERANCE = 8; // px
+
+  function rollTarget(w) {
+    const maxX = Math.max(0, w - PUZZLE_PIECE_W);
+    return Math.round(Math.min(maxX, PUZZLE_PIECE_W + 20 + Math.random() * Math.max(0, maxX - PUZZLE_PIECE_W - 20)));
+  }
+
+  useEffect(() => {
+    function measure() {
+      if (!cardRef.current) return;
+      const w = cardRef.current.offsetWidth;
+      setCardW(w);
+      setTargetX((prev) => (prev > 0 ? prev : rollTarget(w)));
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
+  function refresh() {
+    setImgUrl(randomPuzzleImage());
+    setSliderX(0);
+    setFailed(false);
+    if (cardW > 0) setTargetX(rollTarget(cardW));
+  }
 
   function clampFromClientX(clientX) {
     const rect = trackRef.current.getBoundingClientRect();
-    const pct = ((clientX - rect.left) / rect.width) * 100;
-    return Math.max(0, Math.min(100, pct));
+    const maxX = Math.max(0, cardW - PUZZLE_PIECE_W);
+    const px = ((clientX - rect.left) / rect.width) * maxX;
+    return Math.max(0, Math.min(maxX, px));
   }
 
   function handlePointerDown(e) {
@@ -61,32 +104,90 @@ function SliderCaptcha({ t, onSolved }) {
       onSolved();
     } else {
       setFailed(true);
-      setSliderX(0);
-      setTimeout(() => setFailed(false), 1200);
+      setTimeout(() => { setSliderX(0); setFailed(false); }, 900);
     }
   }
 
+  const maxSliderX = Math.max(0, cardW - PUZZLE_PIECE_W);
+  const trackPct = maxSliderX > 0 ? (sliderX / maxSliderX) * 100 : 0;
+
   return (
     <div className="space-y-2">
-      <div className="text-xs text-slate-500">{t("请拖动滑块，将拼图对齐到缺口位置", "Drag the slider to align the puzzle piece with the gap")}</div>
+      {/* photo card: real background image + puzzle-shaped hole + draggable piece */}
+      <div
+        ref={cardRef}
+        className="relative w-full rounded-lg overflow-hidden bg-slate-100 border border-slate-200"
+        style={{ height: PUZZLE_CARD_H }}
+      >
+        <img src={imgUrl} alt="" draggable={false} className="absolute inset-0 w-full h-full object-cover" />
+        {cardW > 0 && (
+          <>
+            {/* darkened cutout at the target location */}
+            <div
+              className="absolute top-0 pointer-events-none"
+              style={{
+                left: targetX,
+                width: PUZZLE_PIECE_W,
+                height: PUZZLE_CARD_H,
+                clipPath: PUZZLE_CLIP,
+                background: "rgba(10,15,30,0.55)",
+                boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.5)",
+              }}
+            />
+            {/* draggable piece — a real crop of the same photo (fixed background-position) */}
+            <div
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              className="absolute top-0 cursor-grab active:cursor-grabbing touch-none"
+              style={{
+                left: sliderX,
+                width: PUZZLE_PIECE_W,
+                height: PUZZLE_CARD_H,
+                clipPath: PUZZLE_CLIP,
+                backgroundImage: `url(${imgUrl})`,
+                backgroundSize: `${cardW}px ${PUZZLE_CARD_H}px`,
+                backgroundPosition: `${-targetX}px 0`,
+                boxShadow: failed
+                  ? "inset 0 0 0 2px #f43f5e, 0 0 6px rgba(244,63,94,0.6)"
+                  : "inset 0 0 0 2px #fff, 0 2px 6px rgba(0,0,0,0.35)",
+              }}
+            />
+          </>
+        )}
+      </div>
+
+      {/* refresh + info footer, Shopee-style */}
+      <div className="flex items-center justify-between px-0.5">
+        <div className="flex items-center gap-1 text-[11px] text-slate-400">
+          <Info size={12} />
+          {t("拖动下方滑块完成拼图验证", "Drag the slider below to complete the puzzle")}
+        </div>
+        <button
+          type="button"
+          onClick={refresh}
+          title={t("换一张图片", "Refresh image")}
+          className="text-slate-400 hover:text-teal-600"
+        >
+          <RefreshCw size={14} />
+        </button>
+      </div>
+
+      {/* slider track */}
       <div
         ref={trackRef}
         className={`relative h-11 rounded-lg bg-slate-100 border overflow-hidden select-none ${failed ? "border-rose-300" : "border-slate-200"}`}
       >
-        {/* 缺口 (target notch) */}
-        <div
-          className="absolute top-1/2 -translate-y-1/2 h-8 w-8 rounded-md border-2 border-dashed border-slate-300 bg-slate-200/60"
-          style={{ left: `calc(${targetX}% - 16px)` }}
-        />
-        {/* 已滑过的轨道填充 */}
-        <div className="absolute inset-y-0 left-0 bg-teal-100" style={{ width: `${sliderX}%` }} />
-        {/* 拼图滑块 (draggable piece) */}
+        <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-400 pointer-events-none">
+          {t("请向右拖动滑块完成拼图", "Please slide to complete the puzzle")}
+        </div>
+        <div className="absolute inset-y-0 left-0 bg-teal-100/70" style={{ width: `${trackPct}%` }} />
         <div
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           className={`absolute top-1/2 -translate-y-1/2 h-9 w-9 rounded-md flex items-center justify-center text-white shadow cursor-grab active:cursor-grabbing touch-none ${failed ? "bg-rose-500" : "bg-teal-500"}`}
-          style={{ left: `calc(${sliderX}% - 18px)` }}
+          style={{ left: `calc(${trackPct}% - 18px)` }}
         >
           <Puzzle size={16} />
         </div>
