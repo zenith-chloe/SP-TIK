@@ -206,7 +206,17 @@ Deno.serve(async (req: Request) => {
       const transactionFee = sum("transaction_fee_amount");
       const commissionFee = Math.abs(sum("platform_commission_amount"));
       const sellerShippingFee = Math.abs(sum("shipping_fee_amount"));
-      const affiliateCommission = Math.abs(sum("affiliate_commission_amount"));
+      // Merged 2026-08-22 (user request): affiliate_ads_commission_amount is
+      // a second, real, separately-named field in the same statement_transactions
+      // payload (confirmed present in live raw_response, seen as "0" so far
+      // on every real order checked, but a real field nonetheless) — TikTok's
+      // paid-ads-driven creator commission, distinct from organic
+      // affiliate_commission_amount. Merged into the same tiktok_affiliate_commission
+      // total rather than a new column, since both are real affiliate-related
+      // deductions and no UI distinction between "organic" vs "ads" affiliate
+      // commission was requested — keeps totalFees/reconciliation math
+      // unaffected (still one line item, just a more complete real sum).
+      const affiliateCommission = Math.abs(sum("affiliate_commission_amount")) + Math.abs(sum("affiliate_ads_commission_amount"));
       const platformDiscount = Math.abs(sum("platform_discount_amount"));
       const settlementAmount = sum("settlement_amount");
       const totalFees = transactionFee + commissionFee + sellerShippingFee + affiliateCommission;
