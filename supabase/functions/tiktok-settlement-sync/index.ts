@@ -22,6 +22,16 @@
 //
 // Required secrets: TIKTOK_APP_KEY, TIKTOK_APP_SECRET (same secrets
 // tiktok-sync-orders already uses, read-only here).
+//
+// Affiliate Seller API investigated 2026-08-22, not integrated: live-tested
+// POST /affiliate_seller/202410/orders/search (seller.affiliate_collaboration.read)
+// via a temporary debug probe — got real code 105005 "access scopes...do not
+// contain the required access scope". User confirmed with TikTok Partner
+// Center that this scope cannot be added to Custom Apps at all (platform
+// policy limit, not a request-it-and-wait situation). Do not re-attempt
+// without a real change on TikTok's side. Settled orders already get real
+// affiliate_commission_amount via /finance/202309/.../statement_transactions
+// below — that path is unaffected and is the only real affiliate data source.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { API_HOST, requireTikTokCredentials, signApiRequest, type TikTokCredentials } from "./tiktok.ts";

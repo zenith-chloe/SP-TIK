@@ -533,15 +533,24 @@ export function incomeBreakdown(o, settlement, t) {
   // Real settlement_amount (2026-08-21) — TikTok's own authoritative payout
   // number, independent of how we itemize fees below.
   const settlementAmount = Number(settlement.tiktok_settlement_amount ?? settlement.net_settlement ?? 0);
+  // 达人佣金 (2026-08-22, user request) — kept separate from the other
+  // named fees below and NEVER filtered out even at RM0.00, so the line is
+  // always visible in the breakdown (confirms "checked, no affiliate
+  // commission on this order" rather than silently omitting it the way a
+  // zero-value fee normally would). Source field verified live 2026-08-22
+  // against real order 585371986514117944: `affiliate_commission_amount`
+  // inside statement_transactions/sku_statement_transactions, already read
+  // by tiktok-settlement-sync into this exact column.
+  const affiliateFee = { label: t("达人佣金", "Affiliate Commission"), amount: Number(settlement.tiktok_affiliate_commission ?? 0) };
   const namedFees = [
     { label: t("平台佣金", "Platform Commission"), amount: Number(settlement.tiktok_commission_fee ?? 0) },
     { label: t("交易费", "Transaction Fee"), amount: Number(settlement.tiktok_transaction_fee ?? 0) },
-    { label: t("达人佣金", "Affiliate Commission"), amount: Number(settlement.tiktok_affiliate_commission ?? 0) },
+    affiliateFee,
     // 卖家承担运费 (2026-08-21, moved here from pagesOverviewOrders.jsx's
     // Order Drawer so both pages show it identically) — real, already-synced
     // tiktok_seller_shipping_fee column.
     { label: t("卖家承担运费", "Seller Shipping Fee"), amount: Number(settlement.tiktok_seller_shipping_fee ?? 0) },
-  ].filter((f) => f.amount !== 0);
+  ].filter((f) => f === affiliateFee || f.amount !== 0);
   // Reconciliation catch-all (2026-08-21, moved here from pagesOverviewOrders.jsx
   // for the same reason) — TikTok's real raw_response `fee_amount` field is
   // its own authoritative total deduction, which can be larger than the sum
