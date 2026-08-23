@@ -23,15 +23,23 @@
 // Required secrets: TIKTOK_APP_KEY, TIKTOK_APP_SECRET (same secrets
 // tiktok-sync-orders already uses, read-only here).
 //
-// Affiliate Seller API investigated 2026-08-22, not integrated: live-tested
-// POST /affiliate_seller/202410/orders/search (seller.affiliate_collaboration.read)
-// via a temporary debug probe — got real code 105005 "access scopes...do not
-// contain the required access scope". User confirmed with TikTok Partner
-// Center that this scope cannot be added to Custom Apps at all (platform
-// policy limit, not a request-it-and-wait situation). Do not re-attempt
-// without a real change on TikTok's side. Settled orders already get real
+// Affiliate Seller API investigated 2026-08-22, re-checked 2026-08-23 — still
+// not integrated: live-tested POST /affiliate_seller/202410/orders/search
+// (seller.affiliate_collaboration.read) via a temporary debug probe both
+// times — got the SAME real code 105005 "access scopes...do not contain the
+// required access scope" on both dates, no change. User confirmed with
+// TikTok Partner Center that this scope cannot be added to Custom Apps at
+// all (platform policy limit, not a request-it-and-wait situation). Do not
+// re-attempt without a real, confirmed change on TikTok's side (e.g. the
+// user upgrading the app type). Settled orders already get real
 // affiliate_commission_amount via /finance/202309/.../statement_transactions
 // below — that path is unaffected and is the only real affiliate data source.
+// TikTok's own Seller Center Settlement Breakdown page shows an "Est.
+// affiliate commission" figure for UNSETTLED orders — that number is
+// necessarily sourced from this same blocked Affiliate Seller API (no other
+// TikTok API we have access to carries per-creator commission data), so it
+// cannot be reproduced here. Do not add an estimated_affiliate_commission
+// field with no real data source behind it.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { API_HOST, requireTikTokCredentials, signApiRequest, type TikTokCredentials } from "./tiktok.ts";
