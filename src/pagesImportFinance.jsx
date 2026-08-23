@@ -3171,18 +3171,35 @@ function daysAgoStr(n) {
   return d.toISOString().slice(0, 10);
 }
 
-export function AdsSpend({ t, orders }) {
+export function AdsSpend({ t, orders, stores }) {
   const [activePlatform, setActivePlatform] = useState("Shopee");
   const theme = PLATFORM_THEME[activePlatform];
+
+  // 店铺隔离 (2026-08-24, new) — null = 该平台全部店铺 (no filter). `stores`
+  // is the same already-loaded real platform_accounts list Finance/Roles
+  // use elsewhere (no new fetch here).
+  const [selectedStoreId, setSelectedStoreId] = useState(null);
+  const storesForPlatform = (stores || []).filter((s) => s.platform === activePlatform);
+  function switchPlatform(pf) {
+    setActivePlatform(pf);
+    setSelectedStoreId(null); // avoid carrying a store id from the other platform
+  }
 
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [form, setForm] = useState({ platform: "Shopee", name: "", sku: "", spend: "", clicks: "", orders: "", revenue: "" });
+  const [form, setForm] = useState({ platform: "Shopee", name: "", sku: "", spend: "", clicks: "", orders: "", revenue: "", platform_account_id: "" });
   const [aiTarget, setAiTarget] = useState(null); // { mode: "stop_loss" | "new_product", campaign?, product? }
   const [aiNote, setAiNote] = useState("");
+  const [showCopyGen, setShowCopyGen] = useState(false);
+  const [showRoasReport, setShowRoasReport] = useState(false);
+  const [showNegExtractor, setShowNegExtractor] = useState(false);
+  const [copyForm, setCopyForm] = useState({ productName: "", price: "", langs: { zh: true, en: true, ms: false } });
+  const [copyResult, setCopyResult] = useState(null);
+  const [negText, setNegText] = useState("");
+  const [negResult, setNegResult] = useState(null);
 
   function showToast(msg) {
     setToast(msg);
@@ -3200,12 +3217,12 @@ export function AdsSpend({ t, orders }) {
 
   function openCreateModal(prefill) {
     setEditingId(null);
-    setForm({ platform: activePlatform, name: "", sku: "", spend: "", clicks: "", orders: "", revenue: "", ...prefill });
+    setForm({ platform: activePlatform, name: "", sku: "", spend: "", clicks: "", orders: "", revenue: "", platform_account_id: selectedStoreId || "", ...prefill });
     setShowForm(true);
   }
   function openEditModal(c) {
     setEditingId(c.id);
-    setForm({ platform: c.platform, name: c.name, sku: c.sku || "", spend: String(c.spend), clicks: String(c.clicks), orders: String(c.orders), revenue: String(c.revenue) });
+    setForm({ platform: c.platform, name: c.name, sku: c.sku || "", spend: String(c.spend), clicks: String(c.clicks), orders: String(c.orders), revenue: String(c.revenue), platform_account_id: c.platform_account_id || "" });
     setShowForm(true);
   }
 
@@ -3219,6 +3236,7 @@ export function AdsSpend({ t, orders }) {
       clicks: Math.round(Number(form.clicks) || 0),
       orders: Math.round(Number(form.orders) || 0),
       revenue: Number(form.revenue) || 0,
+      platform_account_id: form.platform_account_id || null,
       updated_at: new Date().toISOString(),
     };
     const { error } = editingId
@@ -3254,6 +3272,7 @@ export function AdsSpend({ t, orders }) {
     } else {
       const { error } = await supabaseClient.from("ad_campaigns").insert({
         platform: activePlatform,
+        platform_account_id: selectedStoreId || null,
         name: t(`AI 推荐新广告 - ${aiTarget.product.name}`, `AI-Recommended Campaign - ${aiTarget.product.name}`),
         sku: aiTarget.product.sku,
         spend: 0, clicks: 0, orders: 0, revenue: 0,
@@ -3269,27 +3288,105 @@ export function AdsSpend({ t, orders }) {
     loadCampaigns();
   }
 
+  async function copyText(text, okMsg) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(okMsg || t("已复制", "Copied"));
+    } catch {
+      showToast(t("复制失败，请手动复制", "Copy failed — please copy manually"));
+    }
+  }
+
+  // 🤖 AI 广告文案与脚本生成器 (2026-08-24, new) — deterministic template
+  // generator (same "rule-based, not a real LLM call" pattern this project
+  // already uses for its AI 客服 auto-reply, see aiReply() above); fills
+  // real staff-provided product name/price into a few short-video-hook and
+  // listing-copy templates per language. Not a call to any external AI API
+  // — no such integration/key exists in this project.
+  function generateAdScripts(f) {
+    const name = f.productName.trim() || t("这款商品", "this product");
+    const priceLine = f.price ? t(`只要 RM${f.price}`, `only RM${f.price}`) : t("现在下单更划算", "a great deal right now");
+    const templates = {
+      zh: {
+        label: "中文",
+        hook: `别划走！${name}真的绝了 🔥`,
+        body: `${name}，${priceLine}，今天下单享最后一波福利，手慢无！`,
+        cta: `👉 点击购物车立即下单`,
+      },
+      en: {
+        label: "English",
+        hook: `Wait — don't scroll past ${name}! 🔥`,
+        body: `${name} is ${priceLine.replace("只要 ", "").replace("现在下单更划算", "a great deal right now")} — grab it before this batch runs out.`,
+        cta: `👉 Tap the cart icon to order now`,
+      },
+      ms: {
+        label: "Bahasa Melayu",
+        hook: `Jangan skip! ${name} memang power 🔥`,
+        body: `${name}, ${f.price ? `cuma RM${f.price}` : "harga terbaik sekarang"}, order hari ini sebelum kehabisan stok!`,
+        cta: `👉 Tekan troli untuk order sekarang`,
+      },
+    };
+    return Object.entries(templates)
+      .filter(([code]) => f.langs[code])
+      .map(([code, tpl]) => ({ code, ...tpl }));
+  }
+
+  // 🔍 AI 否定词提取助手 (2026-08-24, new) — pure parsing/filtering of
+  // whatever the staff pastes in (their own real search-term report copied
+  // from TikTok/Shopee Ads Manager) — every number here is theirs, nothing
+  // guessed. Expected format: one search term per line, fields separated by
+  // tab or comma: 搜索词, 花费, 点击, 订单. A row is flagged as a negative
+  // candidate only when it has real spend > 0 and a real, explicitly parsed
+  // orders value of 0 — rows with a missing/unparseable orders field are
+  // skipped rather than guessed at.
+  function parseNegativeKeywords(text) {
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    const rows = [];
+    for (const line of lines) {
+      const parts = (line.includes("\t") ? line.split("\t") : line.split(",")).map((p) => p.trim());
+      if (parts.length < 4) continue;
+      const [term, spendStr, clicksStr, ordersStr] = parts;
+      const spend = Number(spendStr.replace(/[^0-9.]/g, ""));
+      const clicks = Number(clicksStr.replace(/[^0-9.]/g, ""));
+      const orders = Number(ordersStr.replace(/[^0-9.]/g, ""));
+      if (!term || Number.isNaN(spend) || Number.isNaN(orders)) continue;
+      rows.push({ term, spend, clicks: Number.isNaN(clicks) ? 0 : clicks, orders });
+    }
+    return rows.filter((r) => r.spend > 0 && r.orders === 0).sort((a, b) => b.spend - a.spend);
+  }
+
   const allRows = campaigns.map((c) => ({ ...c, roas: c.spend > 0 ? c.revenue / c.spend : 0 }));
-  const rows = allRows.filter((c) => c.platform === activePlatform);
+  // 店铺隔离 — when a specific store is picked, only that store's real rows
+  // count towards every KPI/chart/table/AI diagnosis below; null keeps the
+  // previous "all stores on this platform" behavior.
+  const rows = allRows.filter((c) => c.platform === activePlatform && (!selectedStoreId || c.platform_account_id === selectedStoreId));
 
   const totalSpend = rows.reduce((s, c) => s + c.spend, 0);
   const totalRevenue = rows.reduce((s, c) => s + c.revenue, 0);
   const overallRoas = totalSpend > 0 ? totalRevenue / totalSpend : 0;
   const effectiveCount = rows.filter((c) => c.roas >= AD_ROAS_THRESHOLD).length;
 
-  // AI 止损预警 — real rows only: active campaigns on this platform, real
-  // spend > 0 (so a freshly-created RM0 draft never gets flagged), real
-  // ROAS below the configured threshold.
+  // AI 止损预警 — real rows only: active campaigns on this platform/store,
+  // real spend > 0 (so a freshly-created RM0 draft never gets flagged),
+  // real ROAS below the configured threshold.
   const stopLossFlags = rows.filter((c) => c.status === "active" && c.spend > 0 && c.roas < AD_ROAS_THRESHOLD);
 
   // AI 潜力商品推荐 — real order_items sales (via the already-loaded
-  // `orders` prop, last AI_LOOKBACK_DAYS days, this platform only),
+  // `orders` prop, last AI_LOOKBACK_DAYS days, this platform/store only),
   // excluding any SKU that already has a campaign row on this platform.
   const since = daysAgoStr(AI_LOOKBACK_DAYS);
   const adSkus = new Set(rows.map((c) => (c.sku || "").trim().toLowerCase()).filter(Boolean));
   const salesBySku = new Map();
+  // 关联产品图片/名称 (2026-08-24, new) — real sku -> {name, image} lookup
+  // built from the same already-loaded `orders` prop (each order's real
+  // order_items), used by the detail table's new 关联产品 column below.
+  const skuInfo = new Map();
   for (const o of orders || []) {
-    if (o.platform !== activePlatform || !o.sku || o.date < since) continue;
+    for (const it of o.items && o.items.length > 0 ? o.items : [{ sku: o.sku, productName: o.product, image: o.productImage }]) {
+      if (!it.sku || skuInfo.has(it.sku.trim().toLowerCase())) continue;
+      skuInfo.set(it.sku.trim().toLowerCase(), { name: it.productName, image: it.image });
+    }
+    if (o.platform !== activePlatform || (selectedStoreId && o.platformAccountId !== selectedStoreId) || !o.sku || o.date < since) continue;
     const key = o.sku.trim().toLowerCase();
     const cur = salesBySku.get(key) || { sku: o.sku, name: o.product, orderCount: 0 };
     cur.orderCount += 1;
@@ -3306,23 +3403,40 @@ export function AdsSpend({ t, orders }) {
         <div className="fixed top-4 right-4 z-50 bg-slate-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg">{toast}</div>
       )}
 
-      <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 gap-1">
-        {["Shopee", "TikTok Shop"].map((pf) => {
-          const pfTheme = PLATFORM_THEME[pf];
-          const active = activePlatform === pf;
-          return (
-            <button
-              key={pf}
-              onClick={() => setActivePlatform(pf)}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                active ? `${pfTheme.headerBg} text-white` : "text-slate-500 hover:bg-slate-50"
-              }`}
-            >
-              <span className={`h-2 w-2 rounded-full ${active ? "bg-white/80" : pfTheme.dot}`} />
-              {pf}
-            </button>
-          );
-        })}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 gap-1">
+          {["Shopee", "TikTok Shop"].map((pf) => {
+            const pfTheme = PLATFORM_THEME[pf];
+            const active = activePlatform === pf;
+            return (
+              <button
+                key={pf}
+                onClick={() => switchPlatform(pf)}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  active ? `${pfTheme.headerBg} text-white` : "text-slate-500 hover:bg-slate-50"
+                }`}
+              >
+                <span className={`h-2 w-2 rounded-full ${active ? "bg-white/80" : pfTheme.dot}`} />
+                {pf}
+              </button>
+            );
+          })}
+        </div>
+        {/* 店铺选择器 (2026-08-24, new) — real connected stores for this
+            platform (same `stores` list Finance/Roles use); only shown when
+            there's more than one real store to pick between. */}
+        {storesForPlatform.length > 0 && (
+          <select
+            value={selectedStoreId || ""}
+            onChange={(e) => setSelectedStoreId(e.target.value || null)}
+            className="text-sm px-3 py-2 border border-slate-200 rounded-lg bg-white"
+          >
+            <option value="">{t("全部店铺", "All Stores")}</option>
+            {storesForPlatform.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* 🤖 AI 广告智能管家 (2026-08-24, new) — gradient AI-styled cards,
@@ -3383,7 +3497,28 @@ export function AdsSpend({ t, orders }) {
         <KPICardImpl label={t("有效广告数", "Effective Ads")} value={`${effectiveCount} / ${rows.length}`} icon={CheckCircle2} tone="bg-emerald-500" />
       </div>
 
-      <div className="flex justify-end">
+      {/* AI 打广告工具 (2026-08-24, new) — three standalone tools, separate
+          from the always-visible stop-loss/新品 cards above. See each
+          modal's own comment for what's real vs. template-generated. */}
+      <div className="flex flex-wrap justify-end gap-2">
+        <button
+          onClick={() => setShowCopyGen(true)}
+          className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+        >
+          <Bot size={14} /> {t("🤖 AI 广告文案与脚本生成器", "🤖 AI Ad Copy & Script Generator")}
+        </button>
+        <button
+          onClick={() => setShowRoasReport(true)}
+          className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+        >
+          <Sparkles size={14} /> {t("📊 AI ROAS 诊断与风控", "📊 AI ROAS Diagnosis")}
+        </button>
+        <button
+          onClick={() => setShowNegExtractor(true)}
+          className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+        >
+          <Search size={14} /> {t("🔍 AI 否定词提取助手", "🔍 AI Negative Keyword Extractor")}
+        </button>
         <button
           onClick={() => openCreateModal()}
           className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
@@ -3418,10 +3553,14 @@ export function AdsSpend({ t, orders }) {
         <table className="w-full text-sm min-w-[700px]">
           <thead>
             <tr className="text-left text-xs text-slate-400 border-b border-slate-200">
-              <th className="py-2 pr-3 pl-5 font-medium">{t("广告 / 商品", "Ad / Product")}</th>
+              <th className="py-2 pr-3 pl-5 font-medium">{t("广告", "Campaign")}</th>
+              {/* 关联产品 (2026-08-24, new) — real product name/image looked
+                  up by SKU from the already-loaded `orders` prop's real
+                  order_items (skuInfo map above), not a separate fetch. */}
+              <th className="py-2 pr-3 font-medium">{t("关联产品", "Linked Product")}</th>
               <th className="py-2 pr-3 font-medium text-right">{t("支出 (RM)", "Spend (RM)")}</th>
               <th className="py-2 pr-3 font-medium text-right">{t("点击", "Clicks")}</th>
-              <th className="py-2 pr-3 font-medium text-right">{t("带来订单", "Orders")}</th>
+              <th className="py-2 pr-3 font-medium text-right">{t("带来订单数", "Orders")}</th>
               <th className="py-2 pr-3 font-medium text-right">{t("带来营收 (RM)", "Revenue (RM)")}</th>
               <th className="py-2 pr-3 font-medium text-right">ROAS</th>
               <th className="py-2 pr-3 font-medium text-center">{t("判定", "Verdict")}</th>
@@ -3430,21 +3569,36 @@ export function AdsSpend({ t, orders }) {
           </thead>
           <tbody>
             {loading && (
-              <tr><td colSpan={8} className="py-6 text-center text-xs text-slate-400">{t("加载中…", "Loading…")}</td></tr>
+              <tr><td colSpan={9} className="py-6 text-center text-xs text-slate-400">{t("加载中…", "Loading…")}</td></tr>
             )}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={8} className="py-6 text-center text-xs text-slate-400">{t("该平台暂无广告数据，点击上方「新增广告数据」录入", 'No ad data for this platform yet — click "Add Campaign" above')}</td></tr>
+              <tr><td colSpan={9} className="py-6 text-center text-xs text-slate-400">{t("该平台暂无广告数据，点击上方「新增广告数据」录入", 'No ad data for this platform yet — click "Add Campaign" above')}</td></tr>
             )}
             {!loading && rows
               .slice()
               .sort((a, b) => b.roas - a.roas)
               .map((c) => {
                 const effective = c.roas >= AD_ROAS_THRESHOLD;
+                const linked = c.sku ? skuInfo.get(c.sku.trim().toLowerCase()) : null;
                 return (
                   <tr key={c.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
                     <td className="py-2.5 pr-3 pl-5">
                       <div className="font-medium">{c.name}</div>
-                      <div className="text-xs text-slate-400">{c.sku}</div>
+                      <div className="text-xs text-slate-400">{c.sku || "—"}</div>
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      {linked ? (
+                        <div className="flex items-center gap-2 min-w-0">
+                          {linked.image ? (
+                            <img src={linked.image} alt={linked.name} className="h-8 w-8 rounded-md object-cover border border-slate-200 shrink-0" />
+                          ) : (
+                            <div className="h-8 w-8 rounded-md bg-slate-100 border border-slate-200 shrink-0" />
+                          )}
+                          <span className="truncate max-w-[140px] text-xs text-slate-600">{linked.name}</span>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-300">{t("未关联", "Not linked")}</span>
+                      )}
                     </td>
                     <td className="py-2.5 pr-3 text-right tabular-nums">{fmt(c.spend)}</td>
                     <td className="py-2.5 pr-3 text-right tabular-nums">{c.clicks}</td>
@@ -3486,9 +3640,21 @@ export function AdsSpend({ t, orders }) {
             <div className="text-sm font-medium">{editingId ? t("编辑广告数据", "Edit Campaign") : t("新增广告数据", "Add Campaign")}</div>
             <div>
               <div className="text-xs text-slate-400 mb-1">{t("平台", "Platform")}</div>
-              <select value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg">
+              <select value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value, platform_account_id: "" })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg">
                 <option value="Shopee">Shopee</option>
                 <option value="TikTok Shop">TikTok Shop</option>
+              </select>
+            </div>
+            {/* 店铺 (2026-08-24, new) — real stores for the platform picked
+                above; optional (a campaign can stay "全部店铺" if not tied
+                to one specific store). */}
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("店铺（可选）", "Store (optional)")}</div>
+              <select value={form.platform_account_id} onChange={(e) => setForm({ ...form, platform_account_id: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg">
+                <option value="">{t("全部店铺", "All Stores")}</option>
+                {(stores || []).filter((s) => s.platform === form.platform).map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
               </select>
             </div>
             <div>
@@ -3551,6 +3717,158 @@ export function AdsSpend({ t, orders }) {
               <button onClick={confirmAiAction} className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 text-white hover:opacity-90">
                 <Zap size={14} /> {t("确认采纳", "Confirm")}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🤖 AI 广告文案与脚本生成器 — see generateAdScripts() comment above
+          for exactly how these are produced (template fill, not a real
+          external AI call). */}
+      {showCopyGen && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowCopyGen(false)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-lg space-y-3 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 text-sm font-medium text-indigo-700"><Bot size={16} /> {t("🤖 AI 广告文案与脚本生成器", "🤖 AI Ad Copy & Script Generator")}</div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("商品名称", "Product Name")}</div>
+              <input value={copyForm.productName} onChange={(e) => setCopyForm({ ...copyForm, productName: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" placeholder={t("例：不锈钢保温瓶 750ml", "e.g. Stainless Steel Bottle 750ml")} />
+            </div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("价格 (RM，可选)", "Price (RM, optional)")}</div>
+              <input type="number" value={copyForm.price} onChange={(e) => setCopyForm({ ...copyForm, price: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+            </div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("语言", "Languages")}</div>
+              <div className="flex gap-3">
+                {[["zh", "中文"], ["en", "English"], ["ms", "Bahasa Melayu"]].map(([code, label]) => (
+                  <label key={code} className="flex items-center gap-1.5 text-xs text-slate-600">
+                    <input type="checkbox" checked={copyForm.langs[code]} onChange={(e) => setCopyForm({ ...copyForm, langs: { ...copyForm.langs, [code]: e.target.checked } })} className="h-3.5 w-3.5 rounded border-slate-300" />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <button
+              onClick={() => setCopyResult(generateAdScripts(copyForm))}
+              disabled={!copyForm.productName.trim()}
+              className={`flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg text-white ${copyForm.productName.trim() ? "bg-gradient-to-r from-indigo-600 to-purple-600 hover:opacity-90" : "bg-slate-300 cursor-not-allowed"}`}
+            >
+              <Sparkles size={14} /> {t("生成文案", "Generate")}
+            </button>
+            {copyResult && copyResult.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                {copyResult.map((r) => (
+                  <div key={r.code} className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-1">
+                    <div className="font-medium text-slate-700">{r.label}</div>
+                    <div className="text-slate-600">{r.hook}</div>
+                    <div className="text-slate-600">{r.body}</div>
+                    <div className="text-slate-600">{r.cta}</div>
+                    <button onClick={() => copyText(`${r.hook}\n${r.body}\n${r.cta}`, t("文案已复制", "Copy copied"))} className="text-indigo-600 hover:text-indigo-800 mt-1">{t("复制此文案", "Copy this")}</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-end pt-2">
+              <button onClick={() => setShowCopyGen(false)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("关闭", "Close")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 📊 AI ROAS 诊断与风控 — full report across every real row currently
+          in view (respects the platform/store filters above), not just the
+          worst offenders already surfaced in the always-visible cards. */}
+      {showRoasReport && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowRoasReport(false)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-lg space-y-3 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 text-sm font-medium text-indigo-700"><Sparkles size={16} /> {t("📊 AI ROAS 诊断与风控", "📊 AI ROAS Diagnosis")}</div>
+            <div className="text-xs text-slate-500">
+              {t(
+                `整体 ROAS ${overallRoas.toFixed(2)}x，共 ${rows.length} 个广告（${effectiveCount} 个有效）`,
+                `Overall ROAS ${overallRoas.toFixed(2)}x across ${rows.length} campaigns (${effectiveCount} effective)`,
+              )}
+            </div>
+            <div className="space-y-2">
+              {rows.length === 0 && <div className="text-xs text-slate-400">{t("暂无广告数据可诊断", "No campaigns to diagnose yet")}</div>}
+              {rows.slice().sort((a, b) => b.roas - a.roas).map((c) => {
+                let verdict, advice, tone;
+                if (c.status === "paused") {
+                  verdict = t("已暂停", "Paused"); advice = t("无需处理", "No action needed"); tone = "text-slate-400";
+                } else if (c.spend === 0) {
+                  verdict = t("尚未产生花费", "No spend yet"); advice = t("等待数据积累", "Wait for more data"); tone = "text-slate-400";
+                } else if (c.roas < AD_ROAS_THRESHOLD) {
+                  verdict = t("止损", "Stop-loss"); advice = t("建议暂停或降低预算", "Suggest pausing or cutting budget"); tone = "text-rose-600";
+                } else if (c.roas >= AD_ROAS_THRESHOLD * 1.5) {
+                  verdict = t("扩量", "Scale up"); advice = t("表现优异，建议加大预算", "Performing well — suggest increasing budget"); tone = "text-emerald-600";
+                } else {
+                  verdict = t("维持", "Maintain"); advice = t("表现达标，维持现有预算", "On target — keep current budget"); tone = "text-slate-600";
+                }
+                return (
+                  <div key={c.id} className="flex items-center justify-between text-xs border-b border-slate-100 pb-2 last:border-0">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-slate-700 truncate">{c.name}</div>
+                      <div className="text-slate-400">{t("ROAS", "ROAS")} {c.roas.toFixed(2)}x · {advice}</div>
+                    </div>
+                    <div className={`shrink-0 font-medium ${tone}`}>{verdict}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex justify-end pt-2">
+              <button onClick={() => setShowRoasReport(false)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("关闭", "Close")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🔍 AI 否定词提取助手 — see parseNegativeKeywords() comment above:
+          purely parses/filters what staff pastes in, nothing fabricated. */}
+      {showNegExtractor && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowNegExtractor(false)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-lg space-y-3 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 text-sm font-medium text-indigo-700"><Search size={16} /> {t("🔍 AI 否定词提取助手", "🔍 AI Negative Keyword Extractor")}</div>
+            <div className="text-xs text-slate-500">
+              {t(
+                "粘贴广告后台的搜索词报告，每行一个词，字段用 Tab 或逗号分隔：搜索词, 花费, 点击, 订单。将提取「有花费但 0 订单」的词作为止损候选。",
+                "Paste your ads manager's search-term report, one term per line, tab- or comma-separated: term, spend, clicks, orders. Terms with real spend but 0 orders are extracted as negative-keyword candidates.",
+              )}
+            </div>
+            <textarea
+              value={negText}
+              onChange={(e) => setNegText(e.target.value)}
+              rows={6}
+              placeholder={"电动车零件,12.50,30,0\n摩托车灯泡,8.20,15,2"}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono"
+            />
+            <button
+              onClick={() => setNegResult(parseNegativeKeywords(negText))}
+              disabled={!negText.trim()}
+              className={`flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg text-white ${negText.trim() ? "bg-gradient-to-r from-indigo-600 to-purple-600 hover:opacity-90" : "bg-slate-300 cursor-not-allowed"}`}
+            >
+              <Search size={14} /> {t("提取否定词", "Extract")}
+            </button>
+            {negResult && (
+              negResult.length === 0 ? (
+                <div className="text-xs text-slate-400 pt-2">{t("未发现有花费但 0 订单的词，或格式无法识别", "No spend-but-zero-order terms found, or the format wasn't recognized")}</div>
+              ) : (
+                <div className="pt-2 border-t border-slate-100 space-y-2">
+                  <div className="text-xs text-slate-500">{t(`共 ${negResult.length} 个候选否定词`, `${negResult.length} candidate negative keywords`)}</div>
+                  <div className="max-h-48 overflow-y-auto space-y-1">
+                    {negResult.map((r) => (
+                      <div key={r.term} className="flex items-center justify-between text-xs bg-rose-50 border border-rose-100 rounded-lg px-3 py-1.5">
+                        <span className="text-slate-700">{r.term}</span>
+                        <span className="text-slate-400">RM{fmt(r.spend)} · {r.clicks} {t("点击", "clicks")} · 0 {t("订单", "orders")}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={() => copyText(negResult.map((r) => r.term).join("\n"), t("否定词已复制", "Negative keywords copied"))} className="text-xs text-indigo-600 hover:text-indigo-800">
+                    {t("一键复制全部否定词", "Copy all negative keywords")}
+                  </button>
+                </div>
+              )
+            )}
+            <div className="flex justify-end pt-2">
+              <button onClick={() => setShowNegExtractor(false)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("关闭", "Close")}</button>
             </div>
           </div>
         </div>
