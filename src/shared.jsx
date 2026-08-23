@@ -238,6 +238,13 @@ export function mapDbOrder(order, items) {
       variation: it.variation || "",
       qty: it.qty || 1,
       unitPrice: Number(it.unit_price || 0),
+      // originalPrice (2026-08-24) — real TikTok list price before any
+      // platform-funded discount (order_items.original_price, synced by
+      // tiktok-sync-orders). Falls back to 0 for rows synced before this
+      // field existed / for Shopee (never populated there) — consumers must
+      // treat 0 as "unknown" and fall back to unitPrice*qty, not as a real
+      // zero-price item.
+      originalPrice: Number(it.original_price || 0),
     })),
     shippingFee: Number(order.shipping_fee || 0),
     platformFee: 0,

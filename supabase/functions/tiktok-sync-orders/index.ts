@@ -18,6 +18,32 @@
 // Optional secret SYNC_TRIGGER_SECRET: if set, callers must send header
 // `x-sync-secret: <value>` or the request is rejected.
 //
+// original_price capture verified end-to-end 2026-08-24 against real order
+// 585688274303748056 (buyer "i***ndar m***", matches user-provided TikTok
+// screenshot exactly): synced original_price=138 (was showing RM124.20
+// sale_price before this field existed); recomputed estimate using it then
+// matched TikTok's own real Est. Fees breakdown to the cent — commission
+// RM9.69, transaction RM5.22, BXP RM6.71, support RM0.54, total RM22.16,
+// payout RM115.84, all identical. Note for future debugging: POST
+// /order/202309/orders/search does NOT support an `order_ids` body filter
+// (silently ignored, returns an unrelated order instead of erroring) — for
+// looking up one specific real order, use GET /order/202309/orders?ids=...
+// (the actual "Get Order Detail" endpoint) instead.
+//
+// 2026-08-24 fee-formula check against real order 585674439704807341 (user-
+// provided TikTok Seller Center figures): revenue RM73.60 (original_price-
+// based) × commission 7.02% = RM5.17, × transaction (73.60+shipping 0)*3.78%
+// = RM2.78, × BXP 4.86% = RM3.58, + flat platform support RM0.54 → total
+// RM12.07 — all four match TikTok's real numbers exactly, no formula change
+// needed this turn. ERP was still showing RM72.78 (sale_price-based) for
+// this specific order only because it hasn't been resynced since the
+// original_price fix landed — it self-corrects the next time this order is
+// naturally re-pulled (status change triggers incremental sync, or a
+// fullSync walk), same known limitation as noted for order 585688274303748056
+// above. Checked via manual calculation against user-supplied real figures,
+// not a live API pull, to avoid needing a temporary single-order debug probe
+// this time (production auth secret isn't retrievable from this session).
+//
 // Required secrets: TIKTOK_APP_KEY, TIKTOK_APP_SECRET
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -301,20 +327,34 @@ async function upsertOrderPage(
     // order_id+sku) would just overwrite qty=1 with qty=1 again, and the
     // stock_movements idempotency guard would silently skip the deduction
     // for every line_item after the first, under-deducting stock.
-    const itemsBySku = new Map<string, { productName: string; variation: string | null; qty: number; subtotal: number; imageUrl: string | null }>();
+    // original_price (2026-08-24, new) — real field, already present in this
+    // same line_items payload (no new API call), previously not captured.
+    // sale_price already nets out platform_discount (TikTok-funded, not a
+    // real cost to the seller), so pre-settlement Est. Revenue built from
+    // sale_price undercounts vs TikTok's own real estimate, which is based
+    // on original_price ("subtotal before/after seller discounts" in
+    // TikTok's Settlement Breakdown UI — live-verified against real order
+    // 585688274303748056: TikTok showed RM138 revenue, we showed RM124.20,
+    // gap of RM13.80 exactly explained by this order's real platform_discount).
+    // Summed the same way sale_price already is, for the same reason
+    // (multiple line_items per SKU).
+    const itemsBySku = new Map<string, { productName: string; variation: string | null; qty: number; subtotal: number; originalPrice: number; imageUrl: string | null }>();
     for (const item of o.line_items ?? []) {
       const sku = item.seller_sku || item.sku_id || String(item.id);
       const salePrice = Number(item.sale_price ?? 0);
+      const originalPrice = Number(item.original_price ?? item.sale_price ?? 0);
       const existing = itemsBySku.get(sku);
       if (existing) {
         existing.qty += 1;
         existing.subtotal += salePrice;
+        existing.originalPrice += originalPrice;
       } else {
         itemsBySku.set(sku, {
           productName: item.product_name,
           variation: item.sku_name ?? null,
           qty: 1,
           subtotal: salePrice,
+          originalPrice,
           imageUrl: item.sku_image ?? null,
         });
       }
@@ -330,6 +370,7 @@ async function upsertOrderPage(
           qty: grouped.qty,
           unit_price: grouped.subtotal / grouped.qty,
           subtotal: grouped.subtotal,
+          original_price: grouped.originalPrice,
           image_url: grouped.imageUrl,
         },
         { onConflict: "order_id,sku" },

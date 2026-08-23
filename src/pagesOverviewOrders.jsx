@@ -2356,7 +2356,31 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
         <div className="grid grid-cols-2 gap-6">
           <div className="text-sm">
             <div className="text-xs text-slate-400 mb-1">{t("订单编号", "Order No.")}</div>
-            <div className="font-medium tabular-nums">{order.platformOrderId || order.id}</div>
+            <div className="font-medium tabular-nums flex items-center gap-1.5">
+              {order.platformOrderId || order.id}
+              {/* 订单号一键复制图标 (2026-08-24, new) — inline icon next to
+                  the order number itself, separate from the existing
+                  "复制订单号" text button further down (that one is
+                  Shopee-only, tied to the chat-deeplink section). This one
+                  works for every order regardless of platform. */}
+              <button
+                onClick={async () => {
+                  const orderSn = order.platformOrderId || order.id;
+                  if (!orderSn) return;
+                  try {
+                    await navigator.clipboard.writeText(orderSn);
+                    setChatToast(t("订单号已复制", "Order number copied"));
+                  } catch {
+                    setChatToast(t("复制失败，请手动复制订单号", "Copy failed — please copy the order number manually"));
+                  }
+                  setTimeout(() => setChatToast(null), 2500);
+                }}
+                className="text-slate-400 hover:text-slate-600 shrink-0"
+                title={t("复制订单号", "Copy Order No.")}
+              >
+                <Copy size={13} />
+              </button>
+            </div>
           </div>
 
           <div className="text-sm">

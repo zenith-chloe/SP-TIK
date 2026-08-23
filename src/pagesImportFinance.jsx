@@ -755,12 +755,34 @@ function resolveTikTokBxpFee(o, revenue) {
 // real (still-unsettled) order today, no fallback guess rate. Total =
 // Est. Revenue - sum of Est. Fees; zero-amount lines drop out automatically.
 export function tiktokEstimatedBreakdown(o, t) {
-  const lineItems = o.items && o.items.length > 0 ? o.items : [{ unitPrice: o.unitPrice, qty: o.qty }];
-  const revenue = +lineItems.reduce((sum, it) => sum + it.unitPrice * it.qty, 0).toFixed(2);
+  const lineItems = o.items && o.items.length > 0 ? o.items : [{ unitPrice: o.unitPrice, qty: o.qty, originalPrice: o.originalPrice }];
+  // Est. Revenue base (2026-08-24, user-confirmed fix, live-verified against
+  // real order 585688274303748056): TikTok's own real pre-settlement
+  // estimate uses original_price ("subtotal before/after seller discounts"
+  // in its Settlement Breakdown UI), not sale_price — sale_price already
+  // nets out platform_discount (TikTok-funded, not a real cost to the
+  // seller), so basing revenue on it undercounted vs TikTok's own number
+  // (real gap: RM138 vs our RM124.20 on that order, exactly explained by
+  // that order's platform_discount). `it.originalPrice` is the real synced
+  // field (order_items.original_price, tiktok-sync-orders); falls back to
+  // unitPrice*qty for rows synced before this field existed (originalPrice
+  // will be 0 on those) so nothing breaks for not-yet-resynced orders.
+  const itemRevenue = (it) => (it.originalPrice > 0 ? it.originalPrice : it.unitPrice * it.qty);
+  const revenue = +lineItems.reduce((sum, it) => sum + itemRevenue(it), 0).toFixed(2);
   const commissionAmt = +lineItems
-    .reduce((sum, it) => sum + it.unitPrice * it.qty * resolveTikTokCommissionRate(it), 0)
+    .reduce((sum, it) => sum + itemRevenue(it) * resolveTikTokCommissionRate(it), 0)
     .toFixed(2);
-  const transactionAmt = +(revenue * TIKTOK_TRANSACTION_FEE_RATE).toFixed(2);
+  // Transaction fee base (2026-08-24, user-confirmed fix, live-verified
+  // against real order 585682879558485805): TikTok charges this fee on what
+  // the buyer actually paid in total, not just merchandise value — real
+  // order: revenue RM35.80 + buyer shipping RM3.60 = RM39.40, ×3.78% =
+  // RM1.49 (exactly matches TikTok's real Est. Fees; our old revenue-only
+  // base gave RM1.35, RM0.14 short). Re-checked against the earlier
+  // reference order 585688274303748056 too: buyer shipping was RM0 there,
+  // so revenue+0 still gives the same RM5.22 already verified — this change
+  // doesn't regress that order. `o.shippingFee` is the real buyer-paid
+  // shipping (orders.shipping_fee, synced from TikTok's payment.shipping_fee).
+  const transactionAmt = +((revenue + (o.shippingFee || 0)) * TIKTOK_TRANSACTION_FEE_RATE).toFixed(2);
   const bxpAmt = resolveTikTokBxpFee(o, revenue);
   const platformSupportAmt = TIKTOK_PLATFORM_SUPPORT_FEE_FLAT;
   // Est. Seller Shipping Fee (2026-08-22, user-confirmed fix, live-verified
@@ -781,7 +803,12 @@ export function tiktokEstimatedBreakdown(o, t) {
   const affiliateAmt = Number(resolveTikTokAffiliateCommission(o, lineItems));
   const fees = [
     { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
-    { label: t("预估交易费", "Est. Transaction Fee"), amount: transactionAmt, pct: TIKTOK_TRANSACTION_FEE_RATE * 100 },
+    // pct here is the effective rate vs merchandise revenue (matches how
+    // every other fee line's pct is computed just above/below) — now that
+    // transactionAmt's base includes buyer shipping too, showing the flat
+    // TIKTOK_TRANSACTION_FEE_RATE here would understate the displayed %
+    // relative to the actual RM amount shown next to it.
+    { label: t("预估交易费", "Est. Transaction Fee"), amount: transactionAmt, pct: revenue > 0 ? (transactionAmt / revenue) * 100 : 0 },
     { label: t("红利返现/超级福袋服务费 (BXP)", "Bonus Cashback / Voucher Xtra Service Fee (BXP)"), amount: bxpAmt, pct: revenue > 0 ? (bxpAmt / revenue) * 100 : 0 },
     { label: t("平台支持费", "Platform Support Fee"), amount: platformSupportAmt, pct: revenue > 0 ? (platformSupportAmt / revenue) * 100 : 0 },
     { label: t("预估卖家运费", "Est. Seller Shipping Fee"), amount: shippingAmt, pct: revenue > 0 ? (shippingAmt / revenue) * 100 : 0 },
@@ -906,7 +933,19 @@ export function FeeBreakdownPanel({ detail, t, isEstimate, items }) {
         </div>
       </div>
       <div className="mt-3 pt-3 border-t border-slate-200">
-        <div className="text-slate-400 mb-1.5">{isEstimate ? t("预估平台费 (Estimated Fees & Charges)", "Estimated Fees & Charges") : t("费用扣除明细", "Fees & Charges")}</div>
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="text-slate-400">{isEstimate ? t("预估平台费 (Estimated Fees & Charges)", "Estimated Fees & Charges") : t("费用扣除明细", "Fees & Charges")}</div>
+          {/* 扣费总额 (2026-08-24, new) — sum of every line below, shown
+              inline next to the title so staff don't have to add up each
+              row by hand. Derived from detail.fees (already the real
+              synced/estimated numbers rendered below), never a separate
+              fabricated figure. */}
+          {detail.fees.length > 0 && (
+            <div className="font-medium tabular-nums text-blue-600">
+              (RM {fmt(detail.fees.reduce((sum, f) => sum + f.amount, 0))})
+            </div>
+          )}
+        </div>
         {detail.fees.length === 0 ? (
           <div className="text-slate-300">{t("此单无额外扣费", "No additional fees on this order")}</div>
         ) : (
