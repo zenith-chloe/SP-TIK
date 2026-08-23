@@ -755,7 +755,21 @@ export function tiktokEstimatedBreakdown(o, t) {
   const transactionAmt = +(revenue * TIKTOK_TRANSACTION_FEE_RATE).toFixed(2);
   const bxpAmt = resolveTikTokBxpFee(o, revenue);
   const platformSupportAmt = TIKTOK_PLATFORM_SUPPORT_FEE_FLAT;
-  const shippingAmt = +(o.shippingFee || 0).toFixed(2);
+  // Est. Seller Shipping Fee (2026-08-22, user-confirmed fix, live-verified
+  // against real order 585653516133893588's TikTok Seller Center estimate):
+  // TikTok's real logic nets Actual Shipping Fee (courier's real cost)
+  // against Customer Shipping Fee (what the buyer paid) — net lands at RM0
+  // whenever the buyer fully covers shipping, e.g. that real order: Actual
+  // -RM1.60, Customer +RM1.60, net RM0. We previously subtracted
+  // `order.shippingFee` directly as a cost — but that field only ever holds
+  // what the BUYER paid (synced from payment.shipping_fee), not the
+  // courier's actual cost, and pre-settlement we have no real
+  // actual-courier-cost field to net it against. Subtracting the buyer-paid
+  // amount as if it were a seller cost double-counts money the buyer
+  // already covered. Set to 0 here (real settled orders already compute
+  // this correctly via incomeBreakdown()'s tiktok_seller_shipping_fee, a
+  // genuinely netted real column, unaffected by this change).
+  const shippingAmt = 0;
   const affiliateAmt = Number(resolveTikTokAffiliateCommission(o, lineItems));
   const fees = [
     { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
@@ -766,6 +780,25 @@ export function tiktokEstimatedBreakdown(o, t) {
     { label: t("预估达人佣金", "Est. Affiliate Commission"), amount: affiliateAmt, pct: revenue > 0 ? (affiliateAmt / revenue) * 100 : 0 },
   ].filter((f) => f.amount !== 0);
   const totalFees = +fees.reduce((sum, f) => sum + f.amount, 0).toFixed(2);
+  // Affiliate commission placeholder note (2026-08-22, user request) — real
+  // TikTok Seller Center shows a real "Est. affiliate commission" line for
+  // unsettled orders (e.g. real order 585653516133893588: -RM1.84), but that
+  // number comes from the Affiliate Seller API, which Custom Apps cannot be
+  // granted access to (confirmed live 2026-08-22, code 105005, and via user
+  // confirmation with TikTok Partner Center — see tiktok-settlement-sync's
+  // comments). Rather than silently showing RM0.00 and letting staff assume
+  // there's no affiliate commission on the order, this note is surfaced
+  // whenever affiliateAmt is 0 (i.e. always, today) so it's visibly flagged
+  // as "unknown", not "zero". Rendered by FeeBreakdownPanel below the
+  // itemized fees, not as a numeric fee line (we have no real number to
+  // show) — real settled orders overwrite this with the actual number via
+  // incomeBreakdown() instead and never show this note.
+  const affiliateNote = affiliateAmt === 0
+    ? t(
+        "达人佣金以 TikTok 官方结算数据为准，预估阶段受 API 权限限制无法获取真实数值（未计入以上预估到账金额，不代表本单无达人佣金）",
+        "Affiliate commission reflects TikTok's official settlement once available — not obtainable pre-settlement due to API access limits (not included in the estimated payout above; does not mean this order has zero affiliate commission)",
+      )
+    : null;
   return {
     merchandiseSubtotal: revenue,
     // Shipping is now represented as a fee line (deduction) above, matching
@@ -775,6 +808,7 @@ export function tiktokEstimatedBreakdown(o, t) {
     buyerPaidShipping: null,
     logisticsShipping: null,
     fees,
+    affiliateNote,
     orderIncome: +(revenue - totalFees).toFixed(2),
   };
 }
@@ -903,6 +937,18 @@ export function FeeBreakdownPanel({ detail, t, isEstimate, items }) {
               + "「预估平台费」是两个不同的数字）",
             'Formula: Merchandise Subtotal + Shipping Subtotal − Estimated Fees = Estimated Payout Amount (no real settlement yet — actual payout is set by the platform; this is a different number from "Estimated Fees" above)',
           )}
+        </div>
+      )}
+      {/* Affiliate commission placeholder note (2026-08-22, new) — see
+          tiktokEstimatedBreakdown()'s affiliateNote comment for the full
+          rationale. Only ever set on the TikTok pre-settlement estimate
+          shape; absent/undefined everywhere else, so this renders nowhere
+          else. Styled as an info note (amber), not a red fee line, since
+          it's not a numeric deduction. */}
+      {detail.affiliateNote && (
+        <div className="mt-2 flex items-start gap-1.5 text-[11px] text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-2">
+          <Info size={12} className="shrink-0 mt-0.5" />
+          <span>{detail.affiliateNote}</span>
         </div>
       )}
     </>
