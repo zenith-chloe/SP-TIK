@@ -64,7 +64,15 @@ const corsHeaders = {
 // 429) is captured in that order's `results[order_no]` message and
 // `sync_logs`, same as any other per-order failure — never silent, never
 // corrupts other rows. Revisit further if sync_logs shows rate-limit errors.
-const BATCH_SIZE = 50;
+// Raised 50 -> 100 (2026-08-23, user-approved) — sync_logs showed 0 failures
+// across 121 runs in the prior 2 hours at 50/min with a real ~56% hit rate
+// (candidates that are actually settled vs still "not settled yet"), no
+// rate-limit signal from TikTok. Real backlog was still 5,924 orders at this
+// point (recent-orders-first sorting means older ones keep getting
+// deprioritized by newer arrivals) — doubling throughput to reduce that
+// queue faster. Same safety net as before: any per-order API rejection is
+// captured in `results[order_no]`/sync_logs, never silent.
+const BATCH_SIZE = 100;
 const SETTLEMENT_CANDIDATE_STATUSES = ["COMPLETED", "DELIVERED"];
 
 async function tiktokGetStatementTransactions(

@@ -2170,16 +2170,36 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
     setSettlement(null);
     const dbPlatform = DEMO_TO_DB_PLATFORM[order.platform];
     if (!dbPlatform) { setSettlementLoading(false); return; }
-    supabaseClient
-      .from("order_settlements")
-      .select("*")
-      .eq("order_no", order.id)
-      .eq("platform", dbPlatform)
-      .maybeSingle()
-      .then(({ data }) => {
-        if (!cancelled) { setSettlement(data || null); setSettlementLoading(false); }
-      });
-    return () => { cancelled = true; };
+
+    function fetchSettlement(silent) {
+      if (!silent) setSettlementLoading(true);
+      supabaseClient
+        .from("order_settlements")
+        .select("*")
+        .eq("order_no", order.id)
+        .eq("platform", dbPlatform)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (cancelled) return;
+          setSettlementLoading(false);
+          if (data) setSettlement(data); // never overwrite a real row with null on a later poll
+        });
+    }
+    fetchSettlement(false);
+
+    // Background poll while still unsettled (2026-08-23) — the drawer
+    // previously only ever fetched once on open, so if TikTok's real
+    // settlement landed in order_settlements while a staff member had the
+    // drawer open looking at the "预估" estimate, it silently stayed on the
+    // stale estimate until they closed and reopened it. Matches the app's
+    // existing 20s silent-refresh cadence (see erp-mvp-demo.jsx's
+    // loadRealData(true) interval). Stops automatically once real data
+    // lands (no `settlement` state read here — the closure would go stale;
+    // instead each tick just checks the freshly fetched `data` above and
+    // only assigns forward, so once real data is set, further polls simply
+    // keep confirming the same non-null row without any visible change).
+    const pollId = setInterval(() => fetchSettlement(true), 20000);
+    return () => { cancelled = true; clearInterval(pollId); };
   }, [order.id, order.platform]);
 
   const hasRealData = !!settlement;
