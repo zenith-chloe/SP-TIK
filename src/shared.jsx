@@ -387,16 +387,10 @@ export const ROLES = [
   { role: "客服", users: 4, perms: { 订单: true, 库存: false, 财务: false, AI: true, 权限: false } },
 ];
 
-export const AD_CAMPAIGNS = [
-  { id: "AD-001", platform: "Shopee", name: "Shopee 搜索广告 - T恤黑色", sku: "TSH-BLK-M", spend: 320, clicks: 1180, orders: 42, revenue: 1680 },
-  { id: "AD-002", platform: "Shopee", name: "Shopee 商品推荐 - 保温瓶", sku: "BOTL-STL-750", spend: 450, clicks: 900, orders: 18, revenue: 900 },
-  { id: "AD-003", platform: "Shopee", name: "Shopee 店铺推广 - 全店", sku: "—", spend: 600, clicks: 2100, orders: 30, revenue: 1350 },
-  { id: "AD-004", platform: "Shopee", name: "Shopee 搜索广告 - N95口罩", sku: "MASK-N95-50", spend: 180, clicks: 640, orders: 26, revenue: 1170 },
-  { id: "AD-005", platform: "TikTok Shop", name: "TikTok 直播间引流", sku: "TSH-BLK-L", spend: 520, clicks: 3400, orders: 55, revenue: 2310 },
-  { id: "AD-006", platform: "TikTok Shop", name: "TikTok 短视频广告 - 榴莲干", sku: "SNK-DUR-01", spend: 260, clicks: 1900, orders: 48, revenue: 2016 },
-  { id: "AD-007", platform: "TikTok Shop", name: "TikTok 商品卡广告 - 手机壳", sku: "PHON-CASE-13", spend: 210, clicks: 1500, orders: 9, revenue: 189 },
-  { id: "AD-008", platform: "TikTok Shop", name: "TikTok GMV Max - 帆布袋", sku: "BAG-CANV-01", spend: 150, clicks: 800, orders: 12, revenue: 300 },
-];
+// AD_CAMPAIGNS mock array removed (2026-08-24) — 广告费用 (AdsSpend) now
+// reads real data from the `ad_campaigns` Supabase table (staff-entered;
+// see the data-source note above the AdsSpend component in
+// pagesImportFinance.jsx for why there's no real Ads API behind it).
 export const AD_ROAS_THRESHOLD = 3;
 
 /* ============================== Helpers ============================== */

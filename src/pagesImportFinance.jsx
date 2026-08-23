@@ -7,12 +7,13 @@ import {
   Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Info, TrendingUp,
   DollarSign, Sparkles, Bot, Send, Users, Megaphone, Printer, X, Settings, Package, GripVertical, Plus,
   SlidersHorizontal, History, Eye, ChevronDown, Search, Pencil, Trash2, KeyRound, Ban, ShieldCheck,
+  Zap, Rocket,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import {
-  PRODUCTS, PLATFORM_THEME, AD_CAMPAIGNS, AD_ROAS_THRESHOLD,
+  PRODUCTS, PLATFORM_THEME, AD_ROAS_THRESHOLD,
   fmt, statusLabel, warehouseLabel, supabaseClient, mapDbOrder, DEMO_TO_DB_PLATFORM,
 } from "./shared.jsx";
 import { KPICard as KPICardImpl } from "./pagesOverviewOrders.jsx";
@@ -3143,11 +3144,132 @@ export function Roles({ t }) {
 
 /* ============================== Ads spend (广告费用) ============================== */
 
-export function AdsSpend({ t }) {
+// AI 广告智能管家 — data source note (2026-08-24): ad_campaigns is a real
+// Supabase table, but every spend/click/order/revenue number in it is
+// MANUALLY entered by staff (via the "新增广告" form below) — there is no
+// TikTok Marketing API / Shopee Ads API integration in this project (only
+// the Order/Settlement APIs are connected). So every KPI, chart, and AI
+// diagnosis on this page is only as accurate as what staff typed in; this
+// is a deliberate scope decision (confirmed with the user 2026-08-24), not
+// an oversight. The "潜力商品" recommendation below is grounded in real
+// order_items sales data (via the `orders` prop, same source AIPanel's Top
+// Sellers card uses) rather than a fabricated "conversion rate" — this
+// project has no ad-impression/traffic data at all, so a true conversion
+// rate can't be computed; recent real order volume is used as an honest
+// proxy instead, and labeled as such in the UI (not called "转化率").
+// "🤖 一键采纳 AI 优化" never touches any real ad platform (no API to call)
+// — it only writes ai_action_note/ai_action_taken_at (and, for stop-loss
+// suggestions, status='paused') on this table, as a record of the decision
+// staff acted on; the actual budget/bid change still has to be made by a
+// human in TikTok/Shopee's own ads console.
+const AI_LOOKBACK_DAYS = 30;
+const AI_NEW_PRODUCT_MIN_ORDERS = 5;
+
+function daysAgoStr(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+export function AdsSpend({ t, orders }) {
   const [activePlatform, setActivePlatform] = useState("Shopee");
   const theme = PLATFORM_THEME[activePlatform];
 
-  const allRows = AD_CAMPAIGNS.map((c) => ({ ...c, roas: c.revenue / c.spend }));
+  const [campaigns, setCampaigns] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({ platform: "Shopee", name: "", sku: "", spend: "", clicks: "", orders: "", revenue: "" });
+  const [aiTarget, setAiTarget] = useState(null); // { mode: "stop_loss" | "new_product", campaign?, product? }
+  const [aiNote, setAiNote] = useState("");
+
+  function showToast(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2500);
+  }
+
+  async function loadCampaigns() {
+    setLoading(true);
+    const { data, error } = await supabaseClient.from("ad_campaigns").select("*").order("created_at", { ascending: false });
+    if (!error) setCampaigns(data || []);
+    else console.error("loadCampaigns failed", error);
+    setLoading(false);
+  }
+  useEffect(() => { loadCampaigns(); }, []);
+
+  function openCreateModal(prefill) {
+    setEditingId(null);
+    setForm({ platform: activePlatform, name: "", sku: "", spend: "", clicks: "", orders: "", revenue: "", ...prefill });
+    setShowForm(true);
+  }
+  function openEditModal(c) {
+    setEditingId(c.id);
+    setForm({ platform: c.platform, name: c.name, sku: c.sku || "", spend: String(c.spend), clicks: String(c.clicks), orders: String(c.orders), revenue: String(c.revenue) });
+    setShowForm(true);
+  }
+
+  async function saveForm() {
+    if (!form.name.trim()) { showToast(t("请填写广告名称", "Please enter a campaign name")); return; }
+    const payload = {
+      platform: form.platform,
+      name: form.name.trim(),
+      sku: form.sku.trim() || null,
+      spend: Number(form.spend) || 0,
+      clicks: Math.round(Number(form.clicks) || 0),
+      orders: Math.round(Number(form.orders) || 0),
+      revenue: Number(form.revenue) || 0,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = editingId
+      ? await supabaseClient.from("ad_campaigns").update(payload).eq("id", editingId)
+      : await supabaseClient.from("ad_campaigns").insert(payload);
+    if (error) { showToast(t("保存失败", "Save failed")); console.error("saveForm failed", error); return; }
+    setShowForm(false);
+    showToast(t("已保存", "Saved"));
+    loadCampaigns();
+  }
+
+  async function deleteCampaign(id) {
+    const { error } = await supabaseClient.from("ad_campaigns").delete().eq("id", id);
+    if (error) { showToast(t("删除失败", "Delete failed")); console.error("deleteCampaign failed", error); return; }
+    showToast(t("已删除", "Deleted"));
+    loadCampaigns();
+  }
+
+  // 一键采纳 AI 优化 — see the data-source note above the component for
+  // exactly what this does and doesn't do (records a decision, never calls
+  // a real ads API).
+  async function confirmAiAction() {
+    if (!aiTarget) return;
+    if (aiTarget.mode === "stop_loss") {
+      const { error } = await supabaseClient.from("ad_campaigns").update({
+        status: "paused",
+        ai_action_note: aiNote || t("AI 建议已采纳：因 ROAS 低于目标，暂停该广告", "AI suggestion adopted: paused due to ROAS below target"),
+        ai_action_taken_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).eq("id", aiTarget.campaign.id);
+      if (error) { showToast(t("操作失败", "Action failed")); console.error("confirmAiAction failed", error); setAiTarget(null); return; }
+      showToast(t("已标记暂停，请记得在广告后台同步执行", "Marked paused — remember to action this in the real ads console"));
+    } else {
+      const { error } = await supabaseClient.from("ad_campaigns").insert({
+        platform: activePlatform,
+        name: t(`AI 推荐新广告 - ${aiTarget.product.name}`, `AI-Recommended Campaign - ${aiTarget.product.name}`),
+        sku: aiTarget.product.sku,
+        spend: 0, clicks: 0, orders: 0, revenue: 0,
+        status: "active",
+        ai_action_note: aiNote || t("AI 建议已采纳：该商品近期真实销量高但未投放广告，已建档待开启", "AI suggestion adopted: high real recent sales with no ads yet — record created, pending launch"),
+        ai_action_taken_at: new Date().toISOString(),
+      });
+      if (error) { showToast(t("操作失败", "Action failed")); console.error("confirmAiAction failed", error); setAiTarget(null); return; }
+      showToast(t("已建档，请在广告后台实际开启投放", "Draft campaign recorded — launch it for real in the ads console"));
+    }
+    setAiTarget(null);
+    setAiNote("");
+    loadCampaigns();
+  }
+
+  const allRows = campaigns.map((c) => ({ ...c, roas: c.spend > 0 ? c.revenue / c.spend : 0 }));
   const rows = allRows.filter((c) => c.platform === activePlatform);
 
   const totalSpend = rows.reduce((s, c) => s + c.spend, 0);
@@ -3155,8 +3277,35 @@ export function AdsSpend({ t }) {
   const overallRoas = totalSpend > 0 ? totalRevenue / totalSpend : 0;
   const effectiveCount = rows.filter((c) => c.roas >= AD_ROAS_THRESHOLD).length;
 
+  // AI 止损预警 — real rows only: active campaigns on this platform, real
+  // spend > 0 (so a freshly-created RM0 draft never gets flagged), real
+  // ROAS below the configured threshold.
+  const stopLossFlags = rows.filter((c) => c.status === "active" && c.spend > 0 && c.roas < AD_ROAS_THRESHOLD);
+
+  // AI 潜力商品推荐 — real order_items sales (via the already-loaded
+  // `orders` prop, last AI_LOOKBACK_DAYS days, this platform only),
+  // excluding any SKU that already has a campaign row on this platform.
+  const since = daysAgoStr(AI_LOOKBACK_DAYS);
+  const adSkus = new Set(rows.map((c) => (c.sku || "").trim().toLowerCase()).filter(Boolean));
+  const salesBySku = new Map();
+  for (const o of orders || []) {
+    if (o.platform !== activePlatform || !o.sku || o.date < since) continue;
+    const key = o.sku.trim().toLowerCase();
+    const cur = salesBySku.get(key) || { sku: o.sku, name: o.product, orderCount: 0 };
+    cur.orderCount += 1;
+    salesBySku.set(key, cur);
+  }
+  const newProductFlags = [...salesBySku.values()]
+    .filter((p) => p.orderCount >= AI_NEW_PRODUCT_MIN_ORDERS && !adSkus.has(p.sku.trim().toLowerCase()))
+    .sort((a, b) => b.orderCount - a.orderCount)
+    .slice(0, 3);
+
   return (
     <div className="space-y-4">
+      {toast && (
+        <div className="fixed top-4 right-4 z-50 bg-slate-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg">{toast}</div>
+      )}
+
       <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 gap-1">
         {["Shopee", "TikTok Shop"].map((pf) => {
           const pfTheme = PLATFORM_THEME[pf];
@@ -3176,11 +3325,71 @@ export function AdsSpend({ t }) {
         })}
       </div>
 
+      {/* 🤖 AI 广告智能管家 (2026-08-24, new) — gradient AI-styled cards,
+          only ever rendered when a real flagged row exists (no "AI found
+          nothing so let's show something anyway" filler). */}
+      {(stopLossFlags.length > 0 || newProductFlags.length > 0) && (
+        <div className="rounded-xl border border-indigo-200 bg-gradient-to-br from-indigo-50 via-white to-purple-50 p-4 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-indigo-700">
+            <Bot size={16} /> {t("🤖 AI 广告智能管家", "🤖 AI Ad Copilot")}
+          </div>
+          {stopLossFlags.map((c) => (
+            <div key={c.id} className="flex items-start gap-3 bg-white border border-rose-200 rounded-lg p-3">
+              <AlertTriangle size={16} className="text-rose-500 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0 text-xs">
+                <div className="font-medium text-slate-700">
+                  {t(
+                    `止损预警：${c.name} 已投入 RM ${fmt(c.spend)}，ROAS 仅 ${c.roas.toFixed(2)}x（低于目标 ${AD_ROAS_THRESHOLD}x）`,
+                    `Stop-loss alert: ${c.name} has spent RM ${fmt(c.spend)}, ROAS only ${c.roas.toFixed(2)}x (below target ${AD_ROAS_THRESHOLD}x)`,
+                  )}
+                </div>
+                <div className="text-slate-400 mt-0.5">{t("建议：暂停投放或大幅降低预算", "Suggestion: pause this campaign or cut its budget significantly")}</div>
+              </div>
+              <button
+                onClick={() => { setAiTarget({ mode: "stop_loss", campaign: c }); setAiNote(""); }}
+                className="shrink-0 flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 text-white hover:opacity-90"
+              >
+                <Zap size={12} /> {t("一键采纳 AI 优化", "Adopt AI Suggestion")}
+              </button>
+            </div>
+          ))}
+          {newProductFlags.map((p) => (
+            <div key={p.sku} className="flex items-start gap-3 bg-white border border-emerald-200 rounded-lg p-3">
+              <Rocket size={16} className="text-emerald-500 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0 text-xs">
+                <div className="font-medium text-slate-700">
+                  {t(
+                    `潜力商品：${p.name}（${p.sku}）近 ${AI_LOOKBACK_DAYS} 天真实成交 ${p.orderCount} 单，尚未投放广告`,
+                    `Potential winner: ${p.name} (${p.sku}) — ${p.orderCount} real orders in the last ${AI_LOOKBACK_DAYS} days, no ads running yet`,
+                  )}
+                </div>
+                <div className="text-slate-400 mt-0.5">{t("建议：开启 GMV Max / 自动出价广告测款", "Suggestion: launch a GMV Max / Auto-Bidding campaign to test it")}</div>
+              </div>
+              <button
+                onClick={() => { setAiTarget({ mode: "new_product", product: p }); setAiNote(""); }}
+                className="shrink-0 flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:opacity-90"
+              >
+                <Zap size={12} /> {t("一键采纳 AI 优化", "Adopt AI Suggestion")}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KPICardImpl label={t(`${activePlatform} 广告支出 (RM)`, `${activePlatform} Ad Spend (RM)`)} value={fmt(totalSpend)} icon={Megaphone} tone={theme.headerBg} />
         <KPICardImpl label={t("广告带来营收 (RM)", "Ad-Driven Revenue (RM)")} value={fmt(totalRevenue)} icon={TrendingUp} tone="bg-teal-500" />
         <KPICardImpl label="ROAS" value={`${overallRoas.toFixed(2)}x`} sub={t(`有效判定线 ≥ ${AD_ROAS_THRESHOLD}x`, `Effective threshold ≥ ${AD_ROAS_THRESHOLD}x`)} icon={Sparkles} tone="bg-indigo-500" />
         <KPICardImpl label={t("有效广告数", "Effective Ads")} value={`${effectiveCount} / ${rows.length}`} icon={CheckCircle2} tone="bg-emerald-500" />
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          onClick={() => openCreateModal()}
+          className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
+        >
+          <Plus size={14} /> {t("新增广告数据", "Add Campaign")}
+        </button>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-xl p-4">
@@ -3190,7 +3399,10 @@ export function AdsSpend({ t }) {
             <BarChart data={rows} layout="vertical" margin={{ left: 20 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
               <XAxis type="number" tick={{ fontSize: 11 }} />
-              <YAxis type="category" dataKey="id" tick={{ fontSize: 11 }} width={60} />
+              {/* dataKey="name" (2026-08-24, was "id") — ad_campaigns.id is
+                  now a real uuid (used to be a nice "AD-001" mock string),
+                  not fit for a chart label; the campaign name is. */}
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={110} />
               <Tooltip />
               <Legend />
               <Bar dataKey="spend" name={t("支出", "Spend")} fill="#f59e0b" radius={[0, 4, 4, 0]} />
@@ -3212,14 +3424,18 @@ export function AdsSpend({ t }) {
               <th className="py-2 pr-3 font-medium text-right">{t("带来订单", "Orders")}</th>
               <th className="py-2 pr-3 font-medium text-right">{t("带来营收 (RM)", "Revenue (RM)")}</th>
               <th className="py-2 pr-3 font-medium text-right">ROAS</th>
-              <th className="py-2 pr-3 pr-5 font-medium text-center">{t("判定", "Verdict")}</th>
+              <th className="py-2 pr-3 font-medium text-center">{t("判定", "Verdict")}</th>
+              <th className="py-2 pr-3 pr-5 font-medium text-right">{t("操作", "Actions")}</th>
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 && (
-              <tr><td colSpan={7} className="py-6 text-center text-xs text-slate-400">{t("该平台暂无广告数据", "No ad data for this platform yet")}</td></tr>
+            {loading && (
+              <tr><td colSpan={8} className="py-6 text-center text-xs text-slate-400">{t("加载中…", "Loading…")}</td></tr>
             )}
-            {rows
+            {!loading && rows.length === 0 && (
+              <tr><td colSpan={8} className="py-6 text-center text-xs text-slate-400">{t("该平台暂无广告数据，点击上方「新增广告数据」录入", 'No ad data for this platform yet — click "Add Campaign" above')}</td></tr>
+            )}
+            {!loading && rows
               .slice()
               .sort((a, b) => b.roas - a.roas)
               .map((c) => {
@@ -3235,12 +3451,18 @@ export function AdsSpend({ t }) {
                     <td className="py-2.5 pr-3 text-right tabular-nums">{c.orders}</td>
                     <td className="py-2.5 pr-3 text-right tabular-nums">{fmt(c.revenue)}</td>
                     <td className="py-2.5 pr-3 text-right tabular-nums font-medium">{c.roas.toFixed(2)}x</td>
-                    <td className="py-2.5 pr-3 pr-5 text-center">
-                      {effective ? (
+                    <td className="py-2.5 pr-3 text-center">
+                      {c.status === "paused" ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200">{t("已暂停", "Paused")}</span>
+                      ) : effective ? (
                         <span className="text-xs px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-200">{t("有效", "Effective")}</span>
                       ) : (
                         <span className="text-xs px-2 py-0.5 rounded-full border bg-rose-100 text-rose-700 border-rose-200">{t("低效", "Ineffective")}</span>
                       )}
+                    </td>
+                    <td className="py-2.5 pr-3 pr-5 text-right whitespace-nowrap">
+                      <button onClick={() => openEditModal(c)} className="text-xs text-slate-500 hover:text-slate-800 mr-2">{t("编辑", "Edit")}</button>
+                      <button onClick={() => deleteCampaign(c.id)} className="text-xs text-rose-500 hover:text-rose-700">{t("删除", "Delete")}</button>
                     </td>
                   </tr>
                 );
@@ -3255,6 +3477,84 @@ export function AdsSpend({ t }) {
           )}
         </div>
       </div>
+
+      {/* 新增/编辑广告数据 — every field here is typed in by staff (see the
+          data-source note above); there's no ad platform to pull it from. */}
+      {showForm && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowForm(false)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-medium">{editingId ? t("编辑广告数据", "Edit Campaign") : t("新增广告数据", "Add Campaign")}</div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("平台", "Platform")}</div>
+              <select value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg">
+                <option value="Shopee">Shopee</option>
+                <option value="TikTok Shop">TikTok Shop</option>
+              </select>
+            </div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("广告名称", "Campaign Name")}</div>
+              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+            </div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("关联 SKU（可选）", "Linked SKU (optional)")}</div>
+              <input value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs text-slate-400 mb-1">{t("支出 (RM)", "Spend (RM)")}</div>
+                <input type="number" value={form.spend} onChange={(e) => setForm({ ...form, spend: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              </div>
+              <div>
+                <div className="text-xs text-slate-400 mb-1">{t("带来营收 (RM)", "Revenue (RM)")}</div>
+                <input type="number" value={form.revenue} onChange={(e) => setForm({ ...form, revenue: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              </div>
+              <div>
+                <div className="text-xs text-slate-400 mb-1">{t("点击", "Clicks")}</div>
+                <input type="number" value={form.clicks} onChange={(e) => setForm({ ...form, clicks: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              </div>
+              <div>
+                <div className="text-xs text-slate-400 mb-1">{t("带来订单", "Orders")}</div>
+                <input type="number" value={form.orders} onChange={(e) => setForm({ ...form, orders: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={() => setShowForm(false)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
+              <button onClick={saveForm} className="text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800">{t("保存", "Save")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 一键采纳 AI 优化 — confirm step, honest about what actually
+          happens (see data-source note above the component). */}
+      {aiTarget && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setAiTarget(null)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 text-sm font-medium text-indigo-700"><Bot size={16} /> {t("采纳 AI 优化建议", "Adopt AI Suggestion")}</div>
+            <div className="text-xs text-slate-500">
+              {aiTarget.mode === "stop_loss"
+                ? t(
+                    `将「${aiTarget.campaign.name}」标记为已暂停，并记录本次 AI 建议。此操作不会自动调整 TikTok/Shopee 后台的真实广告预算或出价——请在确认后自行到广告后台完成实际暂停/降预算。`,
+                    `Marks "${aiTarget.campaign.name}" as paused and logs this AI suggestion. This does NOT change any real budget/bid on TikTok/Shopee — you still need to pause/reduce it in the real ads console yourself.`,
+                  )
+                : t(
+                    `为「${aiTarget.product.name}」建立一条待开启的广告草稿记录（支出/营收先为 RM0）。此操作不会在 TikTok/Shopee 后台真正创建广告——请在确认后自行到广告后台实际开启投放。`,
+                    `Creates a draft campaign record for "${aiTarget.product.name}" (spend/revenue start at RM0). This does NOT create a real campaign on TikTok/Shopee — you still need to launch it yourself in the real ads console.`,
+                  )}
+            </div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("备注（可选）", "Note (optional)")}</div>
+              <textarea value={aiNote} onChange={(e) => setAiNote(e.target.value)} rows={2} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={() => setAiTarget(null)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
+              <button onClick={confirmAiAction} className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 text-white hover:opacity-90">
+                <Zap size={14} /> {t("确认采纳", "Confirm")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

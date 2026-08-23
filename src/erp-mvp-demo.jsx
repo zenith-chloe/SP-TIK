@@ -1661,7 +1661,7 @@ export default function App() {
             />
           )}
           {tab === "finance" && <Finance t={t} orders={orders} stores={stores} />}
-          {tab === "ads" && <AdsSpend t={t} />}
+          {tab === "ads" && <AdsSpend t={t} orders={orders} />}
           {tab === "ai" && <AIPanel t={t} orders={orders} inventory={inventory} />}
           {tab === "labels" && <LabelPrinting t={t} orders={orders} stores={stores} onPrint={openDesignPrint} onReprint={reprintFromHistory} onUpdateSellerInfo={updateStoreSellerInfo} />}
           {tab === "warehouse" && <Warehouse t={t} orders={orders} onPrint={openDesignPrint} onMarkPicked={markPicked} onMarkPacked={markPacked} />}
