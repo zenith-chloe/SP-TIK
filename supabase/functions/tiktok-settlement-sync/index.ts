@@ -206,23 +206,25 @@ Deno.serve(async (req: Request) => {
       const transactionFee = sum("transaction_fee_amount");
       const commissionFee = Math.abs(sum("platform_commission_amount"));
       const sellerShippingFee = Math.abs(sum("shipping_fee_amount"));
-      // Merged 2026-08-22 (user request, extended same day to add
-      // affiliate_partner_commission_amount): all three are real, separately-
-      // named affiliate-related fields in the same statement_transactions
-      // payload (each confirmed present in live raw_response, seen as "0" so
-      // far on every real order checked, but genuinely returned fields) —
-      // organic affiliate commission, TikTok-ads-driven creator commission,
-      // and partner/agency commission respectively. Merged into the same
-      // tiktok_affiliate_commission total rather than separate columns,
-      // since no UI split between the three was requested — keeps
-      // totalFees/reconciliation math unaffected (still one line item, just
-      // a more complete real sum).
+      // Affiliate fields (2026-08-22, revised same day per explicit request
+      // to split affiliate_ads_commission_amount back out as its own labeled
+      // line "Affiliate Shop Ads Commission" instead of merging it in
+      // silently). All three are real, separately-named fields in the same
+      // statement_transactions payload (each confirmed present in live
+      // raw_response, seen as "0" so far on every real order checked, but
+      // genuinely returned fields): organic affiliate_commission_amount and
+      // partner/agency affiliate_partner_commission_amount stay merged into
+      // tiktok_affiliate_commission ("达人佣金"); affiliate_ads_commission_amount
+      // now goes into its own tiktok_affiliate_ads_commission column
+      // (migration add_tiktok_affiliate_ads_commission) so incomeBreakdown()
+      // can render it as a distinct real fee line. Both still count toward
+      // totalFees below — only the display grouping changed, not the math.
       const affiliateCommission = Math.abs(sum("affiliate_commission_amount"))
-        + Math.abs(sum("affiliate_ads_commission_amount"))
         + Math.abs(sum("affiliate_partner_commission_amount"));
+      const affiliateAdsCommission = Math.abs(sum("affiliate_ads_commission_amount"));
       const platformDiscount = Math.abs(sum("platform_discount_amount"));
       const settlementAmount = sum("settlement_amount");
-      const totalFees = transactionFee + commissionFee + sellerShippingFee + affiliateCommission;
+      const totalFees = transactionFee + commissionFee + sellerShippingFee + affiliateCommission + affiliateAdsCommission;
 
       const { error: upsertErr } = await supabase.from("order_settlements").upsert(
         {
@@ -233,6 +235,7 @@ Deno.serve(async (req: Request) => {
           tiktok_commission_fee: commissionFee,
           tiktok_seller_shipping_fee: sellerShippingFee,
           tiktok_affiliate_commission: affiliateCommission,
+          tiktok_affiliate_ads_commission: affiliateAdsCommission,
           tiktok_platform_discount: platformDiscount,
           tiktok_settlement_amount: settlementAmount,
           total_fees: totalFees,

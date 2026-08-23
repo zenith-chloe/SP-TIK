@@ -542,10 +542,18 @@ export function incomeBreakdown(o, settlement, t) {
   // inside statement_transactions/sku_statement_transactions, already read
   // by tiktok-settlement-sync into this exact column.
   const affiliateFee = { label: t("达人佣金", "Affiliate Commission"), amount: Number(settlement.tiktok_affiliate_commission ?? 0) };
+  // Affiliate Shop Ads Commission (2026-08-22, new) — affiliate_ads_commission_amount
+  // split back out into its own real column/line per explicit request,
+  // separate from the organic+partner "达人佣金" line above. Real field,
+  // already synced by tiktok-settlement-sync into tiktok_affiliate_ads_commission
+  // (migration add_tiktok_affiliate_ads_commission) — filtered normally
+  // (hidden at RM0, unlike the always-shown affiliateFee above, since no
+  // "always visible" request was made for this specific line).
   const namedFees = [
     { label: t("平台佣金", "Platform Commission"), amount: Number(settlement.tiktok_commission_fee ?? 0) },
     { label: t("交易费", "Transaction Fee"), amount: Number(settlement.tiktok_transaction_fee ?? 0) },
     affiliateFee,
+    { label: t("达人店铺广告佣金", "Affiliate Shop Ads Commission"), amount: Number(settlement.tiktok_affiliate_ads_commission ?? 0) },
     // 卖家承担运费 (2026-08-21, moved here from pagesOverviewOrders.jsx's
     // Order Drawer so both pages show it identically) — real, already-synced
     // tiktok_seller_shipping_fee column.
