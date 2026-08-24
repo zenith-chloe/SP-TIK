@@ -16,14 +16,30 @@ const SHOPEE_SHIPPING_CHANNELS = ["Standard Delivery", "Shopee Xpress", "Poslaju
 // 商品发布中心 (2026-08-24) — data-source note, same spirit as the Ads
 // Costs page's note: this is a real Supabase-backed feature
 // (product_listings / product_listing_stores tables), but there is NO
-// Shopee/TikTok Product API integration in this project (only Order/
-// Settlement/Fulfillment/Auth are connected — confirmed by inspecting every
-// edge function before building this). So "发布到店铺" and batch price
-// adjustment only ever write to our own database, as a staging/tracking
-// list — they never call a real platform API. publish_status='marked
-// published' means a human confirmed they did it themselves on the real
-// Shopee/TikTok seller center. This is a deliberate scope decision
+// Shopee Product API integration in this project (only Order/Settlement/
+// Fulfillment/Auth are connected — confirmed by inspecting every edge
+// function before building this), so Shopee's category selector below
+// still uses the internal category_trees library. "发布到店铺" and batch
+// price adjustment only ever write to our own database, as a staging/
+// tracking list — they never call a real platform API. publish_status=
+// 'marked published' means a human confirmed they did it themselves on the
+// real Shopee/TikTok seller center. This is a deliberate scope decision
 // confirmed with the user 2026-08-24, not an oversight.
+//
+// TikTok's category selector is different (2026-08-24, updated same day):
+// the user enabled Product scope (Global Category/Product Information) in
+// TikTok Partner Center, so this page now calls the REAL
+// GET /product/202309/categories and GET /product/202309/categories/
+// {id}/attributes through tiktok-sync-orders (action: "tiktokCategories" /
+// "tiktokCategoryAttributes"). Live-checked after the scope was enabled:
+// still fails with TikTok error 105005 for every currently-connected shop,
+// because an existing shop's access_token only carries the scopes it was
+// originally consented with — the seller has to fully re-authorize the
+// shop (redo the OAuth connect flow) before the new scope actually applies
+// to that shop's token; simply refreshing the token doesn't pick it up
+// (also live-checked). So today this still falls back to a
+// "needs re-auth" message; once a shop is reconnected, the same code path
+// starts rendering the real category tree with no further changes needed.
 //
 // Deliberately kept separate from `products` (pagesProducts.jsx /
 // ProductMaster) — see the AutoCount system-direction memory: AutoCount is
@@ -40,6 +56,7 @@ const emptyListingForm = {
   product_id: "", sku: "", title: "", description: "", category: "", image_url: "", base_price: "",
   brand: "No Brand", weight_kg: "", length_cm: "", width_cm: "", height_cm: "", is_dangerous: false,
   shopee_shipping_channels: [], shopee_category_leaf_id: "", tiktok_category_leaf_id: "",
+  tiktok_real_category_id: "",
   attributes: [],
 };
 
@@ -118,6 +135,98 @@ export function ProductListingCenter({ t, inventory, stores }) {
     });
   }
 
+  // ---- TikTok 真实类目 API (2026-08-24, new) — see the file-top note for
+  // the full story: real endpoints, currently blocked by 105005 on every
+  // shop connected before the Product scope was enabled, until each shop is
+  // re-authorized. This block tries the real API first; Shopee has no such
+  // integration and keeps using the internal library above unconditionally.
+  const [tiktokApiStatus, setTiktokApiStatus] = useState("idle"); // idle | loading | ok | error
+  const [tiktokApiError, setTiktokApiError] = useState(null); // { message, needsReauth }
+  const [tiktokRealCategories, setTiktokRealCategories] = useState([]); // flat list, real TikTok response
+  const [tiktokRealL1, setTiktokRealL1] = useState("");
+  const [tiktokRealL2, setTiktokRealL2] = useState("");
+  const [tiktokRealAttrsLoading, setTiktokRealAttrsLoading] = useState(false);
+  const [tiktokRealAttrs, setTiktokRealAttrs] = useState([]); // real per-category attribute defs
+
+  // Reads the real error/needsReauth out of a non-2xx tiktok-sync-orders
+  // response — same reason as callStaffApi in this app's Roles page:
+  // supabase-js's functions.invoke() only gives a generic error by default.
+  async function callTikTokProductApi(action, extra) {
+    const { data, error } = await supabaseClient.functions.invoke("tiktok-sync-orders", { body: { action, ...extra } });
+    if (error) {
+      let message = error.message;
+      let needsReauth = false;
+      try {
+        if (error.context && typeof error.context.json === "function") {
+          const body = await error.context.json();
+          if (body?.error) message = body.error;
+          needsReauth = !!body?.needsReauth;
+        }
+      } catch { /* fall back to the generic message */ }
+      return { data: null, error: message, needsReauth };
+    }
+    if (data?.error) return { data: null, error: data.error, needsReauth: !!data.needsReauth };
+    return { data: data?.data, error: null, needsReauth: false };
+  }
+
+  // Real TikTok category rows don't have confirmed field names in this
+  // session (every live check so far has hit 105005 before returning real
+  // data) — normalized defensively across the field names TikTok's docs use
+  // (local_name/name, parent_id, is_leaf/leaf). Spot-check this once a shop
+  // is re-authorized and adjust if the real shape differs.
+  function normalizeTikTokCategory(c) {
+    return {
+      id: String(c.id ?? c.category_id ?? ""),
+      parentId: c.parent_id != null ? String(c.parent_id) : (c.parentId != null ? String(c.parentId) : "0"),
+      name: c.local_name || c.name || c.category_name || t("未命名分类", "Unnamed category"),
+      isLeaf: !!(c.is_leaf ?? c.leaf ?? false),
+    };
+  }
+  function tiktokRealOptions(level, l1id, l2id) {
+    const norm = tiktokRealCategories.map(normalizeTikTokCategory);
+    if (level === 1) return norm.filter((c) => c.parentId === "0" || !c.parentId);
+    if (level === 2) return norm.filter((c) => c.parentId === l1id);
+    return norm.filter((c) => c.parentId === l2id);
+  }
+
+  async function loadTiktokRealCategories() {
+    const tiktokStore = (stores || []).find((s) => s.platform === "TikTok Shop");
+    if (!tiktokStore) {
+      setTiktokApiStatus("error");
+      setTiktokApiError({ message: t("暂无已连接的 TikTok 店铺", "No connected TikTok store"), needsReauth: false });
+      return;
+    }
+    setTiktokApiStatus("loading");
+    const { data, error, needsReauth } = await callTikTokProductApi("tiktokCategories", { platformAccountId: tiktokStore.id });
+    if (error) {
+      setTiktokApiStatus("error");
+      setTiktokApiError({ message: error, needsReauth });
+      return;
+    }
+    const list = data?.categories || data?.category_list || (Array.isArray(data) ? data : []);
+    setTiktokRealCategories(Array.isArray(list) ? list : []);
+    setTiktokApiStatus("ok");
+  }
+
+  async function selectTiktokRealLeaf(leafId) {
+    const tiktokStore = (stores || []).find((s) => s.platform === "TikTok Shop");
+    setListingForm((prev) => ({ ...prev, tiktok_real_category_id: leafId, tiktok_category_leaf_id: "" }));
+    if (!leafId || !tiktokStore) { setTiktokRealAttrs([]); return; }
+    setTiktokRealAttrsLoading(true);
+    const { data, error } = await callTikTokProductApi("tiktokCategoryAttributes", { platformAccountId: tiktokStore.id, categoryId: leafId });
+    setTiktokRealAttrsLoading(false);
+    if (error) { setTiktokRealAttrs([]); return; }
+    const attrs = data?.attributes || (Array.isArray(data) ? data : []);
+    setTiktokRealAttrs(attrs);
+    const templateNames = attrs.map((a) => ({ name: a.name || a.attribute_name || "", required: a.is_requried ?? a.required ?? false }))
+      .filter((a) => a.name);
+    setListingForm((prev) => {
+      const existingNames = new Set(prev.attributes.map((a) => a.name));
+      const added = templateNames.filter((a) => !existingNames.has(a.name)).map((a) => ({ name: a.name, value: "" }));
+      return { ...prev, attributes: [...prev.attributes, ...added] };
+    });
+  }
+
   // ---- 新建/编辑主商品发布清单 ----
   const [showListingForm, setShowListingForm] = useState(false);
   const [editingListingId, setEditingListingId] = useState(null);
@@ -127,6 +236,8 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setEditingListingId(null);
     setListingForm(emptyListingForm);
     setShopeeL1(""); setShopeeL2(""); setTiktokL1(""); setTiktokL2("");
+    setTiktokRealL1(""); setTiktokRealL2(""); setTiktokRealAttrs([]);
+    loadTiktokRealCategories();
     setShowListingForm(true);
   }
   function openEditListing(l) {
@@ -143,6 +254,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
       shopee_shipping_channels: Array.isArray(l.shopee_shipping_channels) ? l.shopee_shipping_channels : [],
       shopee_category_leaf_id: l.shopee_category_leaf_id || "",
       tiktok_category_leaf_id: l.tiktok_category_leaf_id || "",
+      tiktok_real_category_id: l.tiktok_real_category_id || "",
       attributes: Array.isArray(l.attributes) ? l.attributes : [],
     });
     // Re-derive the cascading dropdowns' level1/level2 from the saved leaf
@@ -151,6 +263,8 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setShopeeL1(shopeeLeaf?.level1 || ""); setShopeeL2(shopeeLeaf?.level2 || "");
     const tiktokLeaf = categoryTrees.find((c) => c.id === l.tiktok_category_leaf_id);
     setTiktokL1(tiktokLeaf?.level1 || ""); setTiktokL2(tiktokLeaf?.level2 || "");
+    setTiktokRealL1(""); setTiktokRealL2(""); setTiktokRealAttrs([]);
+    loadTiktokRealCategories();
     setShowListingForm(true);
   }
   // Picking a real product_id (from `inventory`, the real AutoCount-synced
@@ -194,6 +308,16 @@ export function ProductListingCenter({ t, inventory, stores }) {
     // the listing table can show the path without a join.
     const shopeeLeaf = categoryTrees.find((c) => c.id === listingForm.shopee_category_leaf_id);
     const tiktokLeaf = categoryTrees.find((c) => c.id === listingForm.tiktok_category_leaf_id);
+    // TikTok path prefers the real API selection (tiktok_real_category_id)
+    // when present — falls back to the internal-library leaf otherwise
+    // (only one of the two is ever populated, whichever selector was
+    // actually usable this time — see file-top note on why both exist).
+    const tiktokRealNorm = tiktokRealCategories.map(normalizeTikTokCategory);
+    const tiktokRealPathNames = listingForm.tiktok_real_category_id
+      ? [tiktokRealL1, tiktokRealL2, listingForm.tiktok_real_category_id]
+          .map((id) => tiktokRealNorm.find((c) => c.id === id)?.name)
+          .filter(Boolean)
+      : null;
     const payload = {
       product_id: listingForm.product_id || null,
       sku: listingForm.sku.trim() || null,
@@ -211,8 +335,9 @@ export function ProductListingCenter({ t, inventory, stores }) {
       shopee_shipping_channels: listingForm.shopee_shipping_channels,
       shopee_category_leaf_id: listingForm.shopee_category_leaf_id || null,
       tiktok_category_leaf_id: listingForm.tiktok_category_leaf_id || null,
+      tiktok_real_category_id: listingForm.tiktok_real_category_id || null,
       shopee_category_path: shopeeLeaf ? [shopeeLeaf.level1, shopeeLeaf.level2, shopeeLeaf.level3] : null,
-      tiktok_category_path: tiktokLeaf ? [tiktokLeaf.level1, tiktokLeaf.level2, tiktokLeaf.level3] : null,
+      tiktok_category_path: tiktokRealPathNames?.length ? tiktokRealPathNames : (tiktokLeaf ? [tiktokLeaf.level1, tiktokLeaf.level2, tiktokLeaf.level3] : null),
       attributes: listingForm.attributes.filter((a) => a.name.trim()),
       updated_at: new Date().toISOString(),
     };
@@ -817,23 +942,65 @@ export function ProductListingCenter({ t, inventory, stores }) {
               </div>
             </div>
             <div>
-              <div className="text-xs font-medium text-slate-500 mb-1">{t("🗂 TikTok 三级分类（内部类目库）", "🗂 TikTok Category (internal library)")}</div>
-              <div className="grid grid-cols-3 gap-2">
-                <select value={tiktokL1} onChange={(e) => { setTiktokL1(e.target.value); setTiktokL2(""); selectLeaf("tiktok_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
-                  <option value="">{t("第1级", "Level 1")}</option>
-                  {categoryOptions("TikTok Shop", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
-                </select>
-                <select value={tiktokL2} onChange={(e) => { setTiktokL2(e.target.value); selectLeaf("tiktok_category_leaf_id", ""); }} disabled={!tiktokL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                  <option value="">{t("第2级", "Level 2")}</option>
-                  {categoryOptions("TikTok Shop", "level2", tiktokL1).map((v) => <option key={v} value={v}>{v}</option>)}
-                </select>
-                <select value={listingForm.tiktok_category_leaf_id} onChange={(e) => selectLeaf("tiktok_category_leaf_id", e.target.value)} disabled={!tiktokL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                  <option value="">{t("第3级", "Level 3")}</option>
-                  {categoryOptions("TikTok Shop", "level3", tiktokL1, tiktokL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
-                </select>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs font-medium text-slate-500">
+                  {tiktokApiStatus === "ok"
+                    ? t("🗂 TikTok 三级分类（官方真实类目）", "🗂 TikTok Category (real, official)")
+                    : t("🗂 TikTok 三级分类（内部类目库）", "🗂 TikTok Category (internal library)")}
+                </div>
+                {tiktokApiStatus === "loading" && <span className="text-[11px] text-slate-400">{t("加载官方类目中…", "Loading official categories…")}</span>}
               </div>
+
+              {/* 检测到权限但需要重新授权 (2026-08-24, new) — exact copy per
+                  user's explicit request. See file-top note: an existing
+                  shop's token doesn't pick up a newly-enabled scope on its
+                  own. */}
+              {tiktokApiStatus === "error" && tiktokApiError?.needsReauth && (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                  {t(
+                    "检测到商品权限，如提示 Access Denied 请在【店铺管理】中点击「重新授权」以更新权限。（对应「产品搬仓/搬店」页面店铺管理区域的「使用 TikTok Shop 登录连接」按钮——对已连接店铺重新走一次该流程即可刷新权限。）在权限刷新前，暂时使用下方内部类目库。",
+                    "Product permission detected, but if you see Access Denied, go to Store Management and click \"Re-authorize\" to refresh it. (That's the \"Connect with TikTok Shop Login\" button under Product Move / Store Management — running it again for an already-connected store refreshes its permissions.) Using the internal category library below until then.",
+                  )}
+                </div>
+              )}
+              {tiktokApiStatus === "error" && !tiktokApiError?.needsReauth && (
+                <div className="text-[11px] text-slate-400 mb-2">{tiktokApiError?.message}</div>
+              )}
+
+              {tiktokApiStatus === "ok" ? (
+                <div className="grid grid-cols-3 gap-2">
+                  <select value={tiktokRealL1} onChange={(e) => { setTiktokRealL1(e.target.value); setTiktokRealL2(""); selectTiktokRealLeaf(""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
+                    <option value="">{t("第1级", "Level 1")}</option>
+                    {tiktokRealOptions(1).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <select value={tiktokRealL2} onChange={(e) => { setTiktokRealL2(e.target.value); selectTiktokRealLeaf(""); }} disabled={!tiktokRealL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                    <option value="">{t("第2级", "Level 2")}</option>
+                    {tiktokRealOptions(2, tiktokRealL1).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <select value={listingForm.tiktok_real_category_id} onChange={(e) => selectTiktokRealLeaf(e.target.value)} disabled={!tiktokRealL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                    <option value="">{t("第3级", "Level 3")}</option>
+                    {tiktokRealOptions(3, tiktokRealL1, tiktokRealL2).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  <select value={tiktokL1} onChange={(e) => { setTiktokL1(e.target.value); setTiktokL2(""); selectLeaf("tiktok_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
+                    <option value="">{t("第1级", "Level 1")}</option>
+                    {categoryOptions("TikTok Shop", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                  <select value={tiktokL2} onChange={(e) => { setTiktokL2(e.target.value); selectLeaf("tiktok_category_leaf_id", ""); }} disabled={!tiktokL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                    <option value="">{t("第2级", "Level 2")}</option>
+                    {categoryOptions("TikTok Shop", "level2", tiktokL1).map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                  <select value={listingForm.tiktok_category_leaf_id} onChange={(e) => selectLeaf("tiktok_category_leaf_id", e.target.value)} disabled={!tiktokL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                    <option value="">{t("第3级", "Level 3")}</option>
+                    {categoryOptions("TikTok Shop", "level3", tiktokL1, tiktokL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
+                  </select>
+                </div>
+              )}
+              {tiktokRealAttrsLoading && <div className="text-[11px] text-slate-400 mt-1">{t("加载官方分类属性中…", "Loading official category attributes…")}</div>}
             </div>
-            {(listingForm.shopee_category_leaf_id || listingForm.tiktok_category_leaf_id) && (
+            {(listingForm.shopee_category_leaf_id || listingForm.tiktok_category_leaf_id || listingForm.tiktok_real_category_id) && (
               <div className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-2.5 py-1.5">
                 {t("已根据选中的叶子类目自动带入下方必填属性，请核对填写。", "Attributes below were auto-added from the selected leaf category — please review and fill them in.")}
               </div>

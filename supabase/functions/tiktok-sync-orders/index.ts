@@ -57,6 +57,23 @@
 // attribute UI in this project must stay free-text/manual until that scope
 // is separately requested and approved in TikTok Partner Center.
 //
+// 2026-08-24 (same day, later) — user reports the Product scope (incl.
+// Global Category Information / Global Product Information) has now been
+// enabled in TikTok Partner Center. Re-checked live: still HTTP 500 /
+// 105005, unchanged. Also tried forcing a brand-new access_token via the
+// refresh_token grant first (same authorization, fresh token) — still
+// 105005. This proves the scope grant alone isn't enough: an EXISTING
+// shop authorization keeps whatever scopes were consented to at the time
+// the seller connected the shop; a refresh_token exchange does not pull in
+// newly-added app scopes. The seller must fully re-authorize (redo the
+// OAuth connect flow for this shop) before its access_token actually
+// carries Product-category access. `action: "tiktokCategories"` /
+// `"tiktokCategoryAttributes"` below call the real API and surface
+// `needsReauth: true` on a 105005 response specifically so the frontend can
+// show "点击重新授权" instead of a generic error — once a shop is
+// re-authorized, these same real calls should start succeeding with no
+// further code change.
+//
 // Required secrets: TIKTOK_APP_KEY, TIKTOK_APP_SECRET
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -679,11 +696,15 @@ Deno.serve(async (req: Request) => {
   let shopId: string | undefined;
   let platformAccountId: string | undefined;
   let fullSync = false;
+  let action: string | undefined;
+  let categoryId: string | undefined;
   try {
     const body = await req.json();
     platformAccountId = body?.platformAccountId; // preferred — platform_accounts.id, unambiguous per store
     shopId = body?.shopId; // kept for backward compat
     fullSync = body?.fullSync === true;
+    action = body?.action; // "tiktokCategories" | "tiktokCategoryAttributes"
+    categoryId = body?.categoryId;
   } catch {
     // no body - sync all shops
   }
@@ -709,6 +730,33 @@ Deno.serve(async (req: Request) => {
       status: 404,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
+  }
+
+  // Real TikTok Product-category endpoints (2026-08-24) — see the top-of-
+  // file 2026-08-24 note for why `needsReauth` exists: an existing shop's
+  // access_token only carries whatever scopes were consented to when it was
+  // first connected, so even with the app-level scope now enabled in
+  // Partner Center, shops connected before that change get 105005 until
+  // they're reconnected. Once a shop re-authorizes, these same calls should
+  // start returning real data with no further code change needed.
+  if (action === "tiktokCategories" || action === "tiktokCategoryAttributes") {
+    try {
+      const { shopCipher } = await ensureShopCipher(creds, accounts[0]);
+      const path = action === "tiktokCategories"
+        ? "/product/202309/categories"
+        : `/product/202309/categories/${categoryId}/attributes`;
+      const data = await tiktokCall("GET", path, creds, accounts[0], { shop_cipher: shopCipher });
+      return new Response(JSON.stringify({ data }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    } catch (e) {
+      const message = (e as Error).message;
+      const needsReauth = message.includes("105005");
+      return new Response(JSON.stringify({ error: message, needsReauth }), {
+        status: needsReauth ? 403 : 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
   }
 
   const url = new URL(req.url);
