@@ -44,6 +44,19 @@
 // not a live API pull, to avoid needing a temporary single-order debug probe
 // this time (production auth secret isn't retrievable from this session).
 //
+// 2026-08-24 — live-checked whether this app's TikTok Partner Center
+// approval includes Product-category scope (GET /product/202309/categories,
+// via a temporary debug=1&endpoint=categories probe, called through the
+// browser's own logged-in session so the request carried a real
+// role=authenticated JWT). Real result: HTTP 500, TikTok error 105005
+// "Access denied ... access scopes granted for the app or the access token
+// do not contain the required access scope for the endpoint." Confirms (not
+// assumed) that Product API access — category tree, category attributes,
+// create/update listing — is NOT granted to this app; only Order/
+// Settlement/Fulfillment/Auth scopes are. Any category-tree/mandatory-
+// attribute UI in this project must stay free-text/manual until that scope
+// is separately requested and approved in TikTok Partner Center.
+//
 // Required secrets: TIKTOK_APP_KEY, TIKTOK_APP_SECRET
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";

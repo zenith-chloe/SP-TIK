@@ -39,16 +39,9 @@ const AI_FRAME_TEMPLATES = [
 const emptyListingForm = {
   product_id: "", sku: "", title: "", description: "", category: "", image_url: "", base_price: "",
   brand: "No Brand", weight_kg: "", length_cm: "", width_cm: "", height_cm: "", is_dangerous: false,
-  shopee_shipping_channels: [], shopee_category: ["", "", ""], tiktok_category: ["", "", ""],
+  shopee_shipping_channels: [], shopee_category_leaf_id: "", tiktok_category_leaf_id: "",
   attributes: [],
 };
-
-// jsonb → the 3-input array shape the form uses; tolerant of null/short/odd
-// arrays from rows saved before this field existed.
-function toCategoryTriple(v) {
-  const arr = Array.isArray(v) ? v : [];
-  return [arr[0] || "", arr[1] || "", arr[2] || ""];
-}
 
 export function ProductListingCenter({ t, inventory, stores }) {
   const [activePlatform, setActivePlatform] = useState("Shopee");
@@ -79,6 +72,52 @@ export function ProductListingCenter({ t, inventory, stores }) {
   }
   useEffect(() => { loadListings(); }, []);
 
+  // ---- 内部类目库 (级联选择器 + 分类必填属性模板) ----
+  // See the file-top note and the category_trees migration comment: this is
+  // a staff-maintained internal dataset, NOT a live sync of Shopee/TikTok's
+  // real category API (confirmed unavailable to this app — real 105005
+  // scope-denied error, see tiktok-sync-orders/index.ts's 2026-08-24 note).
+  const [categoryTrees, setCategoryTrees] = useState([]);
+  const [attributeTemplates, setAttributeTemplates] = useState([]);
+  async function loadCategoryData() {
+    const [treesRes, templatesRes] = await Promise.all([
+      supabaseClient.from("category_trees").select("*").order("level1").order("level2").order("level3"),
+      supabaseClient.from("category_attribute_templates").select("*"),
+    ]);
+    if (!treesRes.error) setCategoryTrees(treesRes.data || []);
+    else console.error("loadCategoryTrees failed", treesRes.error);
+    if (!templatesRes.error) setAttributeTemplates(templatesRes.data || []);
+    else console.error("loadAttributeTemplates failed", templatesRes.error);
+  }
+  useEffect(() => { loadCategoryData(); }, []);
+
+  // Cascading-selector navigation state (level1/level2 picked so far) — the
+  // final leaf id lives in listingForm.shopee_category_leaf_id /
+  // tiktok_category_leaf_id, this is just which dropdown options to show.
+  const [shopeeL1, setShopeeL1] = useState("");
+  const [shopeeL2, setShopeeL2] = useState("");
+  const [tiktokL1, setTiktokL1] = useState("");
+  const [tiktokL2, setTiktokL2] = useState("");
+
+  function categoryOptions(platform, field, l1, l2) {
+    const rows = categoryTrees.filter((c) => c.platform === platform);
+    if (field === "level1") return [...new Set(rows.map((c) => c.level1))];
+    if (field === "level2") return [...new Set(rows.filter((c) => c.level1 === l1).map((c) => c.level2))];
+    return rows.filter((c) => c.level1 === l1 && c.level2 === l2); // level3 → full leaf rows (need id)
+  }
+
+  // Selecting a leaf category auto-renders its template attributes (merged
+  // with whatever's already filled — never overwrites an existing value,
+  // only adds the template's attr_name rows that aren't present yet).
+  function selectLeaf(platformKey, leafId) {
+    const templates = attributeTemplates.filter((t) => t.category_leaf_id === leafId);
+    setListingForm((prev) => {
+      const existingNames = new Set(prev.attributes.map((a) => a.name));
+      const added = templates.filter((t) => !existingNames.has(t.attr_name)).map((t) => ({ name: t.attr_name, value: "" }));
+      return { ...prev, [platformKey]: leafId, attributes: [...prev.attributes, ...added] };
+    });
+  }
+
   // ---- 新建/编辑主商品发布清单 ----
   const [showListingForm, setShowListingForm] = useState(false);
   const [editingListingId, setEditingListingId] = useState(null);
@@ -87,6 +126,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
   function openCreateListing() {
     setEditingListingId(null);
     setListingForm(emptyListingForm);
+    setShopeeL1(""); setShopeeL2(""); setTiktokL1(""); setTiktokL2("");
     setShowListingForm(true);
   }
   function openEditListing(l) {
@@ -101,10 +141,16 @@ export function ProductListingCenter({ t, inventory, stores }) {
       height_cm: l.height_cm != null ? String(l.height_cm) : "",
       is_dangerous: !!l.is_dangerous,
       shopee_shipping_channels: Array.isArray(l.shopee_shipping_channels) ? l.shopee_shipping_channels : [],
-      shopee_category: toCategoryTriple(l.shopee_category_path),
-      tiktok_category: toCategoryTriple(l.tiktok_category_path),
+      shopee_category_leaf_id: l.shopee_category_leaf_id || "",
+      tiktok_category_leaf_id: l.tiktok_category_leaf_id || "",
       attributes: Array.isArray(l.attributes) ? l.attributes : [],
     });
+    // Re-derive the cascading dropdowns' level1/level2 from the saved leaf
+    // id so editing shows the same path that was picked, not blank selects.
+    const shopeeLeaf = categoryTrees.find((c) => c.id === l.shopee_category_leaf_id);
+    setShopeeL1(shopeeLeaf?.level1 || ""); setShopeeL2(shopeeLeaf?.level2 || "");
+    const tiktokLeaf = categoryTrees.find((c) => c.id === l.tiktok_category_leaf_id);
+    setTiktokL1(tiktokLeaf?.level1 || ""); setTiktokL2(tiktokLeaf?.level2 || "");
     setShowListingForm(true);
   }
   // Picking a real product_id (from `inventory`, the real AutoCount-synced
@@ -131,13 +177,6 @@ export function ProductListingCenter({ t, inventory, stores }) {
         : [...prev.shopee_shipping_channels, name],
     }));
   }
-  function setCategoryLevel(platformKey, level, value) {
-    setListingForm((prev) => {
-      const next = [...prev[platformKey]];
-      next[level] = value;
-      return { ...prev, [platformKey]: next };
-    });
-  }
   function addAttribute() {
     setListingForm((prev) => ({ ...prev, attributes: [...prev.attributes, { name: "", value: "" }] }));
   }
@@ -150,7 +189,11 @@ export function ProductListingCenter({ t, inventory, stores }) {
 
   async function saveListing() {
     if (!listingForm.title.trim()) { showToast(t("请填写商品标题", "Please enter a title")); return; }
-    const cleanTriple = (arr) => (arr.some((v) => v.trim()) ? arr.map((v) => v.trim()) : null);
+    // shopee_category_path/tiktok_category_path stay as a materialized
+    // [level1,level2,level3] display copy derived from the chosen leaf, so
+    // the listing table can show the path without a join.
+    const shopeeLeaf = categoryTrees.find((c) => c.id === listingForm.shopee_category_leaf_id);
+    const tiktokLeaf = categoryTrees.find((c) => c.id === listingForm.tiktok_category_leaf_id);
     const payload = {
       product_id: listingForm.product_id || null,
       sku: listingForm.sku.trim() || null,
@@ -166,8 +209,10 @@ export function ProductListingCenter({ t, inventory, stores }) {
       height_cm: listingForm.height_cm ? Number(listingForm.height_cm) : null,
       is_dangerous: listingForm.is_dangerous,
       shopee_shipping_channels: listingForm.shopee_shipping_channels,
-      shopee_category_path: cleanTriple(listingForm.shopee_category),
-      tiktok_category_path: cleanTriple(listingForm.tiktok_category),
+      shopee_category_leaf_id: listingForm.shopee_category_leaf_id || null,
+      tiktok_category_leaf_id: listingForm.tiktok_category_leaf_id || null,
+      shopee_category_path: shopeeLeaf ? [shopeeLeaf.level1, shopeeLeaf.level2, shopeeLeaf.level3] : null,
+      tiktok_category_path: tiktokLeaf ? [tiktokLeaf.level1, tiktokLeaf.level2, tiktokLeaf.level3] : null,
       attributes: listingForm.attributes.filter((a) => a.name.trim()),
       updated_at: new Date().toISOString(),
     };
@@ -441,6 +486,51 @@ export function ProductListingCenter({ t, inventory, stores }) {
     loadListings();
   }
 
+  // ---- 类目库管理 (2026-08-24, new) — lets staff grow/edit the internal
+  // category_trees + category_attribute_templates dataset from the UI,
+  // since there's no live official API to sync from (see file-top note).
+  const [showCategoryManager, setShowCategoryManager] = useState(false);
+  const [newCategory, setNewCategory] = useState({ platform: "Shopee", level1: "", level2: "", level3: "" });
+  const [expandedLeafId, setExpandedLeafId] = useState(null);
+  const [newAttrName, setNewAttrName] = useState("");
+  const [newAttrRequired, setNewAttrRequired] = useState(true);
+
+  async function addCategoryLeaf() {
+    const { platform, level1, level2, level3 } = newCategory;
+    if (!level1.trim() || !level2.trim() || !level3.trim()) { showToast(t("请填写完整三级分类", "Please fill in all 3 levels")); return; }
+    const { error } = await supabaseClient.from("category_trees").insert({
+      platform, level1: level1.trim(), level2: level2.trim(), level3: level3.trim(),
+    });
+    if (error) {
+      showToast(error.code === "23505" ? t("该分类已存在", "This category already exists") : t("添加失败", "Add failed"));
+      console.error("addCategoryLeaf failed", error);
+      return;
+    }
+    setNewCategory({ platform, level1: "", level2: "", level3: "" });
+    showToast(t("已添加分类", "Category added"));
+    loadCategoryData();
+  }
+  async function deleteCategoryLeaf(id) {
+    const { error } = await supabaseClient.from("category_trees").delete().eq("id", id);
+    if (error) { showToast(t("删除失败", "Delete failed")); console.error("deleteCategoryLeaf failed", error); return; }
+    showToast(t("已删除", "Deleted"));
+    loadCategoryData();
+  }
+  async function addAttributeTemplate(leafId) {
+    if (!newAttrName.trim()) return;
+    const { error } = await supabaseClient.from("category_attribute_templates").insert({
+      category_leaf_id: leafId, attr_name: newAttrName.trim(), required: newAttrRequired,
+    });
+    if (error) { showToast(t("添加失败", "Add failed")); console.error("addAttributeTemplate failed", error); return; }
+    setNewAttrName("");
+    loadCategoryData();
+  }
+  async function deleteAttributeTemplate(id) {
+    const { error } = await supabaseClient.from("category_attribute_templates").delete().eq("id", id);
+    if (error) { console.error("deleteAttributeTemplate failed", error); return; }
+    loadCategoryData();
+  }
+
   return (
     <div className="space-y-4">
       {toast && (
@@ -701,25 +791,53 @@ export function ProductListingCenter({ t, inventory, stores }) {
               </div>
             </div>
 
-            {/* 平台分类映射 (2026-08-24, new) — free-text 3-level path per
-                platform; not a live category-tree picker (no category API
-                connected — see file-top note). */}
+            {/* 平台分类映射 — 级联选择器 (2026-08-24) — sourced from the
+                internal category_trees table (see file-top note: NOT a live
+                Shopee/TikTok category-tree API, that access is confirmed
+                unavailable to this app). Selecting a level-3 leaf
+                auto-renders its attribute template below. */}
             <div>
-              <div className="text-xs font-medium text-slate-500 mb-1">{t("🗂 Shopee 三级分类", "🗂 Shopee Category (3 levels)")}</div>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs font-medium text-slate-500">{t("🗂 Shopee 三级分类（内部类目库）", "🗂 Shopee Category (internal library)")}</div>
+                <button onClick={() => setShowCategoryManager(true)} className="text-[11px] text-indigo-600 hover:text-indigo-800">{t("管理类目库", "Manage")}</button>
+              </div>
               <div className="grid grid-cols-3 gap-2">
-                {[0, 1, 2].map((lvl) => (
-                  <input key={lvl} value={listingForm.shopee_category[lvl]} onChange={(e) => setCategoryLevel("shopee_category", lvl, e.target.value)} placeholder={t(`第${lvl + 1}级`, `Level ${lvl + 1}`)} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg" />
-                ))}
+                <select value={shopeeL1} onChange={(e) => { setShopeeL1(e.target.value); setShopeeL2(""); selectLeaf("shopee_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
+                  <option value="">{t("第1级", "Level 1")}</option>
+                  {categoryOptions("Shopee", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+                <select value={shopeeL2} onChange={(e) => { setShopeeL2(e.target.value); selectLeaf("shopee_category_leaf_id", ""); }} disabled={!shopeeL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                  <option value="">{t("第2级", "Level 2")}</option>
+                  {categoryOptions("Shopee", "level2", shopeeL1).map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+                <select value={listingForm.shopee_category_leaf_id} onChange={(e) => selectLeaf("shopee_category_leaf_id", e.target.value)} disabled={!shopeeL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                  <option value="">{t("第3级", "Level 3")}</option>
+                  {categoryOptions("Shopee", "level3", shopeeL1, shopeeL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
+                </select>
               </div>
             </div>
             <div>
-              <div className="text-xs font-medium text-slate-500 mb-1">{t("🗂 TikTok 三级分类", "🗂 TikTok Category (3 levels)")}</div>
+              <div className="text-xs font-medium text-slate-500 mb-1">{t("🗂 TikTok 三级分类（内部类目库）", "🗂 TikTok Category (internal library)")}</div>
               <div className="grid grid-cols-3 gap-2">
-                {[0, 1, 2].map((lvl) => (
-                  <input key={lvl} value={listingForm.tiktok_category[lvl]} onChange={(e) => setCategoryLevel("tiktok_category", lvl, e.target.value)} placeholder={t(`第${lvl + 1}级`, `Level ${lvl + 1}`)} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg" />
-                ))}
+                <select value={tiktokL1} onChange={(e) => { setTiktokL1(e.target.value); setTiktokL2(""); selectLeaf("tiktok_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
+                  <option value="">{t("第1级", "Level 1")}</option>
+                  {categoryOptions("TikTok Shop", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+                <select value={tiktokL2} onChange={(e) => { setTiktokL2(e.target.value); selectLeaf("tiktok_category_leaf_id", ""); }} disabled={!tiktokL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                  <option value="">{t("第2级", "Level 2")}</option>
+                  {categoryOptions("TikTok Shop", "level2", tiktokL1).map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+                <select value={listingForm.tiktok_category_leaf_id} onChange={(e) => selectLeaf("tiktok_category_leaf_id", e.target.value)} disabled={!tiktokL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                  <option value="">{t("第3级", "Level 3")}</option>
+                  {categoryOptions("TikTok Shop", "level3", tiktokL1, tiktokL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
+                </select>
               </div>
             </div>
+            {(listingForm.shopee_category_leaf_id || listingForm.tiktok_category_leaf_id) && (
+              <div className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-2.5 py-1.5">
+                {t("已根据选中的叶子类目自动带入下方必填属性，请核对填写。", "Attributes below were auto-added from the selected leaf category — please review and fill them in.")}
+              </div>
+            )}
 
             {/* 动态必填属性 (2026-08-24, new) — free-form name/value pairs
                 (e.g. Warranty Type, Material) so staff has somewhere to
@@ -920,6 +1038,78 @@ export function ProductListingCenter({ t, inventory, stores }) {
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={() => setVariationsTarget(null)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
               <button onClick={saveVariations} className="text-sm px-4 py-2 rounded-lg bg-purple-600 text-white hover:bg-purple-700">{t("保存变体", "Save Variations")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 类目库管理 — internal category_trees CRUD, see the note at the top
+          of this file and above showCategoryManager for why this exists
+          instead of a live official category picker. */}
+      {showCategoryManager && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowCategoryManager(false)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-2xl space-y-3 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-medium">{t("类目库管理（内部维护）", "Category Library (internal)")}</div>
+            <div className="text-[11px] text-slate-400">
+              {t("非官方实时同步，仅供内部级联选择器使用；待 Shopee/TikTok 商品 API 授权后可切换为真实类目树。", "Not a live official sync — used only for the internal cascading selector; can switch to the real category API once that scope is granted.")}
+            </div>
+            <div className="grid grid-cols-4 gap-2 items-end bg-slate-50 rounded-lg p-3">
+              <div>
+                <div className="text-[11px] text-slate-400 mb-1">{t("平台", "Platform")}</div>
+                <select value={newCategory.platform} onChange={(e) => setNewCategory({ ...newCategory, platform: e.target.value })} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg bg-white">
+                  <option value="Shopee">Shopee</option>
+                  <option value="TikTok Shop">TikTok Shop</option>
+                </select>
+              </div>
+              <input value={newCategory.level1} onChange={(e) => setNewCategory({ ...newCategory, level1: e.target.value })} placeholder={t("第1级", "Level 1")} className="px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+              <input value={newCategory.level2} onChange={(e) => setNewCategory({ ...newCategory, level2: e.target.value })} placeholder={t("第2级", "Level 2")} className="px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+              <div className="flex gap-1">
+                <input value={newCategory.level3} onChange={(e) => setNewCategory({ ...newCategory, level3: e.target.value })} placeholder={t("第3级", "Level 3")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                <button onClick={addCategoryLeaf} className="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800">{t("添加", "Add")}</button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {["Shopee", "TikTok Shop"].map((pf) => (
+                <div key={pf}>
+                  <div className="text-xs font-medium text-slate-500 mt-2 mb-1">{pf}</div>
+                  {categoryTrees.filter((c) => c.platform === pf).length === 0 && (
+                    <div className="text-[11px] text-slate-300">{t("暂无分类", "No categories yet")}</div>
+                  )}
+                  {categoryTrees.filter((c) => c.platform === pf).map((c) => (
+                    <div key={c.id} className="border border-slate-100 rounded-lg mb-1.5">
+                      <div className="flex items-center justify-between px-3 py-2 text-xs">
+                        <button onClick={() => setExpandedLeafId(expandedLeafId === c.id ? null : c.id)} className="text-left flex-1 hover:text-indigo-600">
+                          {c.level1} &gt; {c.level2} &gt; <span className="font-medium">{c.level3}</span>
+                        </button>
+                        <button onClick={() => deleteCategoryLeaf(c.id)} className="text-rose-400 hover:text-rose-600 ml-2"><Trash2 size={13} /></button>
+                      </div>
+                      {expandedLeafId === c.id && (
+                        <div className="px-3 pb-2 border-t border-slate-50 pt-2">
+                          <div className="text-[11px] text-slate-400 mb-1">{t("必填/选填属性模板", "Attribute Template")}</div>
+                          <div className="space-y-1 mb-2">
+                            {attributeTemplates.filter((a) => a.category_leaf_id === c.id).map((a) => (
+                              <div key={a.id} className="flex items-center justify-between text-xs bg-slate-50 rounded px-2 py-1">
+                                <span>{a.attr_name} {a.required ? <span className="text-rose-500">*</span> : <span className="text-slate-300">({t("选填", "optional")})</span>}</span>
+                                <button onClick={() => deleteAttributeTemplate(a.id)} className="text-rose-400 hover:text-rose-600"><Trash2 size={12} /></button>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input value={newAttrName} onChange={(e) => setNewAttrName(e.target.value)} placeholder={t("属性名", "Attribute name")} className="flex-1 px-2 py-1 text-xs border border-slate-200 rounded-lg" />
+                            <label className="flex items-center gap-1 text-[11px] text-slate-500">
+                              <input type="checkbox" checked={newAttrRequired} onChange={(e) => setNewAttrRequired(e.target.checked)} className="h-3 w-3 rounded border-slate-300" /> {t("必填", "Required")}
+                            </label>
+                            <button onClick={() => addAttributeTemplate(c.id)} className="text-xs px-2.5 py-1 rounded-lg bg-slate-900 text-white hover:bg-slate-800">{t("添加", "Add")}</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end pt-2">
+              <button onClick={() => setShowCategoryManager(false)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("关闭", "Close")}</button>
             </div>
           </div>
         </div>
