@@ -456,6 +456,7 @@ export const NAV = [
   { key: "orders", zh: "订单管理中心", en: "Order Management Center", icon: ShoppingCart },
   { key: "manualimport", zh: "自动导入订单", en: "Auto Order Import", icon: Upload },
   { key: "products", zh: "商品管理", en: "Product Master", icon: Tag },
+  { key: "productlisting", zh: "商品发布中心", en: "Product Listing Center", icon: Store },
   { key: "suppliers", zh: "供应商管理", en: "Supplier Management", icon: Truck },
   { key: "purchaseorders", zh: "采购订单", en: "Purchase Orders", icon: ClipboardList },
   { key: "inventory", zh: "库存管理", en: "Inventory", icon: Warehouse },

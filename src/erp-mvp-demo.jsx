@@ -9,6 +9,7 @@ import { ProductMove } from "./pagesMove.jsx";
 import { ManualImport, Finance, AIPanel, Roles, AdsSpend, PrintSlip, LabelPrinting } from "./pagesImportFinance.jsx";
 import { Warehouse } from "./pagesWarehouse.jsx";
 import { ProductMaster } from "./pagesProducts.jsx";
+import { ProductListingCenter } from "./pagesProductListing.jsx";
 import { SupplierMaster } from "./pagesSuppliers.jsx";
 import { PurchaseOrderList } from "./pagesPurchaseOrders.jsx";
 import { InventoryAdjustment, AutoImportHub } from "./pagesInventoryAdjustment.jsx";
@@ -1623,6 +1624,7 @@ export default function App() {
             />
           )}
           {tab === "products" && <ProductMaster t={t} inventory={inventory} onCreate={createProduct} onUpdate={updateProductMaster} onDelete={deleteProduct} />}
+          {tab === "productlisting" && <ProductListingCenter t={t} inventory={inventory} stores={stores} />}
           {tab === "suppliers" && myRole === "owner" && <SupplierMaster t={t} suppliers={suppliers} onCreate={createSupplier} onUpdate={updateSupplier} onDelete={deleteSupplier} />}
           {tab === "purchaseorders" && myRole === "owner" && (
             <PurchaseOrderList
