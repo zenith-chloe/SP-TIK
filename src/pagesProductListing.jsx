@@ -1,10 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Plus, Store, Percent, Sparkles, CheckCircle2, Bot, Zap,
-  Image as ImageIcon, Upload,
+  Image as ImageIcon, Upload, Layers, Trash2,
 } from "lucide-react";
 import { PLATFORM_THEME, DB_TO_DEMO_PLATFORM, fmt, supabaseClient } from "./shared.jsx";
 import { KPICard as KPICardImpl } from "./pagesOverviewOrders.jsx";
+
+// Shopee 物流渠道候选列表 (2026-08-24) — a fixed, common-sense set of
+// real Malaysia Shopee delivery channel names for staff to toggle on this
+// listing; not fetched from Shopee's real live logistics-channel API for
+// the seller's account (no such integration exists — see the file-top
+// data-source note).
+const SHOPEE_SHIPPING_CHANNELS = ["Standard Delivery", "Shopee Xpress", "Poslaju", "J&T Express", "Ninja Van"];
 
 // 商品发布中心 (2026-08-24) — data-source note, same spirit as the Ads
 // Costs page's note: this is a real Supabase-backed feature
@@ -29,7 +36,19 @@ const AI_FRAME_TEMPLATES = [
   { id: "original", zh: "100% 正品 Original", en: "100% Original", color: "#2563eb", icon: "✅" },
 ];
 
-const emptyListingForm = { product_id: "", sku: "", title: "", description: "", category: "", image_url: "", base_price: "" };
+const emptyListingForm = {
+  product_id: "", sku: "", title: "", description: "", category: "", image_url: "", base_price: "",
+  brand: "No Brand", weight_kg: "", length_cm: "", width_cm: "", height_cm: "", is_dangerous: false,
+  shopee_shipping_channels: [], shopee_category: ["", "", ""], tiktok_category: ["", "", ""],
+  attributes: [],
+};
+
+// jsonb → the 3-input array shape the form uses; tolerant of null/short/odd
+// arrays from rows saved before this field existed.
+function toCategoryTriple(v) {
+  const arr = Array.isArray(v) ? v : [];
+  return [arr[0] || "", arr[1] || "", arr[2] || ""];
+}
 
 export function ProductListingCenter({ t, inventory, stores }) {
   const [activePlatform, setActivePlatform] = useState("Shopee");
@@ -75,14 +94,24 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setListingForm({
       product_id: l.product_id || "", sku: l.sku || "", title: l.title, description: l.description || "",
       category: l.category || "", image_url: l.image_url || "", base_price: String(l.base_price),
+      brand: l.brand || "No Brand",
+      weight_kg: l.weight_kg != null ? String(l.weight_kg) : "",
+      length_cm: l.length_cm != null ? String(l.length_cm) : "",
+      width_cm: l.width_cm != null ? String(l.width_cm) : "",
+      height_cm: l.height_cm != null ? String(l.height_cm) : "",
+      is_dangerous: !!l.is_dangerous,
+      shopee_shipping_channels: Array.isArray(l.shopee_shipping_channels) ? l.shopee_shipping_channels : [],
+      shopee_category: toCategoryTriple(l.shopee_category_path),
+      tiktok_category: toCategoryTriple(l.tiktok_category_path),
+      attributes: Array.isArray(l.attributes) ? l.attributes : [],
     });
     setShowListingForm(true);
   }
   // Picking a real product_id (from `inventory`, the real AutoCount-synced
-  // catalog) auto-fills title/sku/image/price/category from it, so staff
-  // don't retype real data — but everything stays editable afterward since
-  // a store listing's title/desc often needs to differ from the internal
-  // SKU name.
+  // catalog) auto-fills title/sku/image/price/category/weight from it, so
+  // staff don't retype real data — but everything stays editable afterward
+  // since a store listing's title/desc often needs to differ from the
+  // internal SKU name.
   function pickRealProduct(sku) {
     const p = (inventory || []).find((i) => i.sku === sku);
     if (!p) { setListingForm({ ...listingForm, product_id: "", sku: "" }); return; }
@@ -90,11 +119,38 @@ export function ProductListingCenter({ t, inventory, stores }) {
       ...listingForm, product_id: p.id, sku: p.sku, title: listingForm.title || p.name,
       image_url: listingForm.image_url || p.imageUrl || "", category: listingForm.category || p.category || "",
       base_price: listingForm.base_price || String(p.price || ""),
+      weight_kg: listingForm.weight_kg || (p.weightKg ? String(p.weightKg) : ""),
     });
+  }
+
+  function toggleShopeeChannel(name) {
+    setListingForm((prev) => ({
+      ...prev,
+      shopee_shipping_channels: prev.shopee_shipping_channels.includes(name)
+        ? prev.shopee_shipping_channels.filter((c) => c !== name)
+        : [...prev.shopee_shipping_channels, name],
+    }));
+  }
+  function setCategoryLevel(platformKey, level, value) {
+    setListingForm((prev) => {
+      const next = [...prev[platformKey]];
+      next[level] = value;
+      return { ...prev, [platformKey]: next };
+    });
+  }
+  function addAttribute() {
+    setListingForm((prev) => ({ ...prev, attributes: [...prev.attributes, { name: "", value: "" }] }));
+  }
+  function updateAttribute(idx, field, value) {
+    setListingForm((prev) => ({ ...prev, attributes: prev.attributes.map((a, i) => (i === idx ? { ...a, [field]: value } : a)) }));
+  }
+  function removeAttribute(idx) {
+    setListingForm((prev) => ({ ...prev, attributes: prev.attributes.filter((_, i) => i !== idx) }));
   }
 
   async function saveListing() {
     if (!listingForm.title.trim()) { showToast(t("请填写商品标题", "Please enter a title")); return; }
+    const cleanTriple = (arr) => (arr.some((v) => v.trim()) ? arr.map((v) => v.trim()) : null);
     const payload = {
       product_id: listingForm.product_id || null,
       sku: listingForm.sku.trim() || null,
@@ -103,6 +159,16 @@ export function ProductListingCenter({ t, inventory, stores }) {
       category: listingForm.category.trim() || null,
       image_url: listingForm.image_url.trim() || null,
       base_price: Number(listingForm.base_price) || 0,
+      brand: listingForm.brand.trim() || "No Brand",
+      weight_kg: listingForm.weight_kg ? Number(listingForm.weight_kg) : null,
+      length_cm: listingForm.length_cm ? Number(listingForm.length_cm) : null,
+      width_cm: listingForm.width_cm ? Number(listingForm.width_cm) : null,
+      height_cm: listingForm.height_cm ? Number(listingForm.height_cm) : null,
+      is_dangerous: listingForm.is_dangerous,
+      shopee_shipping_channels: listingForm.shopee_shipping_channels,
+      shopee_category_path: cleanTriple(listingForm.shopee_category),
+      tiktok_category_path: cleanTriple(listingForm.tiktok_category),
+      attributes: listingForm.attributes.filter((a) => a.name.trim()),
       updated_at: new Date().toISOString(),
     };
     const { error } = editingListingId
@@ -308,6 +374,73 @@ export function ProductListingCenter({ t, inventory, stores }) {
     loadListings();
   }
 
+  // ---- 多层级规格与 SKU 变体管理 ----
+  const [variationsTarget, setVariationsTarget] = useState(null); // listing
+  const [spec1Name, setSpec1Name] = useState("");
+  const [spec1Values, setSpec1Values] = useState("");
+  const [spec2Name, setSpec2Name] = useState("");
+  const [spec2Values, setSpec2Values] = useState("");
+  const [variationRows, setVariationRows] = useState([]); // [{spec1_value, spec2_value, sku, price, stock, image_url}]
+
+  async function openVariations(listing) {
+    setVariationsTarget(listing);
+    const { data, error } = await supabaseClient.from("product_listing_variations").select("*").eq("listing_id", listing.id).order("created_at");
+    if (error) { console.error("loadVariations failed", error); setVariationRows([]); return; }
+    setVariationRows(data || []);
+    setSpec1Name(data?.[0]?.spec1_name || "");
+    setSpec2Name(data?.[0]?.spec2_name || "");
+    setSpec1Values([...new Set((data || []).map((r) => r.spec1_value).filter(Boolean))].join(","));
+    setSpec2Values([...new Set((data || []).map((r) => r.spec2_value).filter(Boolean))].join(","));
+  }
+
+  // 生成组合 — cartesian product of spec1 × spec2 values (spec2 optional,
+  // for a single-level spec). Preserves an existing row's sku/price/stock/
+  // image if that exact combination was already there, so regenerating
+  // after adding one more value doesn't wipe out data already entered.
+  function generateCombos() {
+    const v1 = spec1Values.split(",").map((s) => s.trim()).filter(Boolean);
+    const v2 = spec2Values.split(",").map((s) => s.trim()).filter(Boolean);
+    const existing = new Map(variationRows.map((r) => [`${r.spec1_value || ""}|${r.spec2_value || ""}`, r]));
+    const combos = [];
+    const pairs = v2.length > 0 ? v1.flatMap((a) => v2.map((b) => [a, b])) : v1.map((a) => [a, ""]);
+    for (const [a, b] of pairs) {
+      const key = `${a}|${b}`;
+      combos.push(existing.get(key) || { spec1_value: a, spec2_value: b, sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: "" });
+    }
+    setVariationRows(combos);
+  }
+  // Small helper so a freshly-generated combo starts from the parent
+  // listing's real base price instead of RM0, saving retyping.
+  function listingFormBasePriceFallback() {
+    return Number(variationsTarget?.base_price) || 0;
+  }
+  function updateVariationField(idx, field, value) {
+    setVariationRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
+  }
+  function removeVariationRow(idx) {
+    setVariationRows((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  async function saveVariations() {
+    if (!variationsTarget) return;
+    const { error: delErr } = await supabaseClient.from("product_listing_variations").delete().eq("listing_id", variationsTarget.id);
+    if (delErr) { showToast(t("保存失败", "Save failed")); console.error("saveVariations delete failed", delErr); return; }
+    if (variationRows.length > 0) {
+      const rows = variationRows.map((r) => ({
+        listing_id: variationsTarget.id,
+        spec1_name: spec1Name.trim() || null, spec1_value: r.spec1_value || null,
+        spec2_name: spec2Name.trim() || null, spec2_value: r.spec2_value || null,
+        sku: r.sku?.trim() || null, price: Number(r.price) || 0, stock: Math.round(Number(r.stock)) || 0,
+        image_url: r.image_url?.trim() || null,
+      }));
+      const { error } = await supabaseClient.from("product_listing_variations").insert(rows);
+      if (error) { showToast(t("保存失败", "Save failed")); console.error("saveVariations insert failed", error); return; }
+    }
+    setVariationsTarget(null);
+    showToast(t("已保存 SKU 变体", "Variations saved"));
+    loadListings();
+  }
+
   return (
     <div className="space-y-4">
       {toast && (
@@ -406,6 +539,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                     <td className="py-2.5 pr-3 text-center tabular-nums">{(l.product_listing_stores || []).length}</td>
                     <td className="py-2.5 pr-3 pr-5 text-right whitespace-nowrap">
                       <button onClick={() => openPublish(l)} className="text-xs text-indigo-600 hover:text-indigo-800 mr-2">{t("发布到店铺", "Publish")}</button>
+                      <button onClick={() => openVariations(l)} className="text-xs text-purple-600 hover:text-purple-800 mr-2">{t("规格/SKU变体", "Variations")}</button>
                       <button onClick={() => { setWatermarkTarget(l); setWatermarkPreview(null); setWatermarkError(""); }} className="text-xs text-emerald-600 hover:text-emerald-800 mr-2">{t("AI 水印", "Watermark")}</button>
                       <button onClick={() => openEditListing(l)} className="text-xs text-slate-500 hover:text-slate-800 mr-2">{t("编辑", "Edit")}</button>
                       <button onClick={() => deleteListing(l.id)} className="text-xs text-rose-500 hover:text-rose-700">{t("删除", "Delete")}</button>
@@ -514,6 +648,99 @@ export function ProductListingCenter({ t, inventory, stores }) {
               <div className="text-xs text-slate-400 mb-1">{t("主图链接", "Main Image URL")}</div>
               <input value={listingForm.image_url} onChange={(e) => setListingForm({ ...listingForm, image_url: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
             </div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("品牌", "Brand")}</div>
+              <input value={listingForm.brand} onChange={(e) => setListingForm({ ...listingForm, brand: e.target.value })} placeholder="No Brand" className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+            </div>
+
+            {/* 包裹信息 (2026-08-24, new) — real fields both platforms'
+                real Product APIs require, captured here ahead of time (see
+                file-top note: not validated against a live API). Weight
+                auto-fills from the real linked product when available. */}
+            <div className="pt-2 border-t border-slate-100">
+              <div className="text-xs font-medium text-slate-500 mb-2">{t("📦 包裹信息", "📦 Package Info")}</div>
+              <div className="grid grid-cols-4 gap-2">
+                <div>
+                  <div className="text-[11px] text-slate-400 mb-1">{t("重量 (kg)", "Weight (kg)")}</div>
+                  <input type="number" value={listingForm.weight_kg} onChange={(e) => setListingForm({ ...listingForm, weight_kg: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-400 mb-1">{t("长 (cm)", "L (cm)")}</div>
+                  <input type="number" value={listingForm.length_cm} onChange={(e) => setListingForm({ ...listingForm, length_cm: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-400 mb-1">{t("宽 (cm)", "W (cm)")}</div>
+                  <input type="number" value={listingForm.width_cm} onChange={(e) => setListingForm({ ...listingForm, width_cm: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-400 mb-1">{t("高 (cm)", "H (cm)")}</div>
+                  <input type="number" value={listingForm.height_cm} onChange={(e) => setListingForm({ ...listingForm, height_cm: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
+                </div>
+              </div>
+            </div>
+
+            {/* TikTok 危险品声明 */}
+            <div>
+              <div className="text-xs font-medium text-slate-500 mb-1">{t("⚠️ TikTok 合规声明", "⚠️ TikTok Compliance")}</div>
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                <input type="checkbox" checked={listingForm.is_dangerous} onChange={(e) => setListingForm({ ...listingForm, is_dangerous: e.target.checked })} className="h-3.5 w-3.5 rounded border-slate-300" />
+                {t("包含电池/液体/危险品 (Hazardous Goods/Batteries)", "Contains batteries/liquid/hazardous goods")}
+              </label>
+            </div>
+
+            {/* Shopee 物流渠道 */}
+            <div>
+              <div className="text-xs font-medium text-slate-500 mb-1">{t("🚚 Shopee 物流渠道", "🚚 Shopee Shipping Channels")}</div>
+              <div className="flex flex-wrap gap-2">
+                {SHOPEE_SHIPPING_CHANNELS.map((ch) => (
+                  <label key={ch} className={`text-xs px-2.5 py-1 rounded-full border cursor-pointer ${listingForm.shopee_shipping_channels.includes(ch) ? "bg-orange-50 border-orange-300 text-orange-700" : "border-slate-200 text-slate-500"}`}>
+                    <input type="checkbox" checked={listingForm.shopee_shipping_channels.includes(ch)} onChange={() => toggleShopeeChannel(ch)} className="hidden" />
+                    {ch}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* 平台分类映射 (2026-08-24, new) — free-text 3-level path per
+                platform; not a live category-tree picker (no category API
+                connected — see file-top note). */}
+            <div>
+              <div className="text-xs font-medium text-slate-500 mb-1">{t("🗂 Shopee 三级分类", "🗂 Shopee Category (3 levels)")}</div>
+              <div className="grid grid-cols-3 gap-2">
+                {[0, 1, 2].map((lvl) => (
+                  <input key={lvl} value={listingForm.shopee_category[lvl]} onChange={(e) => setCategoryLevel("shopee_category", lvl, e.target.value)} placeholder={t(`第${lvl + 1}级`, `Level ${lvl + 1}`)} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg" />
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs font-medium text-slate-500 mb-1">{t("🗂 TikTok 三级分类", "🗂 TikTok Category (3 levels)")}</div>
+              <div className="grid grid-cols-3 gap-2">
+                {[0, 1, 2].map((lvl) => (
+                  <input key={lvl} value={listingForm.tiktok_category[lvl]} onChange={(e) => setCategoryLevel("tiktok_category", lvl, e.target.value)} placeholder={t(`第${lvl + 1}级`, `Level ${lvl + 1}`)} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg" />
+                ))}
+              </div>
+            </div>
+
+            {/* 动态必填属性 (2026-08-24, new) — free-form name/value pairs
+                (e.g. Warranty Type, Material) so staff has somewhere to
+                record a category's mandatory attributes; not fetched from
+                either platform's real per-category attribute schema. */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs font-medium text-slate-500">{t("📋 分类必填属性", "📋 Category Attributes")}</div>
+                <button onClick={addAttribute} className="text-xs text-indigo-600 hover:text-indigo-800">+ {t("添加属性", "Add")}</button>
+              </div>
+              <div className="space-y-1.5">
+                {listingForm.attributes.map((a, idx) => (
+                  <div key={idx} className="flex gap-2">
+                    <input value={a.name} onChange={(e) => updateAttribute(idx, "name", e.target.value)} placeholder={t("属性名（如 Warranty Type）", "Attribute name (e.g. Warranty Type)")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                    <input value={a.value} onChange={(e) => updateAttribute(idx, "value", e.target.value)} placeholder={t("值（如 1 Year）", "Value (e.g. 1 Year)")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                    <button onClick={() => removeAttribute(idx)} className="text-rose-400 hover:text-rose-600"><Trash2 size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={() => setShowListingForm(false)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
               <button onClick={saveListing} className="text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800">{t("保存", "Save")}</button>
@@ -635,6 +862,64 @@ export function ProductListingCenter({ t, inventory, stores }) {
               <button onClick={saveWatermark} disabled={!watermarkPreview} className={`flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg text-white ${watermarkPreview ? "bg-gradient-to-r from-emerald-500 to-teal-500 hover:opacity-90" : "bg-slate-300 cursor-not-allowed"}`}>
                 <CheckCircle2 size={14} /> {t("保存并应用", "Save & Apply")}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 多层级规格与 SKU 变体管理 */}
+      {variationsTarget && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setVariationsTarget(null)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-2xl space-y-3 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 text-sm font-medium text-purple-700"><Layers size={16} /> {t(`规格与 SKU 变体 — ${variationsTarget.title}`, `Variations — ${variationsTarget.title}`)}</div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs text-slate-400 mb-1">{t("规格1 名称（如 颜色）", "Spec 1 name (e.g. Color)")}</div>
+                <input value={spec1Name} onChange={(e) => setSpec1Name(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg mb-1.5" />
+                <div className="text-xs text-slate-400 mb-1">{t("规格1 值（逗号分隔，如 红色,蓝色,黑色）", "Spec 1 values (comma-separated)")}</div>
+                <input value={spec1Values} onChange={(e) => setSpec1Values(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              </div>
+              <div>
+                <div className="text-xs text-slate-400 mb-1">{t("规格2 名称（可选，如 尺寸）", "Spec 2 name (optional, e.g. Size)")}</div>
+                <input value={spec2Name} onChange={(e) => setSpec2Name(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg mb-1.5" />
+                <div className="text-xs text-slate-400 mb-1">{t("规格2 值（逗号分隔，如 S,M,L）", "Spec 2 values (comma-separated)")}</div>
+                <input value={spec2Values} onChange={(e) => setSpec2Values(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              </div>
+            </div>
+            <button onClick={generateCombos} disabled={!spec1Values.trim()} className={`text-xs px-3 py-2 rounded-lg text-white ${spec1Values.trim() ? "bg-purple-600 hover:bg-purple-700" : "bg-slate-300 cursor-not-allowed"}`}>
+              {t("生成组合", "Generate Combinations")}
+            </button>
+            {variationRows.length > 0 && (
+              <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-xs min-w-[560px]">
+                  <thead>
+                    <tr className="text-left text-slate-400 border-b border-slate-100">
+                      <th className="py-2 px-2 font-medium">{t("规格组合", "Combination")}</th>
+                      <th className="py-2 px-2 font-medium">{t("商家 SKU", "Seller SKU")}</th>
+                      <th className="py-2 px-2 font-medium">{t("价格 (RM)", "Price (RM)")}</th>
+                      <th className="py-2 px-2 font-medium">{t("库存", "Stock")}</th>
+                      <th className="py-2 px-2 font-medium">{t("规格图片 URL", "Spec Image URL")}</th>
+                      <th className="py-2 px-2 font-medium w-6" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {variationRows.map((r, idx) => (
+                      <tr key={idx} className="border-b border-slate-50 last:border-0">
+                        <td className="py-1.5 px-2 whitespace-nowrap">{[r.spec1_value, r.spec2_value].filter(Boolean).join(" / ")}</td>
+                        <td className="py-1.5 px-2"><input value={r.sku || ""} onChange={(e) => updateVariationField(idx, "sku", e.target.value)} className="w-24 px-1.5 py-1 border border-slate-200 rounded" /></td>
+                        <td className="py-1.5 px-2"><input type="number" value={r.price} onChange={(e) => updateVariationField(idx, "price", e.target.value)} className="w-20 px-1.5 py-1 border border-slate-200 rounded" /></td>
+                        <td className="py-1.5 px-2"><input type="number" value={r.stock} onChange={(e) => updateVariationField(idx, "stock", e.target.value)} className="w-16 px-1.5 py-1 border border-slate-200 rounded" /></td>
+                        <td className="py-1.5 px-2"><input value={r.image_url || ""} onChange={(e) => updateVariationField(idx, "image_url", e.target.value)} className="w-36 px-1.5 py-1 border border-slate-200 rounded" /></td>
+                        <td className="py-1.5 px-2"><button onClick={() => removeVariationRow(idx)} className="text-rose-400 hover:text-rose-600"><Trash2 size={13} /></button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={() => setVariationsTarget(null)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
+              <button onClick={saveVariations} className="text-sm px-4 py-2 rounded-lg bg-purple-600 text-white hover:bg-purple-700">{t("保存变体", "Save Variations")}</button>
             </div>
           </div>
         </div>
