@@ -185,6 +185,52 @@ function getShipPriorityBucket(o, todayStr, yesterdayStr, tomorrowStr) {
   return null;
 }
 
+// Single source of truth for which field a given searchField option reads
+// off an order (2026-08-26, extracted) — used by both `filtered`'s text
+// match below and the new search auto-suggest dropdown, so the dropdown's
+// suggestions and what typing+Enter actually filters to can never drift
+// apart, same "one function, two consumers" pattern as getShipPriorityBucket.
+function searchFieldValue(o, searchField) {
+  return (
+    searchField === "orderNo" ? o.id :
+    searchField === "sku" ? o.sku :
+    searchField === "product" ? o.product :
+    searchField === "variation" ? o.variation :
+    searchField === "sellerSku" ? o.sku :
+    searchField === "tracking" ? o.tracking :
+    searchField === "package" ? o.tracking :
+    searchField === "customer" ? o.customer :
+    searchField === "note" ? o.noteText : o.id
+  ) || "";
+}
+
+// Fields the search auto-suggest dropdown offers (2026-08-26, new) —
+// matches the explicit spec ("Order SN, Buyer Name, SKU, or Title").
+// sellerSku reads the same o.sku field as sku (see searchFieldValue above),
+// included here for the same reason.
+const SEARCH_SUGGEST_FIELDS = new Set(["orderNo", "customer", "sku", "sellerSku", "product"]);
+
+// Wraps the first case-insensitive match of `query` inside `text` in a
+// highlighted <mark> (2026-08-26, new) — used by the search suggestion
+// dropdown so the matched substring stands out, same convention real
+// storefront/seller-center search dropdowns use. Falls back to the plain
+// text unwrapped when there's no match (shouldn't happen given callers only
+// ever pass rows that already matched, but stays safe if that changes).
+function HighlightMatch({ text, query }) {
+  const str = text || "";
+  const q = (query || "").trim();
+  if (!q) return <>{str}</>;
+  const idx = str.toLowerCase().indexOf(q.toLowerCase());
+  if (idx === -1) return <>{str}</>;
+  return (
+    <>
+      {str.slice(0, idx)}
+      <mark className="bg-amber-200 text-slate-900 rounded-sm px-0.5">{str.slice(idx, idx + q.length)}</mark>
+      {str.slice(idx + q.length)}
+    </>
+  );
+}
+
 const DATE_FILTER_OPTIONS = [
   { key: "today", zh: "今天", en: "Today" },
   { key: "yesterday", zh: "昨天", en: "Yesterday" },
@@ -823,6 +869,20 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [priorityFilter]);
+
+  // Search auto-suggest dropdown: close on click-outside (2026-08-26, new).
+  // Escape is handled directly on the input's onKeyDown (simpler than a
+  // document-level keydown listener for a single-key case); this effect
+  // only needs to cover clicks landing anywhere outside the search wrapper.
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target)) {
+        setShowSearchSuggest(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
   // Status-card counts, fetched independently of the (capped) `orders` prop
   // via `{count:"exact",head:true}` queries — zero row data transferred,
   // just numbers — so cards reflect the true full-table count even though
@@ -839,6 +899,13 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   const [toShipShippingRows, setToShipShippingRows] = useState([]);
   const [q, setQ] = useState("");
   const [searchField, setSearchField] = useState("orderNo");
+  // Search auto-suggest dropdown (2026-08-26, new) — open state only;
+  // what actually renders inside it is the `searchSuggestions` memo below,
+  // derived from the already-loaded `all` list (no new query). Closed on
+  // blur/click-outside/Escape/selecting a suggestion — see the effect and
+  // handlers near the search input JSX.
+  const [showSearchSuggest, setShowSearchSuggest] = useState(false);
+  const searchWrapRef = useRef(null);
   const [dateFilter, setDateFilter] = useState("");
   const [dateMode, setDateMode] = useState("all"); // "all" | "today" | "7d" | "30d" | "custom"
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -1322,22 +1389,25 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       }
       if (q.trim()) {
         const needle = q.trim().toLowerCase();
-        const haystack = (
-          searchField === "orderNo" ? o.id :
-          searchField === "sku" ? o.sku :
-          searchField === "product" ? o.product :
-          searchField === "variation" ? o.variation :
-          searchField === "sellerSku" ? o.sku :
-          searchField === "tracking" ? o.tracking :
-          searchField === "package" ? o.tracking :
-          searchField === "customer" ? o.customer :
-          searchField === "note" ? o.noteText : o.id
-        ) || "";
+        const haystack = searchFieldValue(o, searchField);
         if (!haystack.toLowerCase().includes(needle)) return false;
       }
       return true;
     });
   }, [all, activePlatform, statusFilter, priorityFilter, instantStage, todayStr, yesterdayStr, tomorrowStr, dateMode, dateFilter, q, searchField]);
+
+  // Search auto-suggest dropdown (2026-08-26, new) — reuses `filtered`
+  // directly, which already applies every active status/priority/date
+  // filter PLUS the current q/searchField text match, so a suggestion is
+  // guaranteed to actually be the row that appears when clicked — never a
+  // mismatch between what's suggested and what the search itself returns.
+  // Only offered for the four fields requested (Order SN / Buyer Name /
+  // SKU / Title) — other fields (tracking/package/variation/note) keep the
+  // plain text input with no dropdown, matching the explicit spec.
+  const searchSuggestions = useMemo(() => {
+    if (!q.trim() || !SEARCH_SUGGEST_FIELDS.has(searchField)) return [];
+    return filtered.slice(0, 8);
+  }, [filtered, q, searchField]);
 
   const allChecked = filtered.length > 0 && filtered.every((o) => selectedIds.has(o.id));
   // Batch-printed labels come out oldest-first (FIFO), not in click/selection
@@ -1703,14 +1773,63 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
               <option value="customer">{t("买家名称", "Buyer Name")}</option>
               <option value="note">{t("备注", "Note")}</option>
             </select>
-            <div className="relative flex-1">
+            <div className="relative flex-1" ref={searchWrapRef}>
               <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 value={q}
-                onChange={(e) => setQ(e.target.value)}
+                onChange={(e) => { setQ(e.target.value); setShowSearchSuggest(true); }}
+                onFocus={() => setShowSearchSuggest(true)}
+                onKeyDown={(e) => { if (e.key === "Escape") setShowSearchSuggest(false); }}
                 placeholder={t(`在 ${activePlatform} 内搜索`, `Search in ${activePlatform}`)}
-                className={`w-full pl-9 pr-3 py-3 text-sm border border-slate-200 rounded-lg outline-none input-3d ${theme.ring}`}
+                className={`w-full pl-9 pr-8 py-3 text-sm border border-slate-200 rounded-lg outline-none input-3d ${theme.ring}`}
               />
+              {/* Clear button (2026-08-26, new) — only shown once text is
+                  typed; clears q and closes the dropdown in one click, same
+                  as clicking the field then pressing Backspace repeatedly. */}
+              {q && (
+                <button
+                  type="button"
+                  onClick={() => { setQ(""); setShowSearchSuggest(false); }}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full hover:bg-slate-100"
+                  aria-label={t("清除搜索", "Clear search")}
+                >
+                  <X size={14} />
+                </button>
+              )}
+              {/* Auto-suggest dropdown (2026-08-26, new) — mirrors real
+                  storefront/seller-center search: thumbnail + highlighted
+                  matched field + buyer name per row, click-outside/Escape/
+                  selecting a row all close it (see the click-outside effect
+                  and this input's onKeyDown above). */}
+              {showSearchSuggest && searchSuggestions.length > 0 && (
+                <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg card-3d max-h-80 overflow-y-auto">
+                  {searchSuggestions.map((o) => (
+                    <button
+                      key={o.id}
+                      type="button"
+                      onClick={() => { setQ(searchFieldValue(o, searchField)); setShowSearchSuggest(false); }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-slate-50 border-b border-slate-100 last:border-b-0"
+                    >
+                      {o.productImage ? (
+                        <img src={o.productImage} alt="" className="h-9 w-9 rounded-md object-cover border border-slate-200 shrink-0" />
+                      ) : (
+                        <div className="h-9 w-9 rounded-md bg-slate-100 border border-slate-200 shrink-0" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-slate-700 truncate">
+                          <HighlightMatch text={searchFieldValue(o, searchField)} query={q} />
+                        </div>
+                        {/* Secondary line: buyer name normally, or the
+                            order no. instead when searching BY buyer name
+                            (avoids showing the same value on both lines). */}
+                        <div className="text-xs text-slate-400 truncate">
+                          {searchField === "customer" ? o.id : (o.customer || "—")}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-1.5 border border-slate-200 rounded-lg px-2.5 shrink-0">
               <Clock size={13} className="text-slate-400 shrink-0" />
