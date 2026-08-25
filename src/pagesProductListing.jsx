@@ -758,6 +758,19 @@ export function ProductListingCenter({ t, inventory, stores }) {
   const [showBatchVariantEdit, setShowBatchVariantEdit] = useState(false);
   const [batchVariantPrice, setBatchVariantPrice] = useState("");
   const [batchVariantStock, setBatchVariantStock] = useState("");
+  // 多规格开关 + 规格选项图片 (2026-08-25, new) — TikTok Seller Center
+  // style: a toggle for whether this listing even has variants at all
+  // (off = single price/stock, set on the main listing page), plus a
+  // per-option photo (keyed by the option's text value) so each spec chip
+  // — e.g. "BLACK SPRING" — can carry its own picture independent of the
+  // generated SKU rows below (a photo added before "生成组合" is run still
+  // gets picked up once the row exists).
+  const [multiVariantsOn, setMultiVariantsOn] = useState(false);
+  const [spec1OptionImages, setSpec1OptionImages] = useState({});
+  const [spec2OptionImages, setSpec2OptionImages] = useState({});
+  const [specImageUploading, setSpecImageUploading] = useState(null); // "1:BLACK SPRING" while in flight
+  const [spec1NewOption, setSpec1NewOption] = useState("");
+  const [spec2NewOption, setSpec2NewOption] = useState("");
 
   async function openVariations(listing) {
     setVariationsTarget(listing);
@@ -771,28 +784,129 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setSpec2Name(data?.[0]?.spec2_name || "");
     setSpec1Values([...new Set((data || []).map((r) => r.spec1_value).filter(Boolean))].join(","));
     setSpec2Values([...new Set((data || []).map((r) => r.spec2_value).filter(Boolean))].join(","));
+    // 多规格开关 — on if this listing already has any variant rows saved.
+    setMultiVariantsOn((data || []).length > 0);
+    // Seed each option's image from whichever existing row first carried
+    // that spec1/spec2 value's photo, so reopening shows the chips'
+    // pictures instead of blank placeholders.
+    const img1 = {}; const img2 = {};
+    for (const r of data || []) {
+      if (r.spec1_value && r.image_url && !img1[r.spec1_value]) img1[r.spec1_value] = r.image_url;
+      if (r.spec2_value && r.image_url && !img2[r.spec2_value]) img2[r.spec2_value] = r.image_url;
+    }
+    setSpec1OptionImages(img1);
+    setSpec2OptionImages(img2);
+    setSpec1NewOption(""); setSpec2NewOption("");
   }
 
   // 生成组合 — cartesian product of spec1 × spec2 values (spec2 optional,
   // for a single-level spec). Preserves an existing row's sku/price/stock/
   // image if that exact combination was already there, so regenerating
   // after adding one more value doesn't wipe out data already entered.
-  function generateCombos() {
-    const v1 = spec1Values.split(",").map((s) => s.trim()).filter(Boolean);
-    const v2 = spec2Values.split(",").map((s) => s.trim()).filter(Boolean);
+  // Takes the value lists as arguments (rather than reading spec1Values/
+  // spec2Values state directly) so callers that just changed those values
+  // this same tick — e.g. addSpecValue below — can pass the fresh list
+  // immediately instead of racing a stale closure against the pending
+  // setState (a setTimeout(generateCombos, 0) here would silently drop
+  // whichever option was just added, since the deferred call would still
+  // close over the pre-update state).
+  function regenerateRows(v1, v2) {
     const existing = new Map(variationRows.map((r) => [`${r.spec1_value || ""}|${r.spec2_value || ""}`, r]));
     const combos = [];
     const pairs = v2.length > 0 ? v1.flatMap((a) => v2.map((b) => [a, b])) : v1.map((a) => [a, ""]);
     for (const [a, b] of pairs) {
       const key = `${a}|${b}`;
-      combos.push(existing.get(key) || { spec1_value: a, spec2_value: b, sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: "", weight_kg: "" });
+      // A newly-created row inherits whichever option photo was already
+      // uploaded for its spec1 (or spec2, if spec1 has none) value.
+      combos.push(existing.get(key) || { spec1_value: a, spec2_value: b, sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: spec1OptionImages[a] || spec2OptionImages[b] || "", weight_kg: "" });
     }
     setVariationRows(combos);
+  }
+  function generateCombos() {
+    regenerateRows(specValuesList(1), specValuesList(2));
   }
   // Small helper so a freshly-generated combo starts from the parent
   // listing's real base price instead of RM0, saving retyping.
   function listingFormBasePriceFallback() {
     return Number(variationsTarget?.base_price) || 0;
+  }
+
+  // ---- 规格选项 chip 管理 (2026-08-25, new) — TikTok Seller Center style
+  // option chips (add/remove/reorder/photo) instead of a raw comma-
+  // separated text field. All of these operate on the same spec1Values/
+  // spec2Values comma-string state that generateCombos already reads, so
+  // existing save/load logic is untouched — this is purely a nicer editor
+  // on top of it. Every mutation re-runs generateCombos immediately so the
+  // SKU card list below stays in sync without a separate "Generate" click.
+  function specValuesList(specNum) {
+    return (specNum === 1 ? spec1Values : spec2Values).split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  function addSpecValue(specNum, raw) {
+    const value = raw.trim();
+    if (!value) return;
+    const list = specValuesList(specNum);
+    if (list.includes(value)) return;
+    const nextList = [...list, value];
+    if (specNum === 1) {
+      setSpec1Values(nextList.join(","));
+      regenerateRows(nextList, specValuesList(2));
+    } else {
+      setSpec2Values(nextList.join(","));
+      regenerateRows(specValuesList(1), nextList);
+    }
+  }
+  function removeSpecValue(specNum, value) {
+    const list = specValuesList(specNum).filter((v) => v !== value);
+    const next = list.join(",");
+    if (specNum === 1) {
+      setSpec1Values(next);
+      setSpec1OptionImages((prev) => { const { [value]: _, ...rest } = prev; return rest; });
+    } else {
+      setSpec2Values(next);
+      setSpec2OptionImages((prev) => { const { [value]: _, ...rest } = prev; return rest; });
+    }
+    // Also drop any generated rows that used this exact option value, since
+    // it no longer exists to regenerate from.
+    setVariationRows((prev) => prev.filter((r) => (specNum === 1 ? r.spec1_value : r.spec2_value) !== value));
+  }
+  function moveSpecValue(specNum, value, dir) {
+    const list = specValuesList(specNum);
+    const idx = list.indexOf(value);
+    const swapWith = idx + dir;
+    if (idx < 0 || swapWith < 0 || swapWith >= list.length) return;
+    [list[idx], list[swapWith]] = [list[swapWith], list[idx]];
+    const next = list.join(",");
+    if (specNum === 1) setSpec1Values(next); else setSpec2Values(next);
+  }
+  // 多规格开关 (2026-08-25, new) — turning it off clears all variant state
+  // (nothing is written to the DB until 保存变体, so this is safe to do
+  // freely); the listing then goes back to using its own base_price/stock
+  // as a single SKU, matching what "关闭多规格" means on TikTok's own
+  // Seller Center.
+  function toggleMultiVariants() {
+    setMultiVariantsOn((prev) => {
+      const next = !prev;
+      if (!next) {
+        setVariationRows([]); setSpec1Name(""); setSpec1Values(""); setSpec2Name(""); setSpec2Values("");
+        setSpec1OptionImages({}); setSpec2OptionImages({}); setSelectedVariantIdx(new Set());
+      }
+      return next;
+    });
+  }
+  async function uploadSpecOptionImage(specNum, value, file) {
+    if (!file || !file.type.startsWith("image/")) return;
+    const key = `${specNum}:${value}`;
+    setSpecImageUploading(key);
+    const path = `variant-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const { error } = await supabaseClient.storage.from("product-images").upload(path, file, { upsert: false });
+    setSpecImageUploading(null);
+    if (error) { showToast(t("上传失败", "Upload failed")); console.error("uploadSpecOptionImage failed", error); return; }
+    const { data: pub } = supabaseClient.storage.from("product-images").getPublicUrl(path);
+    if (specNum === 1) setSpec1OptionImages((prev) => ({ ...prev, [value]: pub.publicUrl }));
+    else setSpec2OptionImages((prev) => ({ ...prev, [value]: pub.publicUrl }));
+    // Patch any already-generated rows carrying this option value so the
+    // new photo shows immediately, not just on the next regenerate.
+    setVariationRows((prev) => prev.map((r) => ((specNum === 1 ? r.spec1_value : r.spec2_value) === value ? { ...r, image_url: pub.publicUrl } : r)));
   }
   function updateVariationField(idx, field, value) {
     setVariationRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
@@ -859,23 +973,24 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // category_trees + category_attribute_templates dataset from the UI,
   // since there's no live official API to sync from (see file-top note).
   const [showCategoryManager, setShowCategoryManager] = useState(false);
-  const [newCategory, setNewCategory] = useState({ platform: "Shopee", level1: "", level2: "", level3: "" });
+  const [newCategory, setNewCategory] = useState({ platform: "Shopee", level1: "", level2: "", level3: "", commission_rate: "" });
   const [expandedLeafId, setExpandedLeafId] = useState(null);
   const [newAttrName, setNewAttrName] = useState("");
   const [newAttrRequired, setNewAttrRequired] = useState(true);
 
   async function addCategoryLeaf() {
-    const { platform, level1, level2, level3 } = newCategory;
+    const { platform, level1, level2, level3, commission_rate } = newCategory;
     if (!level1.trim() || !level2.trim() || !level3.trim()) { showToast(t("请填写完整三级分类", "Please fill in all 3 levels")); return; }
     const { error } = await supabaseClient.from("category_trees").insert({
       platform, level1: level1.trim(), level2: level2.trim(), level3: level3.trim(),
+      commission_rate: commission_rate !== "" ? Number(commission_rate) : null,
     });
     if (error) {
       showToast(error.code === "23505" ? t("该分类已存在", "This category already exists") : t("添加失败", "Add failed"));
       console.error("addCategoryLeaf failed", error);
       return;
     }
-    setNewCategory({ platform, level1: "", level2: "", level3: "" });
+    setNewCategory({ platform, level1: "", level2: "", level3: "", commission_rate: "" });
     showToast(t("已添加分类", "Category added"));
     loadCategoryData();
   }
@@ -1170,6 +1285,15 @@ export function ProductListingCenter({ t, inventory, stores }) {
                     {categoryOptions("Shopee", "level3", shopeeL1, shopeeL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
                   </select>
                 </div>
+                {/* 佣金提示 (2026-08-25, new) — helps catch a wrong leaf pick
+                    before it causes an unexpected commission deduction;
+                    staff-maintained figure, not a live platform value. */}
+                {(() => {
+                  const leaf = categoryTrees.find((c) => c.id === listingForm.shopee_category_leaf_id);
+                  return leaf?.commission_rate != null ? (
+                    <div className="text-[11px] text-amber-600 mt-1">{t(`预计佣金 ${leaf.commission_rate}%`, `Est. commission ${leaf.commission_rate}%`)}</div>
+                  ) : null;
+                })()}
               </div>
             )}
             {listingForm.platform === "TikTok Shop" && (
@@ -1226,6 +1350,17 @@ export function ProductListingCenter({ t, inventory, stores }) {
                     </select>
                   </div>
                 )}
+                {/* 佣金提示 (2026-08-25, new) — only available for the
+                    internal-library pick (staff-maintained figure); the
+                    real TikTok API response shape has never been observed
+                    (blocked by 105005), so no commission field is invented
+                    for that branch. */}
+                {tiktokApiStatus !== "ok" && (() => {
+                  const leaf = categoryTrees.find((c) => c.id === listingForm.tiktok_category_leaf_id);
+                  return leaf?.commission_rate != null ? (
+                    <div className="text-[11px] text-amber-600 mt-1">{t(`预计佣金 ${leaf.commission_rate}%`, `Est. commission ${leaf.commission_rate}%`)}</div>
+                  ) : null;
+                })()}
                 {tiktokRealAttrsLoading && <div className="text-[11px] text-slate-400 mt-1">{t("加载官方分类属性中…", "Loading official category attributes…")}</div>}
               </div>
             )}
@@ -1558,107 +1693,156 @@ export function ProductListingCenter({ t, inventory, stores }) {
         </div>
       )}
 
-      {/* 多层级规格与 SKU 变体管理 */}
+      {/* 多层级规格与 SKU 变体管理 — TikTok Seller Center 风格 (2026-08-25
+          重构): 多规格开关 + chip 式规格选项(带图片/排序/删除) + 卡片式
+          SKU 列表 + 批量修改。 */}
       {variationsTarget && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setVariationsTarget(null)}>
           <div className="bg-white rounded-xl p-5 w-full max-w-2xl space-y-3 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2 text-sm font-medium text-purple-700"><Layers size={16} /> {t(`规格与 SKU 变体 — ${variationsTarget.title}`, `Variations — ${variationsTarget.title}`)}</div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <div className="text-xs text-slate-400 mb-1">{t("规格1 名称（如 颜色）", "Spec 1 name (e.g. Color)")}</div>
-                <input value={spec1Name} onChange={(e) => setSpec1Name(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg mb-1.5" />
-                <div className="text-xs text-slate-400 mb-1">{t("规格1 值（逗号分隔，如 红色,蓝色,黑色）", "Spec 1 values (comma-separated)")}</div>
-                <input value={spec1Values} onChange={(e) => setSpec1Values(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
-              </div>
-              <div>
-                <div className="text-xs text-slate-400 mb-1">{t("规格2 名称（可选，如 尺寸）", "Spec 2 name (optional, e.g. Size)")}</div>
-                <input value={spec2Name} onChange={(e) => setSpec2Name(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg mb-1.5" />
-                <div className="text-xs text-slate-400 mb-1">{t("规格2 值（逗号分隔，如 S,M,L）", "Spec 2 values (comma-separated)")}</div>
-                <input value={spec2Values} onChange={(e) => setSpec2Values(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button onClick={generateCombos} disabled={!spec1Values.trim()} className={`text-xs px-3 py-2 rounded-lg text-white ${spec1Values.trim() ? "bg-purple-600 hover:bg-purple-700" : "bg-slate-300 cursor-not-allowed"}`}>
-                {t("生成组合", "Generate Combinations")}
-              </button>
-              <button onClick={addVariantRow} className="text-xs px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
-                + {t("添加规格", "Add Variant")}
-              </button>
-              {variationRows.length > 0 && (
-                <button onClick={() => setShowBatchVariantEdit((v) => !v)} className="text-xs px-3 py-2 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 ml-auto">
-                  <Percent size={12} className="inline mr-1" /> {t(`批量修改${selectedVariantIdx.size > 0 ? `（已选 ${selectedVariantIdx.size}）` : ""}`, `Batch Edit${selectedVariantIdx.size > 0 ? ` (${selectedVariantIdx.size} selected)` : ""}`)}
-                </button>
-              )}
-            </div>
-            {showBatchVariantEdit && (
-              <div className="flex items-end gap-2 bg-indigo-50 border border-indigo-100 rounded-lg p-2.5">
-                <div>
-                  <div className="text-[11px] text-slate-400 mb-1">{t("统一价格 (RM)", "Set price (RM)")}</div>
-                  <input type="number" value={batchVariantPrice} onChange={(e) => setBatchVariantPrice(e.target.value)} placeholder={t("留空不改", "blank = no change")} className="w-28 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-400 mb-1">{t("统一库存", "Set stock")}</div>
-                  <input type="number" value={batchVariantStock} onChange={(e) => setBatchVariantStock(e.target.value)} placeholder={t("留空不改", "blank = no change")} className="w-24 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
-                </div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm font-medium text-purple-700"><Layers size={16} /> {t(`规格与 SKU 变体 — ${variationsTarget.title}`, `Variations — ${variationsTarget.title}`)}</div>
+              {/* 开启/关闭多规格 (2026-08-25, new) */}
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
+                {t("多规格 (Multiple Variations)", "Multiple Variations")}
                 <button
-                  onClick={applyBatchVariantEdit}
-                  disabled={batchVariantPrice === "" && batchVariantStock === ""}
-                  className={`text-xs px-3 py-1.5 rounded-lg text-white ${batchVariantPrice !== "" || batchVariantStock !== "" ? "bg-indigo-600 hover:bg-indigo-700" : "bg-slate-300 cursor-not-allowed"}`}
+                  type="button"
+                  onClick={toggleMultiVariants}
+                  className={`relative w-9 h-5 rounded-full transition-colors ${multiVariantsOn ? "bg-purple-600" : "bg-slate-200"}`}
                 >
-                  {t(selectedVariantIdx.size > 0 ? "应用到已选" : "应用到全部", selectedVariantIdx.size > 0 ? "Apply to selected" : "Apply to all")}
+                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${multiVariantsOn ? "translate-x-4" : "translate-x-0.5"}`} />
                 </button>
+              </label>
+            </div>
+
+            {!multiVariantsOn ? (
+              <div className="text-xs text-slate-400 bg-slate-50 border border-slate-100 rounded-lg px-3 py-4 text-center">
+                {t("单一规格模式 — 价格与库存请在商品主页面的「基础售价」设置。开启上方开关以添加多规格（如颜色/尺寸）。", "Single-SKU mode — set price/stock via \"Base Price\" on the listing's main page. Turn on the switch above to add variations (e.g. color/size).")}
               </div>
-            )}
-            {variationRows.length > 0 && (
-              <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                <table className="w-full text-xs min-w-[620px]">
-                  <thead>
-                    <tr className="text-left text-slate-400 border-b border-slate-100">
-                      <th className="py-2 px-2 font-medium w-6">
-                        <input type="checkbox" checked={variationRows.length > 0 && selectedVariantIdx.size === variationRows.length} onChange={toggleSelectAllVariants} className="h-3.5 w-3.5 rounded border-slate-300" />
-                      </th>
-                      <th className="py-2 px-2 font-medium">{t("规格名称", "Variant Name")}</th>
-                      <th className="py-2 px-2 font-medium">{t("商家 SKU", "Seller SKU")}</th>
-                      <th className="py-2 px-2 font-medium">{t("价格 (RM)", "Price (RM)")}</th>
-                      <th className="py-2 px-2 font-medium">{t("库存", "Stock")}</th>
-                      <th className="py-2 px-2 font-medium">{t("规格图片", "Spec Image")}</th>
-                      {/* SKU 级重量 (2026-08-24, new) — some variants (e.g.
-                          different sizes) really do weigh differently. */}
-                      <th className="py-2 px-2 font-medium">{t("重量 (kg)", "Weight (kg)")}</th>
-                      <th className="py-2 px-2 font-medium w-6" />
-                    </tr>
-                  </thead>
-                  <tbody>
+            ) : (
+              <>
+                {/* 规格1/规格2 — 名称 + chip 式选项编辑器 */}
+                <div className="grid grid-cols-2 gap-3">
+                  {[1, 2].map((specNum) => {
+                    const name = specNum === 1 ? spec1Name : spec2Name;
+                    const setName = specNum === 1 ? setSpec1Name : setSpec2Name;
+                    const values = specValuesList(specNum);
+                    const images = specNum === 1 ? spec1OptionImages : spec2OptionImages;
+                    const newOption = specNum === 1 ? spec1NewOption : spec2NewOption;
+                    const setNewOption = specNum === 1 ? setSpec1NewOption : setSpec2NewOption;
+                    return (
+                      <div key={specNum}>
+                        <div className="text-xs text-slate-400 mb-1">
+                          {specNum === 1 ? t("规格1 名称（如 颜色 / Color）", "Spec 1 name (e.g. Color)") : t("规格2 名称（可选，如 尺寸）", "Spec 2 name (optional, e.g. Size)")}
+                        </div>
+                        <input value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg mb-1.5" />
+                        <div className="space-y-1.5 mb-1.5">
+                          {values.map((v, i) => {
+                            const uploading = specImageUploading === `${specNum}:${v}`;
+                            return (
+                              <div key={v} className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1">
+                                <label className={`h-7 w-7 rounded shrink-0 overflow-hidden border border-slate-200 cursor-pointer flex items-center justify-center bg-white ${uploading ? "opacity-50" : ""}`}>
+                                  {images[v] ? <img src={images[v]} alt="" className="h-full w-full object-cover" /> : <Camera size={12} className="text-slate-300" />}
+                                  <input type="file" accept="image/*" disabled={uploading} onChange={(e) => { uploadSpecOptionImage(specNum, v, e.target.files?.[0]); e.target.value = ""; }} className="hidden" />
+                                </label>
+                                <span className="flex-1 text-xs truncate">{v}</span>
+                                <button onClick={() => moveSpecValue(specNum, v, -1)} disabled={i === 0} className="text-slate-400 hover:text-slate-700 disabled:opacity-20 disabled:cursor-not-allowed">▲</button>
+                                <button onClick={() => moveSpecValue(specNum, v, 1)} disabled={i === values.length - 1} className="text-slate-400 hover:text-slate-700 disabled:opacity-20 disabled:cursor-not-allowed">▼</button>
+                                <button onClick={() => removeSpecValue(specNum, v)} className="text-rose-400 hover:text-rose-600"><X size={13} /></button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="flex gap-1.5">
+                          <input
+                            value={newOption}
+                            onChange={(e) => setNewOption(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addSpecValue(specNum, newOption); setNewOption(""); } }}
+                            placeholder={specNum === 1 ? t("如 BLACK SPRING，回车添加", "e.g. BLACK SPRING, Enter to add") : t("如 S / M / L，回车添加", "e.g. S / M / L, Enter to add")}
+                            className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg"
+                          />
+                          <button onClick={() => { addSpecValue(specNum, newOption); setNewOption(""); }} className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">+</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button onClick={addVariantRow} className="text-xs px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+                    + {t("添加规格", "Add Variant")}
+                  </button>
+                  {variationRows.length > 0 && (
+                    <button onClick={() => setShowBatchVariantEdit((v) => !v)} className="text-xs px-3 py-2 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 ml-auto">
+                      <Percent size={12} className="inline mr-1" /> {t(`批量修改${selectedVariantIdx.size > 0 ? `（已选 ${selectedVariantIdx.size}）` : ""}`, `Batch Edit${selectedVariantIdx.size > 0 ? ` (${selectedVariantIdx.size} selected)` : ""}`)}
+                    </button>
+                  )}
+                </div>
+                {showBatchVariantEdit && (
+                  <div className="flex items-end gap-2 bg-indigo-50 border border-indigo-100 rounded-lg p-2.5">
+                    <div>
+                      <div className="text-[11px] text-slate-400 mb-1">{t("统一价格 (RM)", "Set price (RM)")}</div>
+                      <input type="number" value={batchVariantPrice} onChange={(e) => setBatchVariantPrice(e.target.value)} placeholder={t("留空不改", "blank = no change")} className="w-28 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-slate-400 mb-1">{t("统一库存", "Set stock")}</div>
+                      <input type="number" value={batchVariantStock} onChange={(e) => setBatchVariantStock(e.target.value)} placeholder={t("留空不改", "blank = no change")} className="w-24 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                    </div>
+                    <button
+                      onClick={applyBatchVariantEdit}
+                      disabled={batchVariantPrice === "" && batchVariantStock === ""}
+                      className={`text-xs px-3 py-1.5 rounded-lg text-white ${batchVariantPrice !== "" || batchVariantStock !== "" ? "bg-indigo-600 hover:bg-indigo-700" : "bg-slate-300 cursor-not-allowed"}`}
+                    >
+                      {t(selectedVariantIdx.size > 0 ? "应用到已选" : "应用到全部", selectedVariantIdx.size > 0 ? "Apply to selected" : "Apply to all")}
+                    </button>
+                  </div>
+                )}
+
+                {/* SKU 卡片列表 (2026-08-25, new) — replaces the old wide
+                    table with a stacked card per variant, matching the
+                    requested "每个 SKU 独立卡片展示" layout. SKU 编码/重量
+                    stay as smaller secondary fields inside the same card. */}
+                {variationRows.length > 0 && (
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer">
+                      <input type="checkbox" checked={variationRows.length > 0 && selectedVariantIdx.size === variationRows.length} onChange={toggleSelectAllVariants} className="h-3.5 w-3.5 rounded border-slate-300" />
+                      {t("全选", "Select all")}
+                    </label>
                     {variationRows.map((r, idx) => (
-                      <tr key={idx} className={`border-b border-slate-50 last:border-0 ${selectedVariantIdx.has(idx) ? "bg-indigo-50/40" : ""}`}>
-                        <td className="py-1.5 px-2"><input type="checkbox" checked={selectedVariantIdx.has(idx)} onChange={() => toggleVariantSelect(idx)} className="h-3.5 w-3.5 rounded border-slate-300" /></td>
-                        <td className="py-1.5 px-2 whitespace-nowrap">
-                          {/* 描述性规格名称 (2026-08-24, new) — editable so a
-                              manually-added row (via 添加规格) can be named
-                              directly, e.g. "BLACK SPRING", instead of only
-                              coming from the spec1×spec2 generator. */}
-                          <input value={r.spec1_value || ""} onChange={(e) => updateVariationField(idx, "spec1_value", e.target.value)} placeholder={t("如 BLACK SPRING", "e.g. BLACK SPRING")} className="w-28 px-1.5 py-1 border border-slate-200 rounded" />
-                          {spec2Name.trim() && (
-                            <input value={r.spec2_value || ""} onChange={(e) => updateVariationField(idx, "spec2_value", e.target.value)} placeholder={spec2Name} className="w-20 px-1.5 py-1 border border-slate-200 rounded mt-1" />
-                          )}
-                        </td>
-                        <td className="py-1.5 px-2"><input value={r.sku || ""} onChange={(e) => updateVariationField(idx, "sku", e.target.value)} className="w-24 px-1.5 py-1 border border-slate-200 rounded" /></td>
-                        <td className="py-1.5 px-2"><input type="number" value={r.price} onChange={(e) => updateVariationField(idx, "price", e.target.value)} className="w-20 px-1.5 py-1 border border-slate-200 rounded" /></td>
-                        <td className="py-1.5 px-2"><input type="number" value={r.stock} onChange={(e) => updateVariationField(idx, "stock", e.target.value)} className="w-16 px-1.5 py-1 border border-slate-200 rounded" /></td>
-                        <td className="py-1.5 px-2">
-                          <div className="flex items-center gap-1.5">
-                            {r.image_url ? <img src={r.image_url} alt="" className="h-7 w-7 rounded object-cover border border-slate-200 shrink-0" /> : <div className="h-7 w-7 rounded bg-slate-100 border border-slate-200 shrink-0" />}
-                            <input value={r.image_url || ""} onChange={(e) => updateVariationField(idx, "image_url", e.target.value)} className="w-28 px-1.5 py-1 border border-slate-200 rounded" />
+                      <div key={idx} className={`border rounded-lg p-3 ${selectedVariantIdx.has(idx) ? "border-indigo-300 bg-indigo-50/40" : "border-slate-200"}`}>
+                        <div className="flex items-start gap-2">
+                          <input type="checkbox" checked={selectedVariantIdx.has(idx)} onChange={() => toggleVariantSelect(idx)} className="h-3.5 w-3.5 rounded border-slate-300 mt-2" />
+                          {r.image_url ? <img src={r.image_url} alt="" className="h-10 w-10 rounded-md object-cover border border-slate-200 shrink-0" /> : <div className="h-10 w-10 rounded-md bg-slate-100 border border-slate-200 shrink-0" />}
+                          <div className="flex-1 min-w-0 grid grid-cols-3 gap-2">
+                            <div className="col-span-3 sm:col-span-1">
+                              <div className="text-[11px] text-slate-400 mb-0.5">{t("规格名称", "Variant Name")}</div>
+                              {/* 描述性规格名称 (2026-08-24) — editable so a
+                                  manually-added row (via 添加规格) can be
+                                  named directly, e.g. "BLACK SPRING". */}
+                              <input value={r.spec1_value || ""} onChange={(e) => updateVariationField(idx, "spec1_value", e.target.value)} placeholder={t("如 BLACK SPRING", "e.g. BLACK SPRING")} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                            </div>
+                            <div>
+                              <div className="text-[11px] text-slate-400 mb-0.5">{t("Retail Price (RM)", "Retail Price (RM)")}</div>
+                              <input type="number" value={r.price} onChange={(e) => updateVariationField(idx, "price", e.target.value)} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                            </div>
+                            <div>
+                              <div className="text-[11px] text-slate-400 mb-0.5">{t("Stock", "Stock")}</div>
+                              <input type="number" value={r.stock} onChange={(e) => updateVariationField(idx, "stock", e.target.value)} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                            </div>
                           </div>
-                        </td>
-                        <td className="py-1.5 px-2"><input type="number" value={r.weight_kg ?? ""} onChange={(e) => updateVariationField(idx, "weight_kg", e.target.value)} className="w-16 px-1.5 py-1 border border-slate-200 rounded" /></td>
-                        <td className="py-1.5 px-2"><button onClick={() => removeVariationRow(idx)} className="text-rose-400 hover:text-rose-600"><Trash2 size={13} /></button></td>
-                      </tr>
+                          <button onClick={() => removeVariationRow(idx)} className="text-rose-400 hover:text-rose-600 mt-2 shrink-0"><Trash2 size={14} /></button>
+                        </div>
+                        {/* 次要字段 — 商家 SKU / 重量，折叠为一行小字，不抢主视线 */}
+                        <div className="flex items-center gap-2 mt-2 pl-8">
+                          <input value={r.sku || ""} onChange={(e) => updateVariationField(idx, "sku", e.target.value)} placeholder={t("商家 SKU", "Seller SKU")} className="w-28 px-1.5 py-1 text-[11px] border border-slate-200 rounded" />
+                          <input type="number" value={r.weight_kg ?? ""} onChange={(e) => updateVariationField(idx, "weight_kg", e.target.value)} placeholder={t("重量(kg)", "Weight(kg)")} className="w-20 px-1.5 py-1 text-[11px] border border-slate-200 rounded" />
+                        </div>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
-              </div>
+                  </div>
+                )}
+              </>
             )}
+
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={() => setVariationsTarget(null)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
               <button onClick={saveVariations} className="text-sm px-4 py-2 rounded-lg bg-purple-600 text-white hover:bg-purple-700">{t("保存变体", "Save Variations")}</button>
@@ -1677,7 +1861,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
             <div className="text-[11px] text-slate-400">
               {t("非官方实时同步，仅供内部级联选择器使用；待 Shopee/TikTok 商品 API 授权后可切换为真实类目树。", "Not a live official sync — used only for the internal cascading selector; can switch to the real category API once that scope is granted.")}
             </div>
-            <div className="grid grid-cols-4 gap-2 items-end bg-slate-50 rounded-lg p-3">
+            <div className="grid grid-cols-5 gap-2 items-end bg-slate-50 rounded-lg p-3">
               <div>
                 <div className="text-[11px] text-slate-400 mb-1">{t("平台", "Platform")}</div>
                 <select value={newCategory.platform} onChange={(e) => setNewCategory({ ...newCategory, platform: e.target.value })} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg bg-white">
@@ -1687,8 +1871,13 @@ export function ProductListingCenter({ t, inventory, stores }) {
               </div>
               <input value={newCategory.level1} onChange={(e) => setNewCategory({ ...newCategory, level1: e.target.value })} placeholder={t("第1级", "Level 1")} className="px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
               <input value={newCategory.level2} onChange={(e) => setNewCategory({ ...newCategory, level2: e.target.value })} placeholder={t("第2级", "Level 2")} className="px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+              <input value={newCategory.level3} onChange={(e) => setNewCategory({ ...newCategory, level3: e.target.value })} placeholder={t("第3级", "Level 3")} className="px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
               <div className="flex gap-1">
-                <input value={newCategory.level3} onChange={(e) => setNewCategory({ ...newCategory, level3: e.target.value })} placeholder={t("第3级", "Level 3")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                {/* 佣金比例 (2026-08-25, new) — staff-entered reference %,
+                    shown as a hint when this leaf is picked in the listing
+                    form; not a real platform API value (see migration
+                    comment). */}
+                <input type="number" value={newCategory.commission_rate} onChange={(e) => setNewCategory({ ...newCategory, commission_rate: e.target.value })} placeholder={t("佣金%", "Commission%")} className="w-16 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
                 <button onClick={addCategoryLeaf} className="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800">{t("添加", "Add")}</button>
               </div>
             </div>
@@ -1704,6 +1893,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                       <div className="flex items-center justify-between px-3 py-2 text-xs">
                         <button onClick={() => setExpandedLeafId(expandedLeafId === c.id ? null : c.id)} className="text-left flex-1 hover:text-indigo-600">
                           {c.level1} &gt; {c.level2} &gt; <span className="font-medium">{c.level3}</span>
+                          {c.commission_rate != null && <span className="text-amber-600 ml-1.5">({c.commission_rate}%)</span>}
                         </button>
                         <button onClick={() => deleteCategoryLeaf(c.id)} className="text-rose-400 hover:text-rose-600 ml-2"><Trash2 size={13} /></button>
                       </div>
