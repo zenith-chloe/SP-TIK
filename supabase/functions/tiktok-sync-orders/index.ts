@@ -74,6 +74,17 @@
 // instead of a generic error — once a shop is re-authorized, these same
 // real calls should start succeeding with no further code change.
 //
+// 2026-08-25 — confirmed (twice, live) that for a shop TikTok already
+// considers long-term/"unlimited time" authorized, opening the OAuth
+// authorize link shows TikTok's own "Renew" screen instead of a fresh
+// consent flow, and that screen never redirects back to
+// tiktok-auth-callback with a code (checked directly: platform_accounts'
+// auth_time/tokens were completely unchanged after the seller clicked
+// through it). `action: "refreshToken"` below is the fix: a silent
+// refresh_token grant needs no browser hop at all and is tried first by
+// the frontend's "更新连接" button, falling back to the OAuth link only
+// when there's no usable refresh_token (needsFullReauth: true).
+//
 // Required secrets: TIKTOK_APP_KEY, TIKTOK_APP_SECRET
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -710,10 +721,65 @@ Deno.serve(async (req: Request) => {
     platformAccountId = body?.platformAccountId; // preferred — platform_accounts.id, unambiguous per store
     shopId = body?.shopId; // kept for backward compat
     fullSync = body?.fullSync === true;
-    action = body?.action; // "tiktokCategories" | "tiktokCategoryAttributes" | "tiktokBrands"
+    action = body?.action; // "tiktokCategories" | "tiktokCategoryAttributes" | "tiktokBrands" | "refreshToken"
     categoryId = body?.categoryId;
   } catch {
     // no body - sync all shops
+  }
+
+  // "更新连接" 静默续期 (2026-08-25, new) — for a shop TikTok already
+  // considers permanently/long-term authorized ("unlimited time"), hitting
+  // the browser OAuth authorize link shows TikTok's own "Renew" screen,
+  // which — confirmed live, twice — never redirects back to
+  // tiktok-auth-callback with a fresh code (no DB row change at all after
+  // clicking through it). The refresh_token grant needs no browser hop and
+  // no seller action at all, so it's tried first from the frontend; this
+  // action just wraps refreshTikTokToken for a single account, looked up
+  // WITHOUT the status='connected' filter below (an 'expired' shop with a
+  // still-valid refresh_token must be reachable here too).
+  if (action === "refreshToken") {
+    if (!platformAccountId) {
+      return new Response(JSON.stringify({ error: "platformAccountId required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    const { data: acct, error: acctErr } = await supabase
+      .from("platform_accounts")
+      .select("id, refresh_token")
+      .eq("id", platformAccountId)
+      .eq("platform", "tiktok")
+      .maybeSingle();
+    if (acctErr || !acct) {
+      return new Response(JSON.stringify({ error: acctErr?.message ?? "account not found" }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (!acct.refresh_token) {
+      // No stored refresh_token (e.g. after 退出连接, or never connected) —
+      // there's nothing to silently refresh; caller should fall back to
+      // the OAuth authorize link.
+      return new Response(JSON.stringify({ error: "no refresh_token on file", needsFullReauth: true }), {
+        status: 409,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    try {
+      const account = { id: acct.id, access_token: "", refresh_token: acct.refresh_token };
+      await refreshTikTokToken(creds, account);
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    } catch (e) {
+      // refresh_token itself invalid/expired — this really does need a
+      // full browser reauth, no way around it.
+      await supabase.from("platform_accounts").update({ status: "expired" }).eq("id", acct.id);
+      return new Response(JSON.stringify({ error: (e as Error).message, needsFullReauth: true }), {
+        status: 409,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
   }
 
   let query = supabase

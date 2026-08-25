@@ -465,15 +465,33 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
     }));
   }
 
-  // 更新连接 (2026-08-25, new) — reuses the exact same OAuth flow as the
-  // original "连接" button (tiktok-auth-start / tiktok-auth-callback):
-  // TikTok always returns the same open_id for this app+shop, so the
-  // callback matches this shop's existing platform_accounts row and
-  // refreshes only its auth columns (access_token/refresh_token/
-  // token_expires_at/status) — account_name, historical orders, products,
-  // and stock sync relationships are all untouched. ?u= carries the
-  // current staff email through so the callback can attribute updated_by.
-  function updateConnection() {
+  // 更新连接 (2026-08-25; revised same day) — TikTok shows its own "Renew"
+  // screen instead of a full consent flow for a shop it already considers
+  // long-term authorized, and — confirmed live, twice, via direct DB
+  // check — that screen never redirects back to tiktok-auth-callback with
+  // a fresh code, so the browser-hop path alone cannot update the token
+  // for such a shop. Since a silent refresh_token exchange needs no
+  // browser/seller action at all and doesn't touch this Renew screen,
+  // that's tried FIRST; the OAuth authorize link (tiktok-auth-start /
+  // tiktok-auth-callback, same as the original "连接" button) is only
+  // opened as a fallback when there's no usable refresh_token (e.g. after
+  // 退出连接, or the refresh_token itself has expired) — those are real
+  // "need a full reauth" cases where a browser hop is unavoidable either
+  // way. account_name / historical orders / products / stock are
+  // untouched either way. ?u= carries the current staff email through so
+  // a fallback OAuth callback can still attribute updated_by.
+  const [updateState, setUpdateState] = useState({}); // { [storeId]: { status: "idle"|"refreshing"|"success"|"error", message } }
+  async function updateConnection(storeId) {
+    setUpdateState((prev) => ({ ...prev, [storeId]: { status: "refreshing", message: "" } }));
+    const { error } = await supabaseClient.functions.invoke("tiktok-sync-orders", { body: { action: "refreshToken", platformAccountId: storeId } });
+    if (!error) {
+      setUpdateState((prev) => ({ ...prev, [storeId]: { status: "success", message: t("已静默续期连接（无需重新登录）", "Connection refreshed silently (no login needed)") } }));
+      onRefresh?.();
+      return;
+    }
+    // needsFullReauth (409) — no refresh_token on file, or it's itself
+    // invalid: fall back to the real OAuth authorize link.
+    setUpdateState((prev) => ({ ...prev, [storeId]: { status: "idle", message: "" } }));
     const qs = currentUserEmail ? `?u=${encodeURIComponent(currentUserEmail)}` : "";
     window.open(`${SUPABASE_URL}/functions/v1/tiktok-auth-start${qs}`, "_blank");
   }
@@ -531,6 +549,7 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
                 )}
                 {pfStores.map((s) => {
                   const sync = syncState[s.id] || { status: "idle", lastSyncedAt: null, message: "" };
+                  const upd = updateState[s.id] || { status: "idle", message: "" };
                   return (
                     <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-4 flex items-start gap-2">
                       <input
@@ -577,6 +596,7 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
                         {sync.status === "syncing" && <div className="text-[11px] text-blue-500 mt-1">{t("同步中…", "Syncing…")}</div>}
                         {sync.status === "success" && <div className="text-[11px] text-emerald-600 mt-1">{sync.message}</div>}
                         {sync.status === "error" && <div className="text-[11px] text-rose-600 mt-1">{sync.message}</div>}
+                        {upd.status === "success" && <div className="text-[11px] text-emerald-600 mt-1">{upd.message}</div>}
                         <div className="flex flex-wrap gap-1.5 mt-2">
                           <button
                             onClick={() => syncOrders(s.id)}
@@ -591,10 +611,11 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
                           {pf === "TikTok Shop" && (
                             <>
                               <button
-                                onClick={updateConnection}
-                                className="text-xs px-2.5 py-1.5 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+                                onClick={() => updateConnection(s.id)}
+                                disabled={upd.status === "refreshing"}
+                                className="text-xs px-2.5 py-1.5 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
                               >
-                                {t("更新连接", "Update Connection")}
+                                {upd.status === "refreshing" ? t("续期中…", "Refreshing…") : t("更新连接", "Update Connection")}
                               </button>
                               {s.connectionStatus !== "disconnected" && (
                                 <button
