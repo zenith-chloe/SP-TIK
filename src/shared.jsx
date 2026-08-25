@@ -29,6 +29,18 @@ export const DEMO_TO_DB_STATUS = { 已签收: "shipped", 退款中: "returned" }
 export const DEMO_TO_DB_PLATFORM = { Shopee: "shopee", "TikTok Shop": "tiktok", Telegram: "telegram" };
 
 export function mapDbStore(account) {
+  // connectionStatus (2026-08-25, new) — real 3-state signal for the
+  // 更新连接/退出连接 UI: 'disconnected' comes straight from the DB
+  // (set when staff click 退出连接); 'expired' is also DB-driven (set by
+  // tiktok-sync-orders when a refresh_token retry fails) OR derived
+  // client-side from a past token_expires_at as a same-tick fallback in
+  // case the next sync run hasn't caught it yet; otherwise 'connected'.
+  // Distinct from the old cosmetic `status` field below (kept as-is,
+  // "已连接" hardcoded display text used elsewhere) to avoid touching
+  // unrelated existing renders.
+  const dbStatus = account.status || "connected";
+  const tokenExpired = !!account.token_expires_at && new Date(account.token_expires_at).getTime() < Date.now();
+  const connectionStatus = dbStatus === "disconnected" ? "disconnected" : (dbStatus === "expired" || tokenExpired) ? "expired" : "connected";
   return {
     id: account.id,
     platform: DB_TO_DEMO_PLATFORM[account.platform] || account.platform,
@@ -36,6 +48,9 @@ export function mapDbStore(account) {
     shopId: account.shop_id || "",
     connectedAt: (account.created_at || "").slice(0, 10),
     status: "已连接",
+    connectionStatus,
+    lastAuthorizedAt: account.auth_time || null,
+    updatedBy: account.updated_by || null,
     syncMode: account.token_expires_at ? "api" : "manual",
     sellerName: account.seller_name || account.account_name || "",
     sellerAddress: account.seller_address || "",

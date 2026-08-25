@@ -499,7 +499,7 @@ export default function App() {
       : ordersQuery.order("order_date", { ascending: false }).limit(5000);
     if (!isOwner) ordersQuery = ordersQuery.in("platform_account_id", scopedStoreIds);
 
-    let accountsQuery = supabaseClient.from("platform_accounts").select("id, platform, account_name, shop_id, created_at, token_expires_at, seller_name, seller_address, seller_phone, logo_url, font_color, font_style, badge_color, shop_note").eq("hidden", false);
+    let accountsQuery = supabaseClient.from("platform_accounts").select("id, platform, account_name, shop_id, created_at, token_expires_at, status, auth_time, updated_by, seller_name, seller_address, seller_phone, logo_url, font_color, font_style, badge_color, shop_note").eq("hidden", false);
     if (!isOwner) accountsQuery = accountsQuery.in("id", scopedStoreIds);
 
     // Products deliberately NOT store-filtered (2026-08-20) — checked live:
@@ -1184,6 +1184,26 @@ export default function App() {
       .then(({ error }) => error && console.error("updateStoreName failed", error));
   }
 
+  // 退出连接 (2026-08-25, new) — clears only the auth/session-related
+  // columns (access_token/refresh_token/shop_cipher/token_expires_at) and
+  // flips status to 'disconnected'; deliberately does NOT touch shop_id,
+  // account_name, or anything in orders/products/stock_movements — all
+  // historical data stays exactly as it was. "更新连接" (reauthorize) is
+  // handled separately by re-running the same OAuth flow used to connect
+  // (see AutoImportHub / tiktok-auth-start), not by this function.
+  function disconnectStore(storeId) {
+    const byEmail = session?.user?.email || null;
+    setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, connectionStatus: "disconnected", updatedBy: byEmail } : s)));
+    supabaseClient
+      .from("platform_accounts")
+      .update({
+        access_token: null, refresh_token: null, shop_cipher: null, token_expires_at: null,
+        status: "disconnected", updated_by: byEmail,
+      })
+      .eq("id", storeId)
+      .then(({ error }) => error && console.error("disconnectStore failed", error));
+  }
+
   // Store card appearance (logo/font color+style/badge color/note) — cosmetic
   // only, same pattern as updateStoreName above. Never touches token,
   // shop_id, status, hidden, orders, or any sync/cron logic.
@@ -1621,6 +1641,8 @@ export default function App() {
               onSetSyncMode={setStoreSyncMode}
               onUpdateStoreName={updateStoreName}
               onUpdateStoreAppearance={updateStoreAppearance}
+              onDisconnectStore={disconnectStore}
+              currentUserEmail={session?.user?.email || null}
             />
           )}
           {tab === "products" && <ProductMaster t={t} inventory={inventory} onCreate={createProduct} onUpdate={updateProductMaster} onDelete={deleteProduct} />}

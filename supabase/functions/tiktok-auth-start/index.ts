@@ -39,9 +39,18 @@ Deno.serve(async (req: Request) => {
     });
   }
 
+  // 携带发起用户身份 (2026-08-25, new) — this endpoint is opened via a plain
+  // window.open() from the browser (no Supabase JWT reaches it), so the
+  // only way tiktok-auth-callback can later attribute updated_by is if we
+  // round-trip the initiating user's email through TikTok's own `state`
+  // param, which TikTok echoes back unchanged. Optional: a bare "连接"
+  // click with no ?u= still works, callback just leaves updated_by null.
+  const initiatingUser = url0.searchParams.get("u");
+  const state = initiatingUser ? `motoparts-erp:${encodeURIComponent(initiatingUser)}` : "motoparts-erp";
+
   const url = new URL(`${authHost()}/api/v2/authorization`);
   url.searchParams.set("app_key", creds.appKey);
-  url.searchParams.set("state", "motoparts-erp");
+  url.searchParams.set("state", state);
 
   return Response.redirect(url.toString(), 302);
 });

@@ -177,10 +177,17 @@ async function tiktokCall(
   } catch (e) {
     // 105002 = TikTok's "access_token expired" code. Refresh once and retry
     // exactly once — if the retry also fails (e.g. refresh_token itself
-    // expired), let the error propagate instead of looping.
+    // expired/revoked), that's a real "this connection needs the seller to
+    // reauthorize" signal — mark it so 自动导入订单 shows "已过期" instead
+    // of silently failing sync run after run (2026-08-25, new).
     if ((e as Error).message.includes("105002") && account.refresh_token) {
-      await refreshTikTokToken(creds, account);
-      return await attempt();
+      try {
+        await refreshTikTokToken(creds, account);
+        return await attempt();
+      } catch (refreshErr) {
+        await supabase.from("platform_accounts").update({ status: "expired" }).eq("id", account.id);
+        throw refreshErr;
+      }
     }
     throw e;
   }

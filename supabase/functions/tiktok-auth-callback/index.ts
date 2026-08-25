@@ -29,6 +29,11 @@ Deno.serve(async (req: Request) => {
     return htmlResponse(400, "授权失败", "TikTok 没有返回 code，请重新尝试连接。");
   }
 
+  // 更新连接: 还原发起用户身份 (2026-08-25, new) — see tiktok-auth-start's
+  // matching comment. `state` comes back from TikTok exactly as we sent it.
+  const rawState = url.searchParams.get("state") || "";
+  const stateUser = rawState.startsWith("motoparts-erp:") ? decodeURIComponent(rawState.slice("motoparts-erp:".length)) : null;
+
   let creds;
   try {
     creds = requireTikTokCredentials();
@@ -64,21 +69,37 @@ Deno.serve(async (req: Request) => {
   const expiresAt = new Date(Date.now() + (Number(data.access_token_expire_in) || 7200) * 1000).toISOString();
   const shopId = String(data.open_id ?? data.seller_name ?? "unknown");
 
-  const { error: dbError } = await supabase
+  // "更新连接" 保留店铺资料 (2026-08-25) — a reauth (this same flow, run
+  // again for a shop that's already connected) must not clobber the
+  // account_name a staff member may have manually renamed, nor any of the
+  // appearance/note fields — only the auth-related columns get touched.
+  // TikTok always returns the same open_id for the same shop+app, so an
+  // existing row is reliably matched by (platform, shop_id) regardless of
+  // whether this was a first-time connect or a reauth.
+  const { data: existing } = await supabase
     .from("platform_accounts")
-    .upsert(
-      {
+    .select("id")
+    .eq("platform", "tiktok")
+    .eq("shop_id", shopId)
+    .maybeSingle();
+
+  const authFields = {
+    status: "connected",
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    token_expires_at: expiresAt,
+    auth_time: new Date().toISOString(),
+    updated_by: stateUser,
+  };
+
+  const { error: dbError } = existing
+    ? await supabase.from("platform_accounts").update(authFields).eq("id", existing.id)
+    : await supabase.from("platform_accounts").insert({
         platform: "tiktok",
         shop_id: shopId,
         account_name: data.seller_name ? `TikTok ${data.seller_name}` : `TikTok Shop ${shopId}`,
-        status: "connected",
-        access_token: data.access_token,
-        refresh_token: data.refresh_token,
-        token_expires_at: expiresAt,
-        auth_time: new Date().toISOString(),
-      },
-      { onConflict: "platform,shop_id" },
-    );
+        ...authFields,
+      });
 
   if (dbError) {
     return htmlResponse(500, "Token 已拿到，但保存失败", dbError.message);
@@ -86,7 +107,7 @@ Deno.serve(async (req: Request) => {
 
   return htmlResponse(
     200,
-    "✅ TikTok Shop 授权成功",
+    existing ? "✅ TikTok Shop 连接已更新" : "✅ TikTok Shop 授权成功",
     `Seller: ${data.seller_name ?? shopId}<br/>可以关闭此页面，回到系统查看。`,
   );
 });

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Plus, Check, X, AlertTriangle, XCircle, SlidersHorizontal, Truck, Wifi, ShoppingBag, Music2, ChevronDown, LogIn, Store, Settings, Pencil } from "lucide-react";
-import { supabaseClient } from "./shared.jsx";
+import { supabaseClient, SUPABASE_URL } from "./shared.jsx";
 import { PlatformLoginConnect, StoreManagement } from "./pagesMove.jsx";
 
 const STATUS_LABELS = {
@@ -425,7 +425,7 @@ function StoreCardSettings({ t, stores, onUpdateStoreName, onUpdateStoreAppearan
   );
 }
 
-export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, myRole, onCreate, onApprove, onReject, cancellationRecords, onFinalizeCancellation, orders, goTo, onRefresh, onConnectStore, onSetSyncMode, onUpdateStoreName, onUpdateStoreAppearance }) {
+export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, myRole, onCreate, onApprove, onReject, cancellationRecords, onFinalizeCancellation, orders, goTo, onRefresh, onConnectStore, onSetSyncMode, onUpdateStoreName, onUpdateStoreAppearance, onDisconnectStore, currentUserEmail }) {
   const [card, setCard] = useState(null); // null | "cancel" | "adjust" | "autocountdo" | "connect" | "login" | "storelist" | "storesettings"
   const [platform, setPlatform] = useState("Shopee");
   const [selectedStore, setSelectedStore] = useState(""); // "" = 该平台全部店铺
@@ -463,6 +463,30 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
       ...prev,
       [platformAccountId]: { status: "success", lastSyncedAt: new Date().toLocaleString(lang === "en" ? "en-MY" : "zh-CN"), message: t("同步完成", "Sync complete") },
     }));
+  }
+
+  // 更新连接 (2026-08-25, new) — reuses the exact same OAuth flow as the
+  // original "连接" button (tiktok-auth-start / tiktok-auth-callback):
+  // TikTok always returns the same open_id for this app+shop, so the
+  // callback matches this shop's existing platform_accounts row and
+  // refreshes only its auth columns (access_token/refresh_token/
+  // token_expires_at/status) — account_name, historical orders, products,
+  // and stock sync relationships are all untouched. ?u= carries the
+  // current staff email through so the callback can attribute updated_by.
+  function updateConnection() {
+    const qs = currentUserEmail ? `?u=${encodeURIComponent(currentUserEmail)}` : "";
+    window.open(`${SUPABASE_URL}/functions/v1/tiktok-auth-start${qs}`, "_blank");
+  }
+
+  // 退出连接 (2026-08-25, new) — in-app confirm modal (not window.confirm)
+  // to match this app's existing styled-confirmation pattern elsewhere;
+  // confirm text is the exact wording requested. onDisconnectStore only
+  // clears token/session columns (see erp-mvp-demo.jsx's disconnectStore),
+  // history stays intact.
+  const [disconnectTarget, setDisconnectTarget] = useState(null); // store | null
+  function confirmDisconnect() {
+    onDisconnectStore?.(disconnectTarget.id);
+    setDisconnectTarget(null);
   }
 
   function syncCheckedStores() {
@@ -536,20 +560,53 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
                         </div>
                         <div className="text-[11px] text-slate-400">{pf}</div>
                         <div className="text-[11px] text-slate-400">Shop ID: {s.shopId || "—"}</div>
-                        <div className="text-[11px] text-emerald-600">{s.status}</div>
+                        {/* TikTok Shop 连接状态 (2026-08-25, new) — real
+                            3-state badge (connected/expired/disconnected),
+                            see mapDbStore's connectionStatus. Shopee keeps
+                            the old plain "已连接" text unchanged. */}
+                        {pf === "TikTok Shop" ? (
+                          <div className={`text-[11px] ${s.connectionStatus === "disconnected" ? "text-slate-400" : s.connectionStatus === "expired" ? "text-amber-600" : "text-emerald-600"}`}>
+                            {s.connectionStatus === "disconnected" ? t("已退出连接", "Disconnected") : s.connectionStatus === "expired" ? t("连接已过期，请更新连接", "Connection expired — please update") : t("已连接", "Connected")}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-emerald-600">{s.status}</div>
+                        )}
                         <div className="text-[11px] text-slate-400">{t("订单数量：0", "Orders: 0")}</div>
                         <div className="text-[11px] text-slate-400">{t("最后同步：", "Last sync: ")}{sync.lastSyncedAt || t("从未同步", "Never")}</div>
                         {s.shopNote && <div className="text-[11px] text-slate-500 mt-1 italic truncate">{s.shopNote}</div>}
                         {sync.status === "syncing" && <div className="text-[11px] text-blue-500 mt-1">{t("同步中…", "Syncing…")}</div>}
                         {sync.status === "success" && <div className="text-[11px] text-emerald-600 mt-1">{sync.message}</div>}
                         {sync.status === "error" && <div className="text-[11px] text-rose-600 mt-1">{sync.message}</div>}
-                        <button
-                          onClick={() => syncOrders(s.id)}
-                          disabled={sync.status === "syncing"}
-                          className="mt-2 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-                        >
-                          {sync.status === "syncing" ? t("同步中…", "Syncing…") : t("同步订单", "Sync")}
-                        </button>
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          <button
+                            onClick={() => syncOrders(s.id)}
+                            disabled={sync.status === "syncing"}
+                            className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                          >
+                            {sync.status === "syncing" ? t("同步中…", "Syncing…") : t("同步订单", "Sync")}
+                          </button>
+                          {/* 更新连接 / 退出连接 (2026-08-25, new) — TikTok
+                              Shop only, per explicit request; Shopee's card
+                              is untouched. */}
+                          {pf === "TikTok Shop" && (
+                            <>
+                              <button
+                                onClick={updateConnection}
+                                className="text-xs px-2.5 py-1.5 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+                              >
+                                {t("更新连接", "Update Connection")}
+                              </button>
+                              {s.connectionStatus !== "disconnected" && (
+                                <button
+                                  onClick={() => setDisconnectTarget(s)}
+                                  className="text-xs px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50"
+                                >
+                                  {t("退出连接", "Disconnect")}
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -566,6 +623,23 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
             </button>
           ))}
         </div>
+
+        {/* 退出连接确认 (2026-08-25, new) — exact requested wording. */}
+        {disconnectTarget && (
+          <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setDisconnectTarget(null)}>
+            <div className="bg-white rounded-xl p-5 w-full max-w-sm space-y-3" onClick={(e) => e.stopPropagation()}>
+              <div className="text-sm font-medium text-rose-700">{t("确定要退出此 TikTok Shop 连接吗？", "Disconnect this TikTok Shop connection?")}</div>
+              <div className="text-xs text-slate-500">
+                {t("退出后将停止自动同步订单，但历史数据会保留。", "Auto order sync will stop, but historical data is kept.")}
+              </div>
+              <div className="text-xs text-slate-400">{t("店铺：", "Store: ")}{disconnectTarget.name}</div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setDisconnectTarget(null)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
+                <button onClick={confirmDisconnect} className="text-sm px-4 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-700">{t("确认退出", "Disconnect")}</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
