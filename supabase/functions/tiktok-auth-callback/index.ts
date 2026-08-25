@@ -11,11 +11,17 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { authHost, requireTikTokCredentials } from "./tiktok.ts";
 
-function htmlResponse(status: number, title: string, body: string): Response {
+// retryUrl (when given) renders a real "重新连接" button that jumps
+// straight back into tiktok-auth-start — a clean, single-use auth_code
+// expires in ~30 minutes and can only ever be exchanged once (TikTok's
+// own documented limit), so the only real fix for an invalid/expired
+// code is a fresh authorize link, never a retry of the same code.
+function htmlResponse(status: number, title: string, body: string, retryUrl?: string): Response {
   return new Response(
     `<!doctype html><html><body style="font-family:sans-serif;max-width:480px;margin:60px auto;text-align:center">
        <h2>${title}</h2>
        <p>${body}</p>
+       ${retryUrl ? `<p><a href="${retryUrl}" style="display:inline-block;padding:10px 20px;background:#111;color:#fff;border-radius:8px;text-decoration:none">重新连接 / Reconnect</a></p>` : ""}
      </body></html>`,
     { status, headers: { "Content-Type": "text/html; charset=utf-8" } },
   );
@@ -25,14 +31,17 @@ Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
 
-  if (!code) {
-    return htmlResponse(400, "授权失败", "TikTok 没有返回 code，请重新尝试连接。");
-  }
-
   // 更新连接: 还原发起用户身份 (2026-08-25, new) — see tiktok-auth-start's
   // matching comment. `state` comes back from TikTok exactly as we sent it.
   const rawState = url.searchParams.get("state") || "";
   const stateUser = rawState.startsWith("motoparts-erp:") ? decodeURIComponent(rawState.slice("motoparts-erp:".length)) : null;
+  // Same-origin sibling function — reconstructed from this request's own
+  // URL rather than hardcoded, so this works unchanged across projects/envs.
+  const retryUrl = `${url.origin}/functions/v1/tiktok-auth-start${stateUser ? `?u=${encodeURIComponent(stateUser)}` : ""}`;
+
+  if (!code) {
+    return htmlResponse(400, "授权失败 / Authorization failed", "TikTok 没有返回 code，请重新尝试连接。<br/>TikTok did not return a code — please reconnect.", retryUrl);
+  }
 
   let creds;
   try {
@@ -51,12 +60,22 @@ Deno.serve(async (req: Request) => {
   const payload = await resp.json();
 
   if (!resp.ok || payload.code !== 0) {
+    // 2026-08-25, new — auth_code is single-use and expires in ~30 min
+    // (TikTok's documented limit); 36004004 specifically means it was
+    // already consumed or has expired. Give a plain-language explanation
+    // instead of the raw error code, plus a one-click fresh authorize
+    // link right on the failure page (no need to navigate back into the
+    // ERP first) — this IS "launching a clean re-auth link".
+    const isExpiredCode = payload.code === 36004004 || /invalid auth code/i.test(payload.message ?? "");
     return htmlResponse(
       400,
-      "TikTok Token 交换失败",
-      `${payload.code ?? resp.status}: ${payload.message ?? "unknown error"}<br/><br/>` +
-        `debug: app_key_len=${creds.appKey.length} app_secret_len=${creds.appSecret.length} ` +
-        `url=${tokenUrl.toString().replace(creds.appSecret, "***")}`,
+      isExpiredCode ? "授权链接已失效 / Authorization link expired" : "TikTok Token 交换失败",
+      isExpiredCode
+        ? "此授权码已被使用或已过期（TikTok 的授权码仅可使用一次，约 30 分钟内有效）。请点击下方按钮重新连接。<br/>This authorization code was already used or has expired (TikTok auth codes are single-use, valid ~30 minutes). Click below to reconnect."
+        : `${payload.code ?? resp.status}: ${payload.message ?? "unknown error"}<br/><br/>` +
+          `debug: app_key_len=${creds.appKey.length} app_secret_len=${creds.appSecret.length} ` +
+          `url=${tokenUrl.toString().replace(creds.appSecret, "***")}`,
+      retryUrl,
     );
   }
 
@@ -109,7 +128,7 @@ Deno.serve(async (req: Request) => {
       });
 
   if (dbError) {
-    return htmlResponse(500, "Token 已拿到，但保存失败", dbError.message);
+    return htmlResponse(500, "Token 已拿到，但保存失败", dbError.message, retryUrl);
   }
 
   return htmlResponse(
