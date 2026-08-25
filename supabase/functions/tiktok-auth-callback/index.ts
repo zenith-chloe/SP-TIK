@@ -83,11 +83,18 @@ Deno.serve(async (req: Request) => {
     .eq("shop_id", shopId)
     .maybeSingle();
 
+  // Update Connection 校验: 记录授权范围 (2026-08-25, new) — TikTok's
+  // token/get response includes the scopes actually granted this time;
+  // field name isn't documented precisely, so accept whichever of these
+  // the response actually uses rather than assuming one.
+  const grantedScopes = data.granted_scopes ?? data.scope ?? data.scopes ?? null;
+
   const authFields = {
     status: "connected",
     access_token: data.access_token,
     refresh_token: data.refresh_token,
     token_expires_at: expiresAt,
+    granted_scopes: grantedScopes,
     auth_time: new Date().toISOString(),
     updated_by: stateUser,
   };
