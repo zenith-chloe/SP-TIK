@@ -804,11 +804,15 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate) {
   // Real per-order estimate (2026-08-26) from tiktok_affiliate_commissions,
   // passed in by the caller — preferred over resolveTikTokAffiliateCommission
   // (which only ever computes non-zero once o.isAffiliateOrder/item-level
-  // fields are populated elsewhere, which they never are today). Falls back
-  // to the old lineItems-based resolver so nothing regresses for any caller
-  // that doesn't pass this (Shopee never does, TikTok call sites now do).
-  const affiliateAmt = affiliateEstimate != null
-    ? +Number(affiliateEstimate).toFixed(2)
+  // fields are populated elsewhere, which they never are today). Three
+  // states from the caller: a real number (order found in the synced
+  // table, could legitimately be RM0.00 on one SKU row), the sentinel
+  // string "organic" (caller confirmed the affiliate sync is current AND
+  // this order has no row — i.e. genuinely no creator involved, not just
+  // "not synced yet"), or undefined (unknown / not looked up — old
+  // disclaimer behavior, unchanged for any caller that doesn't pass this).
+  const affiliateAmt = typeof affiliateEstimate === "number"
+    ? +affiliateEstimate.toFixed(2)
     : Number(resolveTikTokAffiliateCommission(o, lineItems));
   const fees = [
     { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
@@ -837,12 +841,14 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate) {
   // "预估达人佣金" fee line above instead of this disclaimer. Real settled
   // orders still overwrite everything with incomeBreakdown()'s authoritative
   // settlement.tiktok_affiliate_commission and never show this note.
-  const affiliateNote = affiliateEstimate == null
-    ? t(
-        "达人佣金以 TikTok 官方结算数据为准，本单尚未同步到达人佣金数据（未计入以上预估到账金额，不代表本单无达人佣金）",
-        "Affiliate commission reflects TikTok's official settlement once available — this order hasn't been synced with affiliate commission data yet (not included in the estimated payout above; does not mean this order has zero affiliate commission)",
-      )
-    : null;
+  const affiliateNote = typeof affiliateEstimate === "number"
+    ? null
+    : affiliateEstimate === "organic"
+      ? t("本单无达人带货佣金", "This order has no affiliate/creator commission")
+      : t(
+          "达人佣金以 TikTok 官方结算数据为准，本单尚未同步到达人佣金数据（未计入以上预估到账金额，不代表本单无达人佣金）",
+          "Affiliate commission reflects TikTok's official settlement once available — this order hasn't been synced with affiliate commission data yet (not included in the estimated payout above; does not mean this order has zero affiliate commission)",
+        );
   return {
     merchandiseSubtotal: revenue,
     // Shipping is now represented as a fee line (deduction) above, matching

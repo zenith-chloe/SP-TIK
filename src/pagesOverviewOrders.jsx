@@ -2202,6 +2202,55 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
     return () => { cancelled = true; clearInterval(pollId); };
   }, [order.id, order.platform]);
 
+  // 达人佣金预估 (2026-08-26, new) — Order Detail Drawer optimization for
+  // unsettled/unfulfilled orders (explicit request): shows the real
+  // creator-commission amount from tiktok_affiliate_commissions directly
+  // in the estimate, instead of the generic "not synced yet" disclaimer,
+  // whenever we can actually tell. Two real signals fetched: (1) any row
+  // for this exact order_no (creator_username/estimated_paid_commission,
+  // summed if the order has multiple SKUs each with a different creator),
+  // and (2) whether the affiliate sync has run successfully recently (its
+  // cron ticks every 5 min — see tiktok-affiliate-sync-5min) — only once
+  // that's confirmed current can "no row for this order" be safely read as
+  // "genuinely organic, no creator involved" rather than "just hasn't been
+  // synced yet". TikTok only; Shopee orders skip both fetches entirely.
+  const [affiliateAmt, setAffiliateAmt] = useState(undefined); // number | "organic" | undefined (unknown/loading)
+  useEffect(() => {
+    if (order.platform !== "TikTok Shop") { setAffiliateAmt(undefined); return; }
+    let cancelled = false;
+    setAffiliateAmt(undefined);
+    Promise.all([
+      supabaseClient
+        .from("tiktok_affiliate_commissions")
+        .select("estimated_paid_commission")
+        .eq("order_no", order.id),
+      supabaseClient
+        .from("sync_logs")
+        .select("created_at")
+        .eq("action", "tiktok_affiliate_sync")
+        .eq("status", "success")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]).then(([rowsRes, lastSyncRes]) => {
+      if (cancelled) return;
+      const rows = rowsRes.data || [];
+      if (rows.length > 0) {
+        const sum = rows.reduce((s, r) => s + (r.estimated_paid_commission != null ? Number(r.estimated_paid_commission) : 0), 0);
+        setAffiliateAmt(+sum.toFixed(2));
+        return;
+      }
+      // No row for this order — only call it "organic" once the sync is
+      // confirmed to have run within the last 15 minutes (3x the 5-min
+      // cadence, generous margin for a slow tick), otherwise stay
+      // undefined so the drawer keeps the honest "not synced yet" note.
+      const lastSync = lastSyncRes.data?.created_at;
+      const syncIsCurrent = lastSync && (Date.now() - new Date(lastSync).getTime()) < 15 * 60 * 1000;
+      setAffiliateAmt(syncIsCurrent ? "organic" : undefined);
+    });
+    return () => { cancelled = true; };
+  }, [order.id, order.platform]);
+
   const hasRealData = !!settlement;
   // isEstimate (2026-08-20, bug fix) — must check settlement.is_final, not
   // just "a settlement row exists". A 待发货 order can only ever have a
@@ -2218,7 +2267,7 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
   // to do here now; incomeBreakdown()'s result already includes both.
   const incomeDetail = hasRealData
     ? incomeBreakdown(order, settlement, t)
-    : (order.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(order, t) : estimatedBreakdown(order, t));
+    : (order.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(order, t, affiliateAmt) : estimatedBreakdown(order, t));
   // Real buyer_payment_info (2026-08-20) — Shopee's own get_escrow_detail
   // response, same raw_response already stored by shopee-pending-estimate-sync.
   const buyerPaymentInfo = settlement?.raw_response?.response?.buyer_payment_info || null;
