@@ -453,6 +453,15 @@ export function ProductListingCenter({ t, inventory, stores }) {
       showToast(t("请填写完整的包裹长/宽/高 (cm)", "Please fill in package length/width/height (cm)"));
       return;
     }
+    // 强制选择末级叶子类目 (2026-08-24, new) — category_trees rows are
+    // already denormalized leaf-only rows (see file-top note), and the
+    // real TikTok category picker's third dropdown is likewise always a
+    // leaf, so "picked a category at all" == "picked a leaf" here; this
+    // just blocks saving with no category chosen for either platform.
+    if (!listingForm.shopee_category_leaf_id && !listingForm.tiktok_category_leaf_id && !listingForm.tiktok_real_category_id) {
+      showToast(t("请至少选择一个平台的末级叶子类目", "Please select a leaf category for at least one platform"));
+      return;
+    }
     // shopee_category_path/tiktok_category_path stay as a materialized
     // [level1,level2,level3] display copy derived from the chosen leaf, so
     // the listing table can show the path without a join.
@@ -712,9 +721,20 @@ export function ProductListingCenter({ t, inventory, stores }) {
   const [spec2Name, setSpec2Name] = useState("");
   const [spec2Values, setSpec2Values] = useState("");
   const [variationRows, setVariationRows] = useState([]); // [{spec1_value, spec2_value, sku, price, stock, image_url}]
+  // 批量修改价格/库存 (2026-08-24, new) — row selection + a small inline
+  // batch-edit bar; applies to the checked rows, or all rows when none
+  // are checked (so a quick "set every price to X" doesn't need selecting
+  // everything first).
+  const [selectedVariantIdx, setSelectedVariantIdx] = useState(new Set());
+  const [showBatchVariantEdit, setShowBatchVariantEdit] = useState(false);
+  const [batchVariantPrice, setBatchVariantPrice] = useState("");
+  const [batchVariantStock, setBatchVariantStock] = useState("");
 
   async function openVariations(listing) {
     setVariationsTarget(listing);
+    setSelectedVariantIdx(new Set());
+    setShowBatchVariantEdit(false);
+    setBatchVariantPrice(""); setBatchVariantStock("");
     const { data, error } = await supabaseClient.from("product_listing_variations").select("*").eq("listing_id", listing.id).order("created_at");
     if (error) { console.error("loadVariations failed", error); setVariationRows([]); return; }
     setVariationRows(data || []);
@@ -750,6 +770,39 @@ export function ProductListingCenter({ t, inventory, stores }) {
   }
   function removeVariationRow(idx) {
     setVariationRows((prev) => prev.filter((_, i) => i !== idx));
+    setSelectedVariantIdx((prev) => {
+      const next = new Set();
+      prev.forEach((i) => { if (i < idx) next.add(i); else if (i > idx) next.add(i - 1); });
+      return next;
+    });
+  }
+  // 添加规格 (2026-08-24, new) — a single manually-typed row, for when
+  // staff just needs one more variant instead of a full cartesian
+  // regenerate via spec1/spec2 values.
+  function addVariantRow() {
+    setVariationRows((prev) => [...prev, { spec1_value: "", spec2_value: "", sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: "", weight_kg: "" }]);
+  }
+  function toggleVariantSelect(idx) {
+    setSelectedVariantIdx((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  }
+  function toggleSelectAllVariants() {
+    setSelectedVariantIdx((prev) => (prev.size === variationRows.length ? new Set() : new Set(variationRows.map((_, i) => i))));
+  }
+  // 批量修改 (2026-08-24, new) — sets price and/or stock on the checked
+  // rows (or every row, if none are checked); blank field = leave that
+  // field untouched on those rows.
+  function applyBatchVariantEdit() {
+    const targets = selectedVariantIdx.size > 0 ? selectedVariantIdx : new Set(variationRows.map((_, i) => i));
+    setVariationRows((prev) => prev.map((r, i) => (targets.has(i) ? {
+      ...r,
+      price: batchVariantPrice !== "" ? Number(batchVariantPrice) : r.price,
+      stock: batchVariantStock !== "" ? Number(batchVariantStock) : r.stock,
+    } : r)));
+    setBatchVariantPrice(""); setBatchVariantStock(""); setShowBatchVariantEdit(false);
   }
 
   async function saveVariations() {
@@ -1458,15 +1511,47 @@ export function ProductListingCenter({ t, inventory, stores }) {
                 <input value={spec2Values} onChange={(e) => setSpec2Values(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
               </div>
             </div>
-            <button onClick={generateCombos} disabled={!spec1Values.trim()} className={`text-xs px-3 py-2 rounded-lg text-white ${spec1Values.trim() ? "bg-purple-600 hover:bg-purple-700" : "bg-slate-300 cursor-not-allowed"}`}>
-              {t("生成组合", "Generate Combinations")}
-            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={generateCombos} disabled={!spec1Values.trim()} className={`text-xs px-3 py-2 rounded-lg text-white ${spec1Values.trim() ? "bg-purple-600 hover:bg-purple-700" : "bg-slate-300 cursor-not-allowed"}`}>
+                {t("生成组合", "Generate Combinations")}
+              </button>
+              <button onClick={addVariantRow} className="text-xs px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+                + {t("添加规格", "Add Variant")}
+              </button>
+              {variationRows.length > 0 && (
+                <button onClick={() => setShowBatchVariantEdit((v) => !v)} className="text-xs px-3 py-2 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 ml-auto">
+                  <Percent size={12} className="inline mr-1" /> {t(`批量修改${selectedVariantIdx.size > 0 ? `（已选 ${selectedVariantIdx.size}）` : ""}`, `Batch Edit${selectedVariantIdx.size > 0 ? ` (${selectedVariantIdx.size} selected)` : ""}`)}
+                </button>
+              )}
+            </div>
+            {showBatchVariantEdit && (
+              <div className="flex items-end gap-2 bg-indigo-50 border border-indigo-100 rounded-lg p-2.5">
+                <div>
+                  <div className="text-[11px] text-slate-400 mb-1">{t("统一价格 (RM)", "Set price (RM)")}</div>
+                  <input type="number" value={batchVariantPrice} onChange={(e) => setBatchVariantPrice(e.target.value)} placeholder={t("留空不改", "blank = no change")} className="w-28 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-400 mb-1">{t("统一库存", "Set stock")}</div>
+                  <input type="number" value={batchVariantStock} onChange={(e) => setBatchVariantStock(e.target.value)} placeholder={t("留空不改", "blank = no change")} className="w-24 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                </div>
+                <button
+                  onClick={applyBatchVariantEdit}
+                  disabled={batchVariantPrice === "" && batchVariantStock === ""}
+                  className={`text-xs px-3 py-1.5 rounded-lg text-white ${batchVariantPrice !== "" || batchVariantStock !== "" ? "bg-indigo-600 hover:bg-indigo-700" : "bg-slate-300 cursor-not-allowed"}`}
+                >
+                  {t(selectedVariantIdx.size > 0 ? "应用到已选" : "应用到全部", selectedVariantIdx.size > 0 ? "Apply to selected" : "Apply to all")}
+                </button>
+              </div>
+            )}
             {variationRows.length > 0 && (
               <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                <table className="w-full text-xs min-w-[560px]">
+                <table className="w-full text-xs min-w-[620px]">
                   <thead>
                     <tr className="text-left text-slate-400 border-b border-slate-100">
-                      <th className="py-2 px-2 font-medium">{t("规格组合", "Combination")}</th>
+                      <th className="py-2 px-2 font-medium w-6">
+                        <input type="checkbox" checked={variationRows.length > 0 && selectedVariantIdx.size === variationRows.length} onChange={toggleSelectAllVariants} className="h-3.5 w-3.5 rounded border-slate-300" />
+                      </th>
+                      <th className="py-2 px-2 font-medium">{t("规格名称", "Variant Name")}</th>
                       <th className="py-2 px-2 font-medium">{t("商家 SKU", "Seller SKU")}</th>
                       <th className="py-2 px-2 font-medium">{t("价格 (RM)", "Price (RM)")}</th>
                       <th className="py-2 px-2 font-medium">{t("库存", "Stock")}</th>
@@ -1479,8 +1564,18 @@ export function ProductListingCenter({ t, inventory, stores }) {
                   </thead>
                   <tbody>
                     {variationRows.map((r, idx) => (
-                      <tr key={idx} className="border-b border-slate-50 last:border-0">
-                        <td className="py-1.5 px-2 whitespace-nowrap">{[r.spec1_value, r.spec2_value].filter(Boolean).join(" / ")}</td>
+                      <tr key={idx} className={`border-b border-slate-50 last:border-0 ${selectedVariantIdx.has(idx) ? "bg-indigo-50/40" : ""}`}>
+                        <td className="py-1.5 px-2"><input type="checkbox" checked={selectedVariantIdx.has(idx)} onChange={() => toggleVariantSelect(idx)} className="h-3.5 w-3.5 rounded border-slate-300" /></td>
+                        <td className="py-1.5 px-2 whitespace-nowrap">
+                          {/* 描述性规格名称 (2026-08-24, new) — editable so a
+                              manually-added row (via 添加规格) can be named
+                              directly, e.g. "BLACK SPRING", instead of only
+                              coming from the spec1×spec2 generator. */}
+                          <input value={r.spec1_value || ""} onChange={(e) => updateVariationField(idx, "spec1_value", e.target.value)} placeholder={t("如 BLACK SPRING", "e.g. BLACK SPRING")} className="w-28 px-1.5 py-1 border border-slate-200 rounded" />
+                          {spec2Name.trim() && (
+                            <input value={r.spec2_value || ""} onChange={(e) => updateVariationField(idx, "spec2_value", e.target.value)} placeholder={spec2Name} className="w-20 px-1.5 py-1 border border-slate-200 rounded mt-1" />
+                          )}
+                        </td>
                         <td className="py-1.5 px-2"><input value={r.sku || ""} onChange={(e) => updateVariationField(idx, "sku", e.target.value)} className="w-24 px-1.5 py-1 border border-slate-200 rounded" /></td>
                         <td className="py-1.5 px-2"><input type="number" value={r.price} onChange={(e) => updateVariationField(idx, "price", e.target.value)} className="w-20 px-1.5 py-1 border border-slate-200 rounded" /></td>
                         <td className="py-1.5 px-2"><input type="number" value={r.stock} onChange={(e) => updateVariationField(idx, "stock", e.target.value)} className="w-16 px-1.5 py-1 border border-slate-200 rounded" /></td>
