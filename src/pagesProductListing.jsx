@@ -1,24 +1,28 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Plus, Store, Percent, Sparkles, CheckCircle2, Bot, Zap,
-  Image as ImageIcon, Upload, Layers, Trash2, Video, Truck,
+  Image as ImageIcon, Upload, Layers, Trash2, Video, Truck, Camera, X, ArrowLeft,
 } from "lucide-react";
 import { PLATFORM_THEME, DB_TO_DEMO_PLATFORM, fmt, supabaseClient } from "./shared.jsx";
 import { KPICard as KPICardImpl } from "./pagesOverviewOrders.jsx";
 
-// Shopee 物流渠道候选列表 (2026-08-24) — a fixed, common-sense set of
-// real Malaysia Shopee delivery channel names for staff to toggle on this
-// listing; not fetched from Shopee's real live logistics-channel API for
+// 平台物流渠道彻底隔离 (2026-08-24) — two separate fixed lists, one per
+// platform, never merged/shown together. Real Malaysia courier names each
+// platform actually supports; not fetched from a live logistics API for
 // the seller's account (no such integration exists — see the file-top
-// data-source note).
+// data-source note). TikTok's list intentionally excludes Shopee-only
+// names (Shopee Xpress) and vice versa — no Lazada anywhere, this project
+// has no Lazada integration at all.
 const SHOPEE_SHIPPING_CHANNELS = ["Standard Delivery", "Shopee Xpress", "Poslaju", "J&T Express", "Ninja Van"];
+const TIKTOK_SHIPPING_CHANNELS = ["J&T Express Malaysia", "Ninja Van", "Best Express", "DHL eCommerce"];
 
 // 包裹重量快捷气泡 (2026-08-24) — common real parcel weights (grams) for a
 // one-tap fill; staff can still type any value. Values are grams since
 // small parts are usually weighed in g, not kg.
-const WEIGHT_QUICK_PRESETS_G = [100, 250, 500, 1000, 2000, 5000];
+const WEIGHT_QUICK_PRESETS_G = [200, 250, 500, 1000, 2000, 5000];
 const TITLE_MAX_LEN = 255; // real TikTok Shop product-title limit
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024; // 100MB — generous client-side guard, not a confirmed real TikTok limit
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB — generous client-side guard for photo uploads
 
 // 商品发布中心 (2026-08-24) — data-source note, same spirit as the Ads
 // Costs page's note: this is a real Supabase-backed feature
@@ -60,10 +64,10 @@ const AI_FRAME_TEMPLATES = [
 ];
 
 const emptyListingForm = {
-  product_id: "", sku: "", title: "", description: "", category: "", image_url: "", base_price: "",
+  product_id: "", sku: "", title: "", description: "", category: "", image_urls: [], base_price: "",
   brand: "No Brand", tiktok_brand_id: "", weight_kg: "", weight_unit: "kg", length_cm: "", width_cm: "", height_cm: "",
   is_dangerous: false, is_cod: false, video_url: "",
-  shopee_shipping_channels: [], shopee_category_leaf_id: "", tiktok_category_leaf_id: "",
+  shopee_shipping_channels: [], tiktok_shipping_channels: [], shopee_category_leaf_id: "", tiktok_category_leaf_id: "",
   tiktok_real_category_id: "",
   attributes: [],
 };
@@ -271,11 +275,61 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setListingForm((prev) => ({ ...prev, video_url: pub.publicUrl }));
   }
 
+  // ---- 主图相册上传 (2026-08-24, new) — real upload to the product-images
+  // Storage bucket, same pattern as handleVideoUpload above. Replaces the
+  // old URL-paste input entirely; both the camera-capture and local-photo
+  // pickers funnel through this same function (the <input>'s capture
+  // attribute is what makes one open the camera vs. the gallery).
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageError, setImageError] = useState("");
+  async function handleImageFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    setImageError("");
+    setImageUploading(true);
+    const uploaded = [];
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) { setImageError(t("请上传照片文件", "Please upload a photo")); continue; }
+      if (file.size > MAX_IMAGE_BYTES) { setImageError(t("照片过大（单张上限 20MB）", "Photo too large (20MB max each)")); continue; }
+      const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const { error } = await supabaseClient.storage.from("product-images").upload(path, file, { upsert: false });
+      if (error) { setImageError(t("上传失败", "Upload failed")); console.error("image upload failed", error); continue; }
+      const { data: pub } = supabaseClient.storage.from("product-images").getPublicUrl(path);
+      uploaded.push(pub.publicUrl);
+    }
+    setImageUploading(false);
+    if (uploaded.length > 0) {
+      setListingForm((prev) => ({ ...prev, image_urls: [...prev.image_urls, ...uploaded] }));
+    }
+  }
+  function removeImageAt(idx) {
+    setListingForm((prev) => ({ ...prev, image_urls: prev.image_urls.filter((_, i) => i !== idx) }));
+  }
+
   // ---- 新建/编辑主商品发布清单 ----
   const [showListingForm, setShowListingForm] = useState(false);
   const [editingListingId, setEditingListingId] = useState(null);
   const [listingForm, setListingForm] = useState(emptyListingForm);
 
+  // ---- 独立全屏页面 + URL 同步 (2026-08-24, new) — 新增/编辑弹窗改为独立
+  // 全屏页面（不再是 Modal）。本项目没有接入 react-router（整站都是
+  // tab state 切换，见 erp-mvp-demo.jsx），为避免为此单一功能引入路由库、
+  // 影响其他所有 tab/卡片，这里改用原生 history.pushState/popstate 让地
+  // 址栏显示真实的 /products/new 或 /products/edit/:id 并支持浏览器返回
+  // 按钮，同时仍在本组件内部渲染（不做整站路由重构）。
+  useEffect(() => {
+    function onPopState() {
+      setShowListingForm(false);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  function closeListingForm() {
+    setShowListingForm(false);
+    if (window.location.pathname.startsWith("/products/")) {
+      window.history.pushState(null, "", "/");
+    }
+  }
   function openCreateListing() {
     setEditingListingId(null);
     setListingForm(emptyListingForm);
@@ -285,12 +339,17 @@ export function ProductListingCenter({ t, inventory, stores }) {
     loadTiktokRealBrands();
     setVideoError("");
     setShowListingForm(true);
+    window.history.pushState(null, "", "/products/new");
   }
   function openEditListing(l) {
     setEditingListingId(l.id);
     setListingForm({
       product_id: l.product_id || "", sku: l.sku || "", title: l.title, description: l.description || "",
-      category: l.category || "", image_url: l.image_url || "", base_price: String(l.base_price),
+      category: l.category || "",
+      // Falls back to the legacy single image_url for rows saved before the
+      // gallery existed, so editing an older listing doesn't show empty.
+      image_urls: Array.isArray(l.image_urls) && l.image_urls.length > 0 ? l.image_urls : (l.image_url ? [l.image_url] : []),
+      base_price: String(l.base_price),
       brand: l.brand || "No Brand", tiktok_brand_id: l.tiktok_brand_id || "",
       // Display value matches the saved unit preference — weight_kg is
       // always stored canonically in kg (see saveListing), so a 'g'
@@ -303,6 +362,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
       height_cm: l.height_cm != null ? String(l.height_cm) : "",
       is_dangerous: !!l.is_dangerous, is_cod: !!l.is_cod, video_url: l.video_url || "",
       shopee_shipping_channels: Array.isArray(l.shopee_shipping_channels) ? l.shopee_shipping_channels : [],
+      tiktok_shipping_channels: Array.isArray(l.tiktok_shipping_channels) ? l.tiktok_shipping_channels : [],
       shopee_category_leaf_id: l.shopee_category_leaf_id || "",
       tiktok_category_leaf_id: l.tiktok_category_leaf_id || "",
       tiktok_real_category_id: l.tiktok_real_category_id || "",
@@ -319,6 +379,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
     loadTiktokRealBrands();
     setVideoError("");
     setShowListingForm(true);
+    window.history.pushState(null, "", `/products/edit/${l.id}`);
   }
   // Picking a real product_id (from `inventory`, the real AutoCount-synced
   // catalog) auto-fills title/sku/image/price/category/weight from it, so
@@ -330,7 +391,10 @@ export function ProductListingCenter({ t, inventory, stores }) {
     if (!p) { setListingForm({ ...listingForm, product_id: "", sku: "" }); return; }
     setListingForm({
       ...listingForm, product_id: p.id, sku: p.sku, title: listingForm.title || p.name,
-      image_url: listingForm.image_url || p.imageUrl || "", category: listingForm.category || p.category || "",
+      // Only seed the gallery from the real product's image when it's still
+      // empty, so re-picking a SKU never clobbers photos already uploaded.
+      image_urls: listingForm.image_urls.length > 0 ? listingForm.image_urls : (p.imageUrl ? [p.imageUrl] : []),
+      category: listingForm.category || p.category || "",
       base_price: listingForm.base_price || String(p.price || ""),
       weight_kg: listingForm.weight_kg || (p.weightKg ? String(p.weightKg) : ""),
     });
@@ -360,6 +424,14 @@ export function ProductListingCenter({ t, inventory, stores }) {
       shopee_shipping_channels: prev.shopee_shipping_channels.includes(name)
         ? prev.shopee_shipping_channels.filter((c) => c !== name)
         : [...prev.shopee_shipping_channels, name],
+    }));
+  }
+  function toggleTiktokChannel(name) {
+    setListingForm((prev) => ({
+      ...prev,
+      tiktok_shipping_channels: prev.tiktok_shipping_channels.includes(name)
+        ? prev.tiktok_shipping_channels.filter((c) => c !== name)
+        : [...prev.tiktok_shipping_channels, name],
     }));
   }
   function addAttribute() {
@@ -402,7 +474,11 @@ export function ProductListingCenter({ t, inventory, stores }) {
       title: listingForm.title.trim(),
       description: listingForm.description.trim() || null,
       category: listingForm.category.trim() || null,
-      image_url: listingForm.image_url.trim() || null,
+      // image_url stays as a read-only "first image" mirror for older
+      // consumers (main list thumbnail, watermark tool) that only show one
+      // image; image_urls is the real ordered gallery.
+      image_url: listingForm.image_urls[0] || null,
+      image_urls: listingForm.image_urls,
       base_price: Number(listingForm.base_price) || 0,
       brand: listingForm.brand.trim() || "No Brand",
       tiktok_brand_id: listingForm.tiktok_brand_id || null,
@@ -417,6 +493,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
       is_cod: listingForm.is_cod,
       video_url: listingForm.video_url || null,
       shopee_shipping_channels: listingForm.shopee_shipping_channels,
+      tiktok_shipping_channels: listingForm.tiktok_shipping_channels,
       shopee_category_leaf_id: listingForm.shopee_category_leaf_id || null,
       tiktok_category_leaf_id: listingForm.tiktok_category_leaf_id || null,
       tiktok_real_category_id: listingForm.tiktok_real_category_id || null,
@@ -429,7 +506,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
       ? await supabaseClient.from("product_listings").update(payload).eq("id", editingListingId)
       : await supabaseClient.from("product_listings").insert(payload);
     if (error) { showToast(t("保存失败", "Save failed")); console.error("saveListing failed", error); return; }
-    setShowListingForm(false);
+    closeListingForm();
     showToast(t("已保存", "Saved"));
     loadListings();
   }
@@ -741,6 +818,336 @@ export function ProductListingCenter({ t, inventory, stores }) {
     loadCategoryData();
   }
 
+  // ---- 新增/编辑商品：独立全屏页面 (2026-08-24, new) — replaces the old
+  // centered Modal entirely. Real URL via history.pushState (see the note
+  // above openCreateListing). Field order per explicit request: 商品图片 →
+  // SKU → 商品标题 → 分类/品牌 → 详情描述 → 商品视频 → 销售信息与变体 →
+  // 包裹与物流信息 (weight/dimensions/COD/hazardous/shipping channels/
+  // category cascading selectors/attributes).
+  if (showListingForm) {
+    return (
+      <div className="min-h-screen bg-slate-50 -m-4 sm:-m-6">
+        {/* 顶部导航栏 — 返回按钮 + 固定保存/发布操作栏 */}
+        <div className="sticky top-0 z-40 bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center justify-between">
+          <button onClick={closeListingForm} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
+            <ArrowLeft size={16} /> {t("返回商品发布中心", "Back to Listing Center")}
+          </button>
+          <div className="flex items-center gap-2">
+            <div className="text-sm font-medium text-slate-700 hidden sm:block">
+              {editingListingId ? t("编辑商品", "Edit Listing") : t("新增商品", "New Listing")}
+            </div>
+            <button onClick={closeListingForm} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
+            <button onClick={saveListing} className="text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800">{t("保存", "Save")}</button>
+          </div>
+        </div>
+
+        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-5">
+          {/* 1. 商品图片 — 置顶 */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5">
+            <div className="text-xs text-slate-400 mb-1 flex items-center gap-1"><ImageIcon size={12} /> {t("商品图片", "Product Images")}</div>
+            <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+              {listingForm.image_urls.map((url, idx) => (
+                <div key={idx} className="relative aspect-square rounded-lg border border-slate-200 overflow-hidden bg-slate-50">
+                  <img src={url} alt="" className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => removeImageAt(idx)}
+                    className="absolute top-0.5 right-0.5 h-5 w-5 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+              <label className={`aspect-square rounded-lg border border-dashed flex flex-col items-center justify-center gap-1 cursor-pointer ${imageUploading ? "border-slate-100 text-slate-300" : "border-slate-300 text-slate-400 hover:bg-slate-50"}`}>
+                <Plus size={16} />
+                <span className="text-[10px] text-center px-1">{imageUploading ? t("上传中…", "Uploading…") : t("添加图片", "Add Image")}</span>
+                <input type="file" accept="image/*" multiple disabled={imageUploading} onChange={(e) => { handleImageFiles(e.target.files); e.target.value = ""; }} className="hidden" />
+              </label>
+            </div>
+            <div className="flex items-center gap-2 mt-2">
+              <label className={`text-xs px-3 py-2 rounded-lg border cursor-pointer flex items-center gap-1 ${imageUploading ? "border-slate-100 text-slate-300" : "border-slate-200 hover:bg-slate-50 text-slate-600"}`}>
+                <Camera size={12} /> {t("拍照", "Take Photo")}
+                <input type="file" accept="image/*" capture="environment" disabled={imageUploading} onChange={(e) => { handleImageFiles(e.target.files); e.target.value = ""; }} className="hidden" />
+              </label>
+              <label className={`text-xs px-3 py-2 rounded-lg border cursor-pointer flex items-center gap-1 ${imageUploading ? "border-slate-100 text-slate-300" : "border-slate-200 hover:bg-slate-50 text-slate-600"}`}>
+                <Upload size={12} /> {t("上传照片", "Upload Photo")}
+                <input type="file" accept="image/*" multiple disabled={imageUploading} onChange={(e) => { handleImageFiles(e.target.files); e.target.value = ""; }} className="hidden" />
+              </label>
+            </div>
+            {imageError && <div className="text-[11px] text-rose-600 mt-1">{imageError}</div>}
+          </div>
+
+          {/* 2. 关联真实商品 SKU / 商品标题 / 分类 / 品牌 */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("关联真实商品 SKU（可选，自动带入）", "Link a real product SKU (optional, auto-fills)")}</div>
+              <select value={listingForm.sku} onChange={(e) => pickRealProduct(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg">
+                <option value="">{t("不关联", "Not linked")}</option>
+                {(inventory || []).map((p) => <option key={p.sku} value={p.sku}>{p.sku} — {p.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs text-slate-400">{t("商品标题", "Title")}</div>
+                <div className={`text-[11px] ${listingForm.title.length > TITLE_MAX_LEN ? "text-rose-500" : "text-slate-300"}`}>{listingForm.title.length}/{TITLE_MAX_LEN}</div>
+              </div>
+              <input value={listingForm.title} onChange={(e) => setListingForm({ ...listingForm, title: e.target.value })} maxLength={TITLE_MAX_LEN} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs text-slate-400 mb-1">{t("分类", "Category")}</div>
+                <input value={listingForm.category} onChange={(e) => setListingForm({ ...listingForm, category: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              </div>
+              <div>
+                <div className="text-xs text-slate-400 mb-1">
+                  {tiktokBrandsStatus === "ok" ? t("品牌（官方品牌库）", "Brand (official library)") : t("品牌", "Brand")}
+                </div>
+                {tiktokBrandsStatus === "ok" && tiktokRealBrands.length > 0 ? (
+                  <select
+                    value={listingForm.tiktok_brand_id}
+                    onChange={(e) => {
+                      const b = tiktokRealBrands.find((x) => String(x.id ?? x.brand_id) === e.target.value);
+                      setListingForm({ ...listingForm, tiktok_brand_id: e.target.value, brand: b?.name || b?.brand_name || listingForm.brand });
+                    }}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                  >
+                    <option value="">No Brand</option>
+                    {tiktokRealBrands.map((b) => {
+                      const id = String(b.id ?? b.brand_id ?? "");
+                      return <option key={id} value={id}>{b.name || b.brand_name || id}</option>;
+                    })}
+                  </select>
+                ) : (
+                  <input value={listingForm.brand} onChange={(e) => setListingForm({ ...listingForm, brand: e.target.value })} placeholder="No Brand" className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* 3. 详情描述 */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5">
+            <div className="text-xs text-slate-400 mb-1">{t("详情描述", "Description")}</div>
+            <textarea value={listingForm.description} onChange={(e) => setListingForm({ ...listingForm, description: e.target.value })} rows={4} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+          </div>
+
+          {/* 4. 商品视频（可选）— 移至详情描述下方 */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5">
+            <div className="text-xs text-slate-400 mb-1 flex items-center gap-1"><Video size={12} /> {t("商品视频（可选）", "Product Video (optional)")}</div>
+            <div className="flex items-center gap-2">
+              <label className={`text-xs px-3 py-2 rounded-lg border cursor-pointer ${videoUploading ? "border-slate-100 text-slate-300" : "border-slate-200 hover:bg-slate-50 text-slate-600"}`}>
+                <Upload size={12} className="inline mr-1" /> {videoUploading ? t("上传中…", "Uploading…") : t("上传视频", "Upload Video")}
+                <input type="file" accept="video/*" disabled={videoUploading} onChange={(e) => handleVideoUpload(e.target.files?.[0])} className="hidden" />
+              </label>
+              {listingForm.video_url && (
+                <button onClick={() => setListingForm({ ...listingForm, video_url: "" })} className="text-xs text-rose-500 hover:text-rose-700">{t("移除", "Remove")}</button>
+              )}
+            </div>
+            {videoError && <div className="text-[11px] text-rose-600 mt-1">{videoError}</div>}
+            {listingForm.video_url && (
+              <video src={listingForm.video_url} controls className="mt-2 w-full max-h-48 rounded-lg border border-slate-200 bg-black" />
+            )}
+          </div>
+
+          {/* 5. 销售信息与变体 */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+            <div className="text-xs font-medium text-slate-500">{t("💰 销售信息与变体", "💰 Sales Info & Variations")}</div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{t("基础售价 (RM)", "Base Price (RM)")}</div>
+              <input type="number" value={listingForm.base_price} onChange={(e) => setListingForm({ ...listingForm, base_price: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+            </div>
+            {editingListingId ? (
+              <button onClick={() => openVariations({ id: editingListingId, title: listingForm.title })} className="text-xs text-purple-600 hover:text-purple-800 flex items-center gap-1">
+                <Layers size={13} /> {t("管理规格 / SKU 变体", "Manage Variations")}
+              </button>
+            ) : (
+              <div className="text-[11px] text-slate-400">{t("保存后可在商品清单中管理规格/SKU 变体。", "Save this listing first, then manage SKU variations from the listing table.")}</div>
+            )}
+          </div>
+
+          {/* 6. 包裹与物流信息 */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+            <div className="text-xs font-medium text-slate-500">{t("📦 包裹与物流信息", "📦 Package & Logistics")}</div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-[11px] text-slate-400">{t("重量", "Weight")}</div>
+                <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-[11px]">
+                  {["g", "kg"].map((u) => (
+                    <button key={u} onClick={() => setWeightUnit(u)} className={`px-2 py-0.5 ${listingForm.weight_unit === u ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}>{u}</button>
+                  ))}
+                </div>
+              </div>
+              <input type="number" value={listingForm.weight_kg} onChange={(e) => setListingForm({ ...listingForm, weight_kg: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg mb-1.5" />
+              <div className="flex flex-wrap gap-1.5">
+                {WEIGHT_QUICK_PRESETS_G.map((g) => (
+                  <button key={g} onClick={() => applyWeightPreset(g)} className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 text-slate-500 hover:bg-slate-50">
+                    {g >= 1000 ? `${g / 1000}kg` : `${g}g`}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <div className="text-[11px] text-slate-400 mb-1">{t("长 (cm) *", "L (cm) *")}</div>
+                <input type="number" value={listingForm.length_cm} onChange={(e) => setListingForm({ ...listingForm, length_cm: e.target.value })} required className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
+              </div>
+              <div>
+                <div className="text-[11px] text-slate-400 mb-1">{t("宽 (cm) *", "W (cm) *")}</div>
+                <input type="number" value={listingForm.width_cm} onChange={(e) => setListingForm({ ...listingForm, width_cm: e.target.value })} required className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
+              </div>
+              <div>
+                <div className="text-[11px] text-slate-400 mb-1">{t("高 (cm) *", "H (cm) *")}</div>
+                <input type="number" value={listingForm.height_cm} onChange={(e) => setListingForm({ ...listingForm, height_cm: e.target.value })} required className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs font-medium text-slate-500 mb-1">{t("⚠️ TikTok 合规声明", "⚠️ TikTok Compliance")}</div>
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={listingForm.is_dangerous} onChange={(e) => setListingForm({ ...listingForm, is_dangerous: e.target.checked })} className="h-3.5 w-3.5 rounded border-slate-300" />
+                  {t("包含电池/液体/危险品", "Contains batteries/liquid/hazardous")}
+                </label>
+              </div>
+              <div>
+                <div className="text-xs font-medium text-slate-500 mb-1 flex items-center gap-1"><Truck size={12} /> {t("货到付款", "Cash on Delivery")}</div>
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={listingForm.is_cod} onChange={(e) => setListingForm({ ...listingForm, is_cod: e.target.checked })} className="h-3.5 w-3.5 rounded border-slate-300" />
+                  {t("支持 COD (Cash on Delivery)", "Support COD")}
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs font-medium text-slate-500 mb-1">{t("🚚 Shopee 物流渠道", "🚚 Shopee Shipping Channels")}</div>
+              <div className="flex flex-wrap gap-2">
+                {SHOPEE_SHIPPING_CHANNELS.map((ch) => (
+                  <label key={ch} className={`text-xs px-2.5 py-1 rounded-full border cursor-pointer ${listingForm.shopee_shipping_channels.includes(ch) ? "bg-orange-50 border-orange-300 text-orange-700" : "border-slate-200 text-slate-500"}`}>
+                    <input type="checkbox" checked={listingForm.shopee_shipping_channels.includes(ch)} onChange={() => toggleShopeeChannel(ch)} className="hidden" />
+                    {ch}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs font-medium text-slate-500 mb-1">{t("🚚 TikTok 物流渠道", "🚚 TikTok Shipping Channels")}</div>
+              <div className="flex flex-wrap gap-2">
+                {TIKTOK_SHIPPING_CHANNELS.map((ch) => (
+                  <label key={ch} className={`text-xs px-2.5 py-1 rounded-full border cursor-pointer ${listingForm.tiktok_shipping_channels.includes(ch) ? "bg-rose-50 border-rose-300 text-rose-700" : "border-slate-200 text-slate-500"}`}>
+                    <input type="checkbox" checked={listingForm.tiktok_shipping_channels.includes(ch)} onChange={() => toggleTiktokChannel(ch)} className="hidden" />
+                    {ch}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs font-medium text-slate-500">{t("🗂 Shopee 三级分类（内部类目库）", "🗂 Shopee Category (internal library)")}</div>
+                <button onClick={() => setShowCategoryManager(true)} className="text-[11px] text-indigo-600 hover:text-indigo-800">{t("管理类目库", "Manage")}</button>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <select value={shopeeL1} onChange={(e) => { setShopeeL1(e.target.value); setShopeeL2(""); selectLeaf("shopee_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
+                  <option value="">{t("第1级", "Level 1")}</option>
+                  {categoryOptions("Shopee", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+                <select value={shopeeL2} onChange={(e) => { setShopeeL2(e.target.value); selectLeaf("shopee_category_leaf_id", ""); }} disabled={!shopeeL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                  <option value="">{t("第2级", "Level 2")}</option>
+                  {categoryOptions("Shopee", "level2", shopeeL1).map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+                <select value={listingForm.shopee_category_leaf_id} onChange={(e) => selectLeaf("shopee_category_leaf_id", e.target.value)} disabled={!shopeeL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                  <option value="">{t("第3级", "Level 3")}</option>
+                  {categoryOptions("Shopee", "level3", shopeeL1, shopeeL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs font-medium text-slate-500">
+                  {tiktokApiStatus === "ok"
+                    ? t("🗂 TikTok 三级分类（官方真实类目）", "🗂 TikTok Category (real, official)")
+                    : t("🗂 TikTok 三级分类（内部类目库）", "🗂 TikTok Category (internal library)")}
+                </div>
+                {tiktokApiStatus === "loading" && <span className="text-[11px] text-slate-400">{t("加载官方类目中…", "Loading official categories…")}</span>}
+              </div>
+
+              {tiktokApiStatus === "error" && tiktokApiError?.needsReauth && (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                  {t(
+                    "检测到商品权限，如提示 Access Denied 请在【店铺管理】中点击「重新授权」以更新权限。（对应「产品搬仓/搬店」页面店铺管理区域的「使用 TikTok Shop 登录连接」按钮——对已连接店铺重新走一次该流程即可刷新权限。）在权限刷新前，暂时使用下方内部类目库。",
+                    "Product permission detected, but if you see Access Denied, go to Store Management and click \"Re-authorize\" to refresh it. (That's the \"Connect with TikTok Shop Login\" button under Product Move / Store Management — running it again for an already-connected store refreshes its permissions.) Using the internal category library below until then.",
+                  )}
+                </div>
+              )}
+              {tiktokApiStatus === "error" && !tiktokApiError?.needsReauth && (
+                <div className="text-[11px] text-slate-400 mb-2">{tiktokApiError?.message}</div>
+              )}
+
+              {tiktokApiStatus === "ok" ? (
+                <div className="grid grid-cols-3 gap-2">
+                  <select value={tiktokRealL1} onChange={(e) => { setTiktokRealL1(e.target.value); setTiktokRealL2(""); selectTiktokRealLeaf(""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
+                    <option value="">{t("第1级", "Level 1")}</option>
+                    {tiktokRealOptions(1).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <select value={tiktokRealL2} onChange={(e) => { setTiktokRealL2(e.target.value); selectTiktokRealLeaf(""); }} disabled={!tiktokRealL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                    <option value="">{t("第2级", "Level 2")}</option>
+                    {tiktokRealOptions(2, tiktokRealL1).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <select value={listingForm.tiktok_real_category_id} onChange={(e) => selectTiktokRealLeaf(e.target.value)} disabled={!tiktokRealL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                    <option value="">{t("第3级", "Level 3")}</option>
+                    {tiktokRealOptions(3, tiktokRealL1, tiktokRealL2).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  <select value={tiktokL1} onChange={(e) => { setTiktokL1(e.target.value); setTiktokL2(""); selectLeaf("tiktok_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
+                    <option value="">{t("第1级", "Level 1")}</option>
+                    {categoryOptions("TikTok Shop", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                  <select value={tiktokL2} onChange={(e) => { setTiktokL2(e.target.value); selectLeaf("tiktok_category_leaf_id", ""); }} disabled={!tiktokL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                    <option value="">{t("第2级", "Level 2")}</option>
+                    {categoryOptions("TikTok Shop", "level2", tiktokL1).map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                  <select value={listingForm.tiktok_category_leaf_id} onChange={(e) => selectLeaf("tiktok_category_leaf_id", e.target.value)} disabled={!tiktokL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                    <option value="">{t("第3级", "Level 3")}</option>
+                    {categoryOptions("TikTok Shop", "level3", tiktokL1, tiktokL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
+                  </select>
+                </div>
+              )}
+              {tiktokRealAttrsLoading && <div className="text-[11px] text-slate-400 mt-1">{t("加载官方分类属性中…", "Loading official category attributes…")}</div>}
+            </div>
+            {(listingForm.shopee_category_leaf_id || listingForm.tiktok_category_leaf_id || listingForm.tiktok_real_category_id) && (
+              <div className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-2.5 py-1.5">
+                {t("已根据选中的叶子类目自动带入下方必填属性，请核对填写。", "Attributes below were auto-added from the selected leaf category — please review and fill them in.")}
+              </div>
+            )}
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs font-medium text-slate-500">{t("📋 分类必填属性", "📋 Category Attributes")}</div>
+                <button onClick={addAttribute} className="text-xs text-indigo-600 hover:text-indigo-800">+ {t("添加属性", "Add")}</button>
+              </div>
+              <div className="space-y-1.5">
+                {listingForm.attributes.map((a, idx) => (
+                  <div key={idx} className="flex gap-2">
+                    <input value={a.name} onChange={(e) => updateAttribute(idx, "name", e.target.value)} placeholder={t("属性名（如 Warranty Type）", "Attribute name (e.g. Warranty Type)")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                    <input value={a.value} onChange={(e) => updateAttribute(idx, "value", e.target.value)} placeholder={t("值（如 1 Year）", "Value (e.g. 1 Year)")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                    <button onClick={() => removeAttribute(idx)} className="text-rose-400 hover:text-rose-600"><Trash2 size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pb-6">
+            <button onClick={closeListingForm} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
+            <button onClick={saveListing} className="text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800">{t("保存", "Save")}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {toast && (
@@ -913,281 +1320,6 @@ export function ProductListingCenter({ t, inventory, stores }) {
           </table>
         </div>
       </div>
-
-      {/* 新增/编辑商品 */}
-      {showListingForm && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowListingForm(false)}>
-          <div className="bg-white rounded-xl p-5 w-full max-w-md space-y-3 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="text-sm font-medium">{editingListingId ? t("编辑商品", "Edit Listing") : t("新增商品", "New Listing")}</div>
-            <div>
-              <div className="text-xs text-slate-400 mb-1">{t("关联真实商品 SKU（可选，自动带入）", "Link a real product SKU (optional, auto-fills)")}</div>
-              <select value={listingForm.sku} onChange={(e) => pickRealProduct(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg">
-                <option value="">{t("不关联", "Not linked")}</option>
-                {(inventory || []).map((p) => <option key={p.sku} value={p.sku}>{p.sku} — {p.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-xs text-slate-400">{t("商品标题", "Title")}</div>
-                {/* TikTok 商品名称 255 字符限制 (2026-08-24, new) — real
-                    TikTok Shop title limit. */}
-                <div className={`text-[11px] ${listingForm.title.length > TITLE_MAX_LEN ? "text-rose-500" : "text-slate-300"}`}>{listingForm.title.length}/{TITLE_MAX_LEN}</div>
-              </div>
-              <input value={listingForm.title} onChange={(e) => setListingForm({ ...listingForm, title: e.target.value })} maxLength={TITLE_MAX_LEN} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
-            </div>
-            <div>
-              <div className="text-xs text-slate-400 mb-1">{t("详情描述", "Description")}</div>
-              <textarea value={listingForm.description} onChange={(e) => setListingForm({ ...listingForm, description: e.target.value })} rows={3} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
-            </div>
-
-            {/* 商品视频 (2026-08-24, new) — real upload to Supabase Storage
-                (product-videos bucket), not a data: URL (too large). */}
-            <div>
-              <div className="text-xs text-slate-400 mb-1 flex items-center gap-1"><Video size={12} /> {t("商品视频（可选）", "Product Video (optional)")}</div>
-              <div className="flex items-center gap-2">
-                <label className={`text-xs px-3 py-2 rounded-lg border cursor-pointer ${videoUploading ? "border-slate-100 text-slate-300" : "border-slate-200 hover:bg-slate-50 text-slate-600"}`}>
-                  <Upload size={12} className="inline mr-1" /> {videoUploading ? t("上传中…", "Uploading…") : t("上传视频", "Upload Video")}
-                  <input type="file" accept="video/*" disabled={videoUploading} onChange={(e) => handleVideoUpload(e.target.files?.[0])} className="hidden" />
-                </label>
-                {listingForm.video_url && (
-                  <button onClick={() => setListingForm({ ...listingForm, video_url: "" })} className="text-xs text-rose-500 hover:text-rose-700">{t("移除", "Remove")}</button>
-                )}
-              </div>
-              {videoError && <div className="text-[11px] text-rose-600 mt-1">{videoError}</div>}
-              {listingForm.video_url && (
-                <video src={listingForm.video_url} controls className="mt-2 w-full max-h-48 rounded-lg border border-slate-200 bg-black" />
-              )}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <div className="text-xs text-slate-400 mb-1">{t("分类", "Category")}</div>
-                <input value={listingForm.category} onChange={(e) => setListingForm({ ...listingForm, category: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
-              </div>
-              <div>
-                <div className="text-xs text-slate-400 mb-1">{t("基础售价 (RM)", "Base Price (RM)")}</div>
-                <input type="number" value={listingForm.base_price} onChange={(e) => setListingForm({ ...listingForm, base_price: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
-              </div>
-            </div>
-            <div>
-              <div className="text-xs text-slate-400 mb-1">{t("主图链接", "Main Image URL")}</div>
-              <input value={listingForm.image_url} onChange={(e) => setListingForm({ ...listingForm, image_url: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
-            </div>
-            <div>
-              <div className="text-xs text-slate-400 mb-1">
-                {tiktokBrandsStatus === "ok" ? t("品牌（官方品牌库）", "Brand (official library)") : t("品牌", "Brand")}
-              </div>
-              {tiktokBrandsStatus === "ok" && tiktokRealBrands.length > 0 ? (
-                <select
-                  value={listingForm.tiktok_brand_id}
-                  onChange={(e) => {
-                    const b = tiktokRealBrands.find((x) => String(x.id ?? x.brand_id) === e.target.value);
-                    setListingForm({ ...listingForm, tiktok_brand_id: e.target.value, brand: b?.name || b?.brand_name || listingForm.brand });
-                  }}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
-                >
-                  <option value="">No Brand</option>
-                  {tiktokRealBrands.map((b) => {
-                    const id = String(b.id ?? b.brand_id ?? "");
-                    return <option key={id} value={id}>{b.name || b.brand_name || id}</option>;
-                  })}
-                </select>
-              ) : (
-                <input value={listingForm.brand} onChange={(e) => setListingForm({ ...listingForm, brand: e.target.value })} placeholder="No Brand" className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
-              )}
-            </div>
-
-            {/* 包裹信息 (2026-08-24, new) — real fields both platforms'
-                real Product APIs require, captured here ahead of time (see
-                file-top note: not validated against a live API). Weight
-                auto-fills from the real linked product when available. */}
-            <div className="pt-2 border-t border-slate-100">
-              <div className="text-xs font-medium text-slate-500 mb-2">{t("📦 包裹信息", "📦 Package Info")}</div>
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <div className="text-[11px] text-slate-400">{t("重量", "Weight")}</div>
-                  <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-[11px]">
-                    {["g", "kg"].map((u) => (
-                      <button key={u} onClick={() => setWeightUnit(u)} className={`px-2 py-0.5 ${listingForm.weight_unit === u ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}>{u}</button>
-                    ))}
-                  </div>
-                </div>
-                <input type="number" value={listingForm.weight_kg} onChange={(e) => setListingForm({ ...listingForm, weight_kg: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg mb-1.5" />
-                {/* 快捷气泡 (2026-08-24, new) — one-tap common parcel weights. */}
-                <div className="flex flex-wrap gap-1.5">
-                  {WEIGHT_QUICK_PRESETS_G.map((g) => (
-                    <button key={g} onClick={() => applyWeightPreset(g)} className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 text-slate-500 hover:bg-slate-50">
-                      {g >= 1000 ? `${g / 1000}kg` : `${g}g`}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {/* 长/宽/高强制必填 (2026-08-24, new) — TikTok requires real
-                  package dimensions for shipping calc; enforced in
-                  saveListing(), marked with * here for visibility. */}
-              <div className="grid grid-cols-3 gap-2 mt-2">
-                <div>
-                  <div className="text-[11px] text-slate-400 mb-1">{t("长 (cm) *", "L (cm) *")}</div>
-                  <input type="number" value={listingForm.length_cm} onChange={(e) => setListingForm({ ...listingForm, length_cm: e.target.value })} required className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-400 mb-1">{t("宽 (cm) *", "W (cm) *")}</div>
-                  <input type="number" value={listingForm.width_cm} onChange={(e) => setListingForm({ ...listingForm, width_cm: e.target.value })} required className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-400 mb-1">{t("高 (cm) *", "H (cm) *")}</div>
-                  <input type="number" value={listingForm.height_cm} onChange={(e) => setListingForm({ ...listingForm, height_cm: e.target.value })} required className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
-                </div>
-              </div>
-            </div>
-
-            {/* TikTok 危险品声明 + COD */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <div className="text-xs font-medium text-slate-500 mb-1">{t("⚠️ TikTok 合规声明", "⚠️ TikTok Compliance")}</div>
-                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
-                  <input type="checkbox" checked={listingForm.is_dangerous} onChange={(e) => setListingForm({ ...listingForm, is_dangerous: e.target.checked })} className="h-3.5 w-3.5 rounded border-slate-300" />
-                  {t("包含电池/液体/危险品", "Contains batteries/liquid/hazardous")}
-                </label>
-              </div>
-              <div>
-                <div className="text-xs font-medium text-slate-500 mb-1 flex items-center gap-1"><Truck size={12} /> {t("货到付款", "Cash on Delivery")}</div>
-                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
-                  <input type="checkbox" checked={listingForm.is_cod} onChange={(e) => setListingForm({ ...listingForm, is_cod: e.target.checked })} className="h-3.5 w-3.5 rounded border-slate-300" />
-                  {t("支持 COD (Cash on Delivery)", "Support COD")}
-                </label>
-              </div>
-            </div>
-
-            {/* Shopee 物流渠道 */}
-            <div>
-              <div className="text-xs font-medium text-slate-500 mb-1">{t("🚚 Shopee 物流渠道", "🚚 Shopee Shipping Channels")}</div>
-              <div className="flex flex-wrap gap-2">
-                {SHOPEE_SHIPPING_CHANNELS.map((ch) => (
-                  <label key={ch} className={`text-xs px-2.5 py-1 rounded-full border cursor-pointer ${listingForm.shopee_shipping_channels.includes(ch) ? "bg-orange-50 border-orange-300 text-orange-700" : "border-slate-200 text-slate-500"}`}>
-                    <input type="checkbox" checked={listingForm.shopee_shipping_channels.includes(ch)} onChange={() => toggleShopeeChannel(ch)} className="hidden" />
-                    {ch}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {/* 平台分类映射 — 级联选择器 (2026-08-24) — sourced from the
-                internal category_trees table (see file-top note: NOT a live
-                Shopee/TikTok category-tree API, that access is confirmed
-                unavailable to this app). Selecting a level-3 leaf
-                auto-renders its attribute template below. */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-xs font-medium text-slate-500">{t("🗂 Shopee 三级分类（内部类目库）", "🗂 Shopee Category (internal library)")}</div>
-                <button onClick={() => setShowCategoryManager(true)} className="text-[11px] text-indigo-600 hover:text-indigo-800">{t("管理类目库", "Manage")}</button>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <select value={shopeeL1} onChange={(e) => { setShopeeL1(e.target.value); setShopeeL2(""); selectLeaf("shopee_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
-                  <option value="">{t("第1级", "Level 1")}</option>
-                  {categoryOptions("Shopee", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
-                </select>
-                <select value={shopeeL2} onChange={(e) => { setShopeeL2(e.target.value); selectLeaf("shopee_category_leaf_id", ""); }} disabled={!shopeeL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                  <option value="">{t("第2级", "Level 2")}</option>
-                  {categoryOptions("Shopee", "level2", shopeeL1).map((v) => <option key={v} value={v}>{v}</option>)}
-                </select>
-                <select value={listingForm.shopee_category_leaf_id} onChange={(e) => selectLeaf("shopee_category_leaf_id", e.target.value)} disabled={!shopeeL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                  <option value="">{t("第3级", "Level 3")}</option>
-                  {categoryOptions("Shopee", "level3", shopeeL1, shopeeL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-xs font-medium text-slate-500">
-                  {tiktokApiStatus === "ok"
-                    ? t("🗂 TikTok 三级分类（官方真实类目）", "🗂 TikTok Category (real, official)")
-                    : t("🗂 TikTok 三级分类（内部类目库）", "🗂 TikTok Category (internal library)")}
-                </div>
-                {tiktokApiStatus === "loading" && <span className="text-[11px] text-slate-400">{t("加载官方类目中…", "Loading official categories…")}</span>}
-              </div>
-
-              {/* 检测到权限但需要重新授权 (2026-08-24, new) — exact copy per
-                  user's explicit request. See file-top note: an existing
-                  shop's token doesn't pick up a newly-enabled scope on its
-                  own. */}
-              {tiktokApiStatus === "error" && tiktokApiError?.needsReauth && (
-                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
-                  {t(
-                    "检测到商品权限，如提示 Access Denied 请在【店铺管理】中点击「重新授权」以更新权限。（对应「产品搬仓/搬店」页面店铺管理区域的「使用 TikTok Shop 登录连接」按钮——对已连接店铺重新走一次该流程即可刷新权限。）在权限刷新前，暂时使用下方内部类目库。",
-                    "Product permission detected, but if you see Access Denied, go to Store Management and click \"Re-authorize\" to refresh it. (That's the \"Connect with TikTok Shop Login\" button under Product Move / Store Management — running it again for an already-connected store refreshes its permissions.) Using the internal category library below until then.",
-                  )}
-                </div>
-              )}
-              {tiktokApiStatus === "error" && !tiktokApiError?.needsReauth && (
-                <div className="text-[11px] text-slate-400 mb-2">{tiktokApiError?.message}</div>
-              )}
-
-              {tiktokApiStatus === "ok" ? (
-                <div className="grid grid-cols-3 gap-2">
-                  <select value={tiktokRealL1} onChange={(e) => { setTiktokRealL1(e.target.value); setTiktokRealL2(""); selectTiktokRealLeaf(""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
-                    <option value="">{t("第1级", "Level 1")}</option>
-                    {tiktokRealOptions(1).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                  <select value={tiktokRealL2} onChange={(e) => { setTiktokRealL2(e.target.value); selectTiktokRealLeaf(""); }} disabled={!tiktokRealL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                    <option value="">{t("第2级", "Level 2")}</option>
-                    {tiktokRealOptions(2, tiktokRealL1).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                  <select value={listingForm.tiktok_real_category_id} onChange={(e) => selectTiktokRealLeaf(e.target.value)} disabled={!tiktokRealL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                    <option value="">{t("第3级", "Level 3")}</option>
-                    {tiktokRealOptions(3, tiktokRealL1, tiktokRealL2).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
-              ) : (
-                <div className="grid grid-cols-3 gap-2">
-                  <select value={tiktokL1} onChange={(e) => { setTiktokL1(e.target.value); setTiktokL2(""); selectLeaf("tiktok_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
-                    <option value="">{t("第1级", "Level 1")}</option>
-                    {categoryOptions("TikTok Shop", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
-                  </select>
-                  <select value={tiktokL2} onChange={(e) => { setTiktokL2(e.target.value); selectLeaf("tiktok_category_leaf_id", ""); }} disabled={!tiktokL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                    <option value="">{t("第2级", "Level 2")}</option>
-                    {categoryOptions("TikTok Shop", "level2", tiktokL1).map((v) => <option key={v} value={v}>{v}</option>)}
-                  </select>
-                  <select value={listingForm.tiktok_category_leaf_id} onChange={(e) => selectLeaf("tiktok_category_leaf_id", e.target.value)} disabled={!tiktokL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                    <option value="">{t("第3级", "Level 3")}</option>
-                    {categoryOptions("TikTok Shop", "level3", tiktokL1, tiktokL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
-                  </select>
-                </div>
-              )}
-              {tiktokRealAttrsLoading && <div className="text-[11px] text-slate-400 mt-1">{t("加载官方分类属性中…", "Loading official category attributes…")}</div>}
-            </div>
-            {(listingForm.shopee_category_leaf_id || listingForm.tiktok_category_leaf_id || listingForm.tiktok_real_category_id) && (
-              <div className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-2.5 py-1.5">
-                {t("已根据选中的叶子类目自动带入下方必填属性，请核对填写。", "Attributes below were auto-added from the selected leaf category — please review and fill them in.")}
-              </div>
-            )}
-
-            {/* 动态必填属性 (2026-08-24, new) — free-form name/value pairs
-                (e.g. Warranty Type, Material) so staff has somewhere to
-                record a category's mandatory attributes; not fetched from
-                either platform's real per-category attribute schema. */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-xs font-medium text-slate-500">{t("📋 分类必填属性", "📋 Category Attributes")}</div>
-                <button onClick={addAttribute} className="text-xs text-indigo-600 hover:text-indigo-800">+ {t("添加属性", "Add")}</button>
-              </div>
-              <div className="space-y-1.5">
-                {listingForm.attributes.map((a, idx) => (
-                  <div key={idx} className="flex gap-2">
-                    <input value={a.name} onChange={(e) => updateAttribute(idx, "name", e.target.value)} placeholder={t("属性名（如 Warranty Type）", "Attribute name (e.g. Warranty Type)")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
-                    <input value={a.value} onChange={(e) => updateAttribute(idx, "value", e.target.value)} placeholder={t("值（如 1 Year）", "Value (e.g. 1 Year)")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
-                    <button onClick={() => removeAttribute(idx)} className="text-rose-400 hover:text-rose-600"><Trash2 size={14} /></button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button onClick={() => setShowListingForm(false)} className="text-sm px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{t("取消", "Cancel")}</button>
-              <button onClick={saveListing} className="text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800">{t("保存", "Save")}</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* 发布到店铺 */}
       {publishTarget && (
