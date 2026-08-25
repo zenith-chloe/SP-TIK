@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
   Search, X, ChevronRight, ChevronLeft, AlertTriangle, CheckCircle2, Truck, Circle,
@@ -142,18 +142,41 @@ function isInstantOrder(o) {
   return TIKTOK_INSTANT_DELIVERY_OPTIONS.has(o.deliveryOption) || (o.courier || "").toLowerCase().includes("instant");
 }
 
+// Local calendar-day string (2026-08-26, new) — o.shipDeadline is a raw
+// timestamptz string from Postgres (e.g. "2026-08-26T23:59:59+00:00" — real
+// UTC instant); `.slice(0, 10)` used to read it used to just grab the UTC
+// calendar date, which silently disagrees with the local calendar date
+// whenever the deadline falls near local midnight (e.g. Malaysia is UTC+8:
+// a deadline at 16:00:00 UTC is already 00:00:00 the NEXT local day) — an
+// order due "tomorrow" locally could get bucketed as "today" or dropped
+// from both buckets entirely. Reads the browser's own local Y/M/D instead,
+// giving correct 00:00:00–23:59:59 local full-day boundaries.
+function localDateStr(d) {
+  const dt = d instanceof Date ? d : new Date(d);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+
 // Single source of truth for which of the 3 Shipping Priority buckets
 // (Overdue Not Shipped / Ship Today / Ship Before Tomorrow) an order falls
 // into — used by both the card counts and the click-to-filter check, so a
 // card's number and what clicking it shows can never drift apart. Uses the
 // real platform deadline (`shipDeadline`) when the sync has captured it,
-// falling back to the existing order-age estimate otherwise.
+// falling back to the existing order-age estimate otherwise. The real-
+// deadline branch computes its own local today/tomorrow (2026-08-26, timezone
+// fix) rather than taking the caller's todayStr/tomorrowStr — those remain
+// UTC-sliced (o.date, the fallback branch below, is itself a UTC-sliced
+// string from shared.jsx's mapDbOrder, so keeping the fallback branch's
+// comparison on the same convention it already used is correct; only the
+// real-shipDeadline path, which is genuinely comparable to the true local
+// day, needed the fix).
 function getShipPriorityBucket(o, todayStr, yesterdayStr, tomorrowStr) {
   if (o.shipDeadline) {
-    const deadlineDate = o.shipDeadline.slice(0, 10);
-    if (deadlineDate < todayStr) return "overdue";
-    if (deadlineDate === todayStr) return "shipToday";
-    if (deadlineDate === tomorrowStr) return "shipByTomorrow";
+    const deadlineLocalDate = localDateStr(o.shipDeadline);
+    const localToday = localDateStr(new Date());
+    const localTomorrow = localDateStr(new Date(Date.now() + 86400000));
+    if (deadlineLocalDate < localToday) return "overdue";
+    if (deadlineLocalDate === localToday) return "shipToday";
+    if (deadlineLocalDate === localTomorrow) return "shipByTomorrow";
     return null;
   }
   if (o.date < yesterdayStr) return "overdue";
@@ -762,6 +785,44 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
     if (entryFilter && onConsumeEntryFilter) onConsumeEntryFilter();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 待发货 tab-switch cleanup (2026-08-26, new) — a stale search query,
+  // date-range filter, or priority sub-tag left over from a previous view
+  // used to silently keep narrowing 待发货 (or whatever tab you left it
+  // for) after switching, making a tab look like it has fewer orders than
+  // its own card total even though nothing about the underlying data was
+  // wrong — just leftover filter state. Scoped to transitions that enter OR
+  // leave 待发货 specifically (prevStatusFilterRef tracks the previous
+  // value) — switching between any two OTHER tabs is completely untouched,
+  // same as before.
+  const prevStatusFilterRef = useRef(statusFilter);
+  useEffect(() => {
+    const prev = prevStatusFilterRef.current;
+    if (prev !== statusFilter && (statusFilter === "__to_ship__" || prev === "__to_ship__")) {
+      setQ("");
+      setSearchField("orderNo");
+      setDateFilter("");
+      setDateMode("all");
+      setPriorityFilter(null);
+      setSelectedIds(new Set());
+    }
+    prevStatusFilterRef.current = statusFilter;
+  }, [statusFilter]);
+
+  // 待发货 sub-tag click cleanup (2026-08-26, new) — clicking a Ship
+  // Today/Ship Before Tomorrow/Overdue tag while a stale search query or
+  // date filter was still active from before used to combine with it
+  // silently, showing fewer rows than the tag's own count. Only fires
+  // while actually on 待发货 (priorityFilter is a no-op everywhere else —
+  // see `filtered` below), so this can't affect any other tab.
+  useEffect(() => {
+    if (statusFilter === "__to_ship__" && priorityFilter) {
+      setQ("");
+      setDateFilter("");
+      setDateMode("all");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [priorityFilter]);
   // Status-card counts, fetched independently of the (capped) `orders` prop
   // via `{count:"exact",head:true}` queries — zero row data transferred,
   // just numbers — so cards reflect the true full-table count even though
@@ -770,6 +831,12 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   // switch only, not on every render. Falls back to counting the in-memory
   // `all` array (old behavior) while a platform's counts haven't loaded yet.
   const [cardCounts, setCardCounts] = useState({});
+  // 待发货 sub-tag rows (2026-08-26, new) — same real DB WHERE clause as
+  // cardCounts.toShip above (see that query's own comment), fetched
+  // separately as real rows (not just a count) so the 3 shipping-priority
+  // sub-tags below can bucket the exact same uncapped universe the total
+  // card count uses, instead of the pagination-capped `all` prop.
+  const [toShipShippingRows, setToShipShippingRows] = useState([]);
   const [q, setQ] = useState("");
   const [searchField, setSearchField] = useState("orderNo");
   const [dateFilter, setDateFilter] = useState("");
@@ -962,6 +1029,27 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       if (isTikTok) return q.in("delivery_option", tiktokInstantOptions);
       return q.ilike("courier", "%instant%");
     }
+    // 待发货 sub-tag alignment fix (2026-08-26) — the 3 shipping-priority
+    // sub-tags (今日需发货/明日前需发货/逾期未发货) used to be bucketed
+    // client-side from the `all` prop, which is capped by the app-wide
+    // orders fetch's .limit(5000) (erp-mvp-demo.jsx) — a genuine but
+    // stale/very-old AWAITING_SHIPMENT row past that cutoff would silently
+    // drop out of the sub-tags' sum while still counting in cardCounts.toShip
+    // above (a real, uncapped DB COUNT), producing exactly the discrepancy
+    // reported. Fixing this by fetching the SAME row set cardCounts.toShip
+    // counts (identical WHERE clause: base() + excludeInstant +
+    // AWAITING_SHIPMENT/READY_TO_SHIP) as real rows here instead of relying
+    // on the capped `all` — so the 3 sub-tags are guaranteed, by
+    // construction, to bucket the exact same universe the total counts,
+    // never a subset of it. 20000 cap is a sanity ceiling only (real
+    // to-ship volume is always far smaller — it clears within days), not a
+    // meaningful limit in practice.
+    function baseRows() {
+      let q = supabaseClient.from("orders").select("platform_status, ship_deadline, order_date").eq("platform", dbPlatform);
+      if (activeStore) q = q.eq("platform_account_id", activeStore);
+      else q = q.in("platform_account_id", Array.from(visibleAccountIds));
+      return q;
+    }
     Promise.all([
       base(),
       base().eq("platform_status", "UNPAID"),
@@ -1028,7 +1116,8 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       // uses, just filtered down to one platform/store here instead of
       // summing both at once.
       base().eq("platform_status", "COMPLETED"),
-    ]).then(([all_, unpaid, toShip, toPickup, inTransit, delivered, returned, failedA, failedB, cancelled_, cancelledToday, instantToProcess, instantProcessed, completed]) => {
+      excludeInstant(baseRows().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"])).limit(20000),
+    ]).then(([all_, unpaid, toShip, toPickup, inTransit, delivered, returned, failedA, failedB, cancelled_, cancelledToday, instantToProcess, instantProcessed, completed, toShipRows]) => {
       if (cancelled) return;
       setCardCounts({
         all: all_.count ?? 0,
@@ -1045,6 +1134,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         instantProcessed: instantProcessed.count ?? 0,
         completed: completed.count ?? 0,
       });
+      setToShipShippingRows(toShipRows.data || []);
     });
     return () => { cancelled = true; };
   }, [activePlatform, activeStore, visibleAccountIds]);
@@ -1119,15 +1209,29 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
   // re-synced since this field was added, or platform doesn't return it —
   // e.g. Shopee for now). Old orders are never broken, just estimated as
   // before until a real deadline is synced for them.
+  //
+  // Sourced from toShipShippingRows (2026-08-26 fix), NOT the `all` prop —
+  // `all` is derived from the app-wide orders fetch capped at .limit(5000)
+  // (erp-mvp-demo.jsx), so a stale AWAITING_SHIPMENT row past that cutoff
+  // used to silently vanish from these 3 sub-tags' sum while still being
+  // counted in the real, uncapped cardCounts.toShip DB count above — the
+  // exact "sub-tags don't add up to the card total" bug reported. Also now
+  // includes READY_TO_SHIP (Shopee's real to-ship status — the old
+  // AWAITING_SHIPMENT-only filter silently zeroed every Shopee order out of
+  // these 3 sub-tags) and excludes instant orders (toShipShippingRows'
+  // own query already does both via excludeInstant + the same .in() list
+  // cardCounts.toShip uses), so the sum of overdue+shipToday+shipByTomorrow
+  // is now guaranteed to equal cardCounts.toShip exactly — same WHERE
+  // clause, same row set, just bucketed 3 ways here instead of counted once.
   const shippingPriority = useMemo(() => {
-    const toShipOrders = all.filter((o) => o.platformStatus === "AWAITING_SHIPMENT");
     const counts = { overdue: 0, shipToday: 0, shipByTomorrow: 0 };
-    for (const o of toShipOrders) {
+    for (const row of toShipShippingRows) {
+      const o = { shipDeadline: row.ship_deadline, date: (row.order_date || "").slice(0, 10) };
       const bucket = getShipPriorityBucket(o, todayStr, yesterdayStr, tomorrowStr);
       if (bucket) counts[bucket]++;
     }
     return counts;
-  }, [all, todayStr, yesterdayStr, tomorrowStr]);
+  }, [toShipShippingRows, todayStr, yesterdayStr, tomorrowStr]);
 
   const filtered = useMemo(() => {
     return all.filter((o) => {
