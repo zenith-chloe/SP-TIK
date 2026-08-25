@@ -68,11 +68,11 @@
 // newly-added app scopes. The seller must fully re-authorize (redo the
 // OAuth connect flow for this shop) before its access_token actually
 // carries Product-category access. `action: "tiktokCategories"` /
-// `"tiktokCategoryAttributes"` below call the real API and surface
-// `needsReauth: true` on a 105005 response specifically so the frontend can
-// show "点击重新授权" instead of a generic error — once a shop is
-// re-authorized, these same real calls should start succeeding with no
-// further code change.
+// `"tiktokCategoryAttributes"` / `"tiktokBrands"` (2026-08-24, brand list
+// added) below call the real API and surface `needsReauth: true` on a
+// 105005 response specifically so the frontend can show "点击重新授权"
+// instead of a generic error — once a shop is re-authorized, these same
+// real calls should start succeeding with no further code change.
 //
 // Required secrets: TIKTOK_APP_KEY, TIKTOK_APP_SECRET
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -703,7 +703,7 @@ Deno.serve(async (req: Request) => {
     platformAccountId = body?.platformAccountId; // preferred — platform_accounts.id, unambiguous per store
     shopId = body?.shopId; // kept for backward compat
     fullSync = body?.fullSync === true;
-    action = body?.action; // "tiktokCategories" | "tiktokCategoryAttributes"
+    action = body?.action; // "tiktokCategories" | "tiktokCategoryAttributes" | "tiktokBrands"
     categoryId = body?.categoryId;
   } catch {
     // no body - sync all shops
@@ -739,13 +739,22 @@ Deno.serve(async (req: Request) => {
   // Partner Center, shops connected before that change get 105005 until
   // they're reconnected. Once a shop re-authorizes, these same calls should
   // start returning real data with no further code change needed.
-  if (action === "tiktokCategories" || action === "tiktokCategoryAttributes") {
+  if (action === "tiktokCategories" || action === "tiktokCategoryAttributes" || action === "tiktokBrands") {
     try {
       const { shopCipher } = await ensureShopCipher(creds, accounts[0]);
-      const path = action === "tiktokCategories"
-        ? "/product/202309/categories"
-        : `/product/202309/categories/${categoryId}/attributes`;
-      const data = await tiktokCall("GET", path, creds, accounts[0], { shop_cipher: shopCipher });
+      const query: Record<string, string> = { shop_cipher: shopCipher };
+      let path: string;
+      if (action === "tiktokCategories") {
+        path = "/product/202309/categories";
+      } else if (action === "tiktokCategoryAttributes") {
+        path = `/product/202309/categories/${categoryId}/attributes`;
+      } else {
+        // Get Brand List — category_id narrows to brands valid for that
+        // category when provided; TikTok allows omitting it for the full list.
+        path = "/product/202309/brands";
+        if (categoryId) query.category_id = categoryId;
+      }
+      const data = await tiktokCall("GET", path, creds, accounts[0], query);
       return new Response(JSON.stringify({ data }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });

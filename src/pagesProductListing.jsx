@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Plus, Store, Percent, Sparkles, CheckCircle2, Bot, Zap,
-  Image as ImageIcon, Upload, Layers, Trash2,
+  Image as ImageIcon, Upload, Layers, Trash2, Video, Truck,
 } from "lucide-react";
 import { PLATFORM_THEME, DB_TO_DEMO_PLATFORM, fmt, supabaseClient } from "./shared.jsx";
 import { KPICard as KPICardImpl } from "./pagesOverviewOrders.jsx";
@@ -12,6 +12,13 @@ import { KPICard as KPICardImpl } from "./pagesOverviewOrders.jsx";
 // the seller's account (no such integration exists — see the file-top
 // data-source note).
 const SHOPEE_SHIPPING_CHANNELS = ["Standard Delivery", "Shopee Xpress", "Poslaju", "J&T Express", "Ninja Van"];
+
+// 包裹重量快捷气泡 (2026-08-24) — common real parcel weights (grams) for a
+// one-tap fill; staff can still type any value. Values are grams since
+// small parts are usually weighed in g, not kg.
+const WEIGHT_QUICK_PRESETS_G = [100, 250, 500, 1000, 2000, 5000];
+const TITLE_MAX_LEN = 255; // real TikTok Shop product-title limit
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024; // 100MB — generous client-side guard, not a confirmed real TikTok limit
 
 // 商品发布中心 (2026-08-24) — data-source note, same spirit as the Ads
 // Costs page's note: this is a real Supabase-backed feature
@@ -54,7 +61,8 @@ const AI_FRAME_TEMPLATES = [
 
 const emptyListingForm = {
   product_id: "", sku: "", title: "", description: "", category: "", image_url: "", base_price: "",
-  brand: "No Brand", weight_kg: "", length_cm: "", width_cm: "", height_cm: "", is_dangerous: false,
+  brand: "No Brand", tiktok_brand_id: "", weight_kg: "", weight_unit: "kg", length_cm: "", width_cm: "", height_cm: "",
+  is_dangerous: false, is_cod: false, video_url: "",
   shopee_shipping_channels: [], shopee_category_leaf_id: "", tiktok_category_leaf_id: "",
   tiktok_real_category_id: "",
   attributes: [],
@@ -227,6 +235,42 @@ export function ProductListingCenter({ t, inventory, stores }) {
     });
   }
 
+  // ---- TikTok 官方品牌库 (2026-08-24, new) — same real-API-first,
+  // graceful-fallback pattern as categories: succeeds once a shop is
+  // re-authorized (see file-top note), falls back to the existing free-text
+  // `brand` input otherwise.
+  const [tiktokBrandsStatus, setTiktokBrandsStatus] = useState("idle"); // idle | loading | ok | error
+  const [tiktokRealBrands, setTiktokRealBrands] = useState([]);
+  async function loadTiktokRealBrands() {
+    const tiktokStore = (stores || []).find((s) => s.platform === "TikTok Shop");
+    if (!tiktokStore) { setTiktokBrandsStatus("error"); return; }
+    setTiktokBrandsStatus("loading");
+    const { data, error } = await callTikTokProductApi("tiktokBrands", { platformAccountId: tiktokStore.id });
+    if (error) { setTiktokBrandsStatus("error"); return; }
+    const list = data?.brands || (Array.isArray(data) ? data : []);
+    setTiktokRealBrands(Array.isArray(list) ? list : []);
+    setTiktokBrandsStatus("ok");
+  }
+
+  // ---- 商品视频上传 (2026-08-24, new) — real upload to the product-videos
+  // Storage bucket (public read, authenticated write — see migration), not
+  // a data: URL like the watermark image (videos are too large for that).
+  const [videoUploading, setVideoUploading] = useState(false);
+  const [videoError, setVideoError] = useState("");
+  async function handleVideoUpload(file) {
+    if (!file) return;
+    if (!file.type.startsWith("video/")) { setVideoError(t("请上传视频文件", "Please upload a video file")); return; }
+    if (file.size > MAX_VIDEO_BYTES) { setVideoError(t("视频文件过大（上限 100MB）", "Video file too large (100MB max)")); return; }
+    setVideoError("");
+    setVideoUploading(true);
+    const path = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const { error } = await supabaseClient.storage.from("product-videos").upload(path, file, { upsert: false });
+    setVideoUploading(false);
+    if (error) { setVideoError(t("上传失败", "Upload failed")); console.error("video upload failed", error); return; }
+    const { data: pub } = supabaseClient.storage.from("product-videos").getPublicUrl(path);
+    setListingForm((prev) => ({ ...prev, video_url: pub.publicUrl }));
+  }
+
   // ---- 新建/编辑主商品发布清单 ----
   const [showListingForm, setShowListingForm] = useState(false);
   const [editingListingId, setEditingListingId] = useState(null);
@@ -238,6 +282,8 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setShopeeL1(""); setShopeeL2(""); setTiktokL1(""); setTiktokL2("");
     setTiktokRealL1(""); setTiktokRealL2(""); setTiktokRealAttrs([]);
     loadTiktokRealCategories();
+    loadTiktokRealBrands();
+    setVideoError("");
     setShowListingForm(true);
   }
   function openEditListing(l) {
@@ -245,12 +291,17 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setListingForm({
       product_id: l.product_id || "", sku: l.sku || "", title: l.title, description: l.description || "",
       category: l.category || "", image_url: l.image_url || "", base_price: String(l.base_price),
-      brand: l.brand || "No Brand",
-      weight_kg: l.weight_kg != null ? String(l.weight_kg) : "",
+      brand: l.brand || "No Brand", tiktok_brand_id: l.tiktok_brand_id || "",
+      // Display value matches the saved unit preference — weight_kg is
+      // always stored canonically in kg (see saveListing), so a 'g'
+      // preference needs converting back for display (500g stored as
+      // 0.5kg should show "500", not "0.5").
+      weight_kg: l.weight_kg != null ? String(l.weight_unit === "g" ? Math.round(l.weight_kg * 1000) : l.weight_kg) : "",
+      weight_unit: l.weight_unit || "kg",
       length_cm: l.length_cm != null ? String(l.length_cm) : "",
       width_cm: l.width_cm != null ? String(l.width_cm) : "",
       height_cm: l.height_cm != null ? String(l.height_cm) : "",
-      is_dangerous: !!l.is_dangerous,
+      is_dangerous: !!l.is_dangerous, is_cod: !!l.is_cod, video_url: l.video_url || "",
       shopee_shipping_channels: Array.isArray(l.shopee_shipping_channels) ? l.shopee_shipping_channels : [],
       shopee_category_leaf_id: l.shopee_category_leaf_id || "",
       tiktok_category_leaf_id: l.tiktok_category_leaf_id || "",
@@ -265,6 +316,8 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setTiktokL1(tiktokLeaf?.level1 || ""); setTiktokL2(tiktokLeaf?.level2 || "");
     setTiktokRealL1(""); setTiktokRealL2(""); setTiktokRealAttrs([]);
     loadTiktokRealCategories();
+    loadTiktokRealBrands();
+    setVideoError("");
     setShowListingForm(true);
   }
   // Picking a real product_id (from `inventory`, the real AutoCount-synced
@@ -283,6 +336,24 @@ export function ProductListingCenter({ t, inventory, stores }) {
     });
   }
 
+  // 重量 g/kg 切换 (2026-08-24, new) — converts the currently-typed number
+  // so switching units doesn't silently change the real weight (500g ->
+  // toggling to kg shows 0.5, not a raw "500").
+  function setWeightUnit(unit) {
+    setListingForm((prev) => {
+      if (unit === prev.weight_unit || !prev.weight_kg) return { ...prev, weight_unit: unit };
+      const n = Number(prev.weight_kg);
+      const converted = unit === "g" ? n * 1000 : n / 1000;
+      return { ...prev, weight_unit: unit, weight_kg: String(+converted.toFixed(3)) };
+    });
+  }
+  function applyWeightPreset(grams) {
+    setListingForm((prev) => ({
+      ...prev,
+      weight_unit: "g",
+      weight_kg: String(grams),
+    }));
+  }
   function toggleShopeeChannel(name) {
     setListingForm((prev) => ({
       ...prev,
@@ -303,6 +374,13 @@ export function ProductListingCenter({ t, inventory, stores }) {
 
   async function saveListing() {
     if (!listingForm.title.trim()) { showToast(t("请填写商品标题", "Please enter a title")); return; }
+    if (listingForm.title.trim().length > TITLE_MAX_LEN) { showToast(t(`商品名称不能超过 ${TITLE_MAX_LEN} 字符`, `Title must be ${TITLE_MAX_LEN} characters or fewer`)); return; }
+    // TikTok requires real package dimensions for shipping calc — force all
+    // three, not just weight (2026-08-24, new).
+    if (!listingForm.length_cm || !listingForm.width_cm || !listingForm.height_cm) {
+      showToast(t("请填写完整的包裹长/宽/高 (cm)", "Please fill in package length/width/height (cm)"));
+      return;
+    }
     // shopee_category_path/tiktok_category_path stay as a materialized
     // [level1,level2,level3] display copy derived from the chosen leaf, so
     // the listing table can show the path without a join.
@@ -327,11 +405,17 @@ export function ProductListingCenter({ t, inventory, stores }) {
       image_url: listingForm.image_url.trim() || null,
       base_price: Number(listingForm.base_price) || 0,
       brand: listingForm.brand.trim() || "No Brand",
-      weight_kg: listingForm.weight_kg ? Number(listingForm.weight_kg) : null,
-      length_cm: listingForm.length_cm ? Number(listingForm.length_cm) : null,
-      width_cm: listingForm.width_cm ? Number(listingForm.width_cm) : null,
-      height_cm: listingForm.height_cm ? Number(listingForm.height_cm) : null,
+      tiktok_brand_id: listingForm.tiktok_brand_id || null,
+      // Canonical storage is always kg regardless of which unit the g/kg
+      // toggle was left on when saving (2026-08-24, new toggle).
+      weight_kg: listingForm.weight_kg ? Number(listingForm.weight_kg) * (listingForm.weight_unit === "g" ? 0.001 : 1) : null,
+      weight_unit: listingForm.weight_unit,
+      length_cm: Number(listingForm.length_cm),
+      width_cm: Number(listingForm.width_cm),
+      height_cm: Number(listingForm.height_cm),
       is_dangerous: listingForm.is_dangerous,
+      is_cod: listingForm.is_cod,
+      video_url: listingForm.video_url || null,
       shopee_shipping_channels: listingForm.shopee_shipping_channels,
       shopee_category_leaf_id: listingForm.shopee_category_leaf_id || null,
       tiktok_category_leaf_id: listingForm.tiktok_category_leaf_id || null,
@@ -575,7 +659,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
     const pairs = v2.length > 0 ? v1.flatMap((a) => v2.map((b) => [a, b])) : v1.map((a) => [a, ""]);
     for (const [a, b] of pairs) {
       const key = `${a}|${b}`;
-      combos.push(existing.get(key) || { spec1_value: a, spec2_value: b, sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: "" });
+      combos.push(existing.get(key) || { spec1_value: a, spec2_value: b, sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: "", weight_kg: "" });
     }
     setVariationRows(combos);
   }
@@ -602,6 +686,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
         spec2_name: spec2Name.trim() || null, spec2_value: r.spec2_value || null,
         sku: r.sku?.trim() || null, price: Number(r.price) || 0, stock: Math.round(Number(r.stock)) || 0,
         image_url: r.image_url?.trim() || null,
+        weight_kg: r.weight_kg !== "" && r.weight_kg != null ? Number(r.weight_kg) : null,
       }));
       const { error } = await supabaseClient.from("product_listing_variations").insert(rows);
       if (error) { showToast(t("保存失败", "Save failed")); console.error("saveVariations insert failed", error); return; }
@@ -842,12 +927,36 @@ export function ProductListingCenter({ t, inventory, stores }) {
               </select>
             </div>
             <div>
-              <div className="text-xs text-slate-400 mb-1">{t("商品标题", "Title")}</div>
-              <input value={listingForm.title} onChange={(e) => setListingForm({ ...listingForm, title: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs text-slate-400">{t("商品标题", "Title")}</div>
+                {/* TikTok 商品名称 255 字符限制 (2026-08-24, new) — real
+                    TikTok Shop title limit. */}
+                <div className={`text-[11px] ${listingForm.title.length > TITLE_MAX_LEN ? "text-rose-500" : "text-slate-300"}`}>{listingForm.title.length}/{TITLE_MAX_LEN}</div>
+              </div>
+              <input value={listingForm.title} onChange={(e) => setListingForm({ ...listingForm, title: e.target.value })} maxLength={TITLE_MAX_LEN} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
             </div>
             <div>
               <div className="text-xs text-slate-400 mb-1">{t("详情描述", "Description")}</div>
               <textarea value={listingForm.description} onChange={(e) => setListingForm({ ...listingForm, description: e.target.value })} rows={3} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+            </div>
+
+            {/* 商品视频 (2026-08-24, new) — real upload to Supabase Storage
+                (product-videos bucket), not a data: URL (too large). */}
+            <div>
+              <div className="text-xs text-slate-400 mb-1 flex items-center gap-1"><Video size={12} /> {t("商品视频（可选）", "Product Video (optional)")}</div>
+              <div className="flex items-center gap-2">
+                <label className={`text-xs px-3 py-2 rounded-lg border cursor-pointer ${videoUploading ? "border-slate-100 text-slate-300" : "border-slate-200 hover:bg-slate-50 text-slate-600"}`}>
+                  <Upload size={12} className="inline mr-1" /> {videoUploading ? t("上传中…", "Uploading…") : t("上传视频", "Upload Video")}
+                  <input type="file" accept="video/*" disabled={videoUploading} onChange={(e) => handleVideoUpload(e.target.files?.[0])} className="hidden" />
+                </label>
+                {listingForm.video_url && (
+                  <button onClick={() => setListingForm({ ...listingForm, video_url: "" })} className="text-xs text-rose-500 hover:text-rose-700">{t("移除", "Remove")}</button>
+                )}
+              </div>
+              {videoError && <div className="text-[11px] text-rose-600 mt-1">{videoError}</div>}
+              {listingForm.video_url && (
+                <video src={listingForm.video_url} controls className="mt-2 w-full max-h-48 rounded-lg border border-slate-200 bg-black" />
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -864,8 +973,27 @@ export function ProductListingCenter({ t, inventory, stores }) {
               <input value={listingForm.image_url} onChange={(e) => setListingForm({ ...listingForm, image_url: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
             </div>
             <div>
-              <div className="text-xs text-slate-400 mb-1">{t("品牌", "Brand")}</div>
-              <input value={listingForm.brand} onChange={(e) => setListingForm({ ...listingForm, brand: e.target.value })} placeholder="No Brand" className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              <div className="text-xs text-slate-400 mb-1">
+                {tiktokBrandsStatus === "ok" ? t("品牌（官方品牌库）", "Brand (official library)") : t("品牌", "Brand")}
+              </div>
+              {tiktokBrandsStatus === "ok" && tiktokRealBrands.length > 0 ? (
+                <select
+                  value={listingForm.tiktok_brand_id}
+                  onChange={(e) => {
+                    const b = tiktokRealBrands.find((x) => String(x.id ?? x.brand_id) === e.target.value);
+                    setListingForm({ ...listingForm, tiktok_brand_id: e.target.value, brand: b?.name || b?.brand_name || listingForm.brand });
+                  }}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                >
+                  <option value="">No Brand</option>
+                  {tiktokRealBrands.map((b) => {
+                    const id = String(b.id ?? b.brand_id ?? "");
+                    return <option key={id} value={id}>{b.name || b.brand_name || id}</option>;
+                  })}
+                </select>
+              ) : (
+                <input value={listingForm.brand} onChange={(e) => setListingForm({ ...listingForm, brand: e.target.value })} placeholder="No Brand" className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              )}
             </div>
 
             {/* 包裹信息 (2026-08-24, new) — real fields both platforms'
@@ -874,33 +1002,60 @@ export function ProductListingCenter({ t, inventory, stores }) {
                 auto-fills from the real linked product when available. */}
             <div className="pt-2 border-t border-slate-100">
               <div className="text-xs font-medium text-slate-500 mb-2">{t("📦 包裹信息", "📦 Package Info")}</div>
-              <div className="grid grid-cols-4 gap-2">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-[11px] text-slate-400">{t("重量", "Weight")}</div>
+                  <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-[11px]">
+                    {["g", "kg"].map((u) => (
+                      <button key={u} onClick={() => setWeightUnit(u)} className={`px-2 py-0.5 ${listingForm.weight_unit === u ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}>{u}</button>
+                    ))}
+                  </div>
+                </div>
+                <input type="number" value={listingForm.weight_kg} onChange={(e) => setListingForm({ ...listingForm, weight_kg: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg mb-1.5" />
+                {/* 快捷气泡 (2026-08-24, new) — one-tap common parcel weights. */}
+                <div className="flex flex-wrap gap-1.5">
+                  {WEIGHT_QUICK_PRESETS_G.map((g) => (
+                    <button key={g} onClick={() => applyWeightPreset(g)} className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 text-slate-500 hover:bg-slate-50">
+                      {g >= 1000 ? `${g / 1000}kg` : `${g}g`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* 长/宽/高强制必填 (2026-08-24, new) — TikTok requires real
+                  package dimensions for shipping calc; enforced in
+                  saveListing(), marked with * here for visibility. */}
+              <div className="grid grid-cols-3 gap-2 mt-2">
                 <div>
-                  <div className="text-[11px] text-slate-400 mb-1">{t("重量 (kg)", "Weight (kg)")}</div>
-                  <input type="number" value={listingForm.weight_kg} onChange={(e) => setListingForm({ ...listingForm, weight_kg: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
+                  <div className="text-[11px] text-slate-400 mb-1">{t("长 (cm) *", "L (cm) *")}</div>
+                  <input type="number" value={listingForm.length_cm} onChange={(e) => setListingForm({ ...listingForm, length_cm: e.target.value })} required className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
                 </div>
                 <div>
-                  <div className="text-[11px] text-slate-400 mb-1">{t("长 (cm)", "L (cm)")}</div>
-                  <input type="number" value={listingForm.length_cm} onChange={(e) => setListingForm({ ...listingForm, length_cm: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
+                  <div className="text-[11px] text-slate-400 mb-1">{t("宽 (cm) *", "W (cm) *")}</div>
+                  <input type="number" value={listingForm.width_cm} onChange={(e) => setListingForm({ ...listingForm, width_cm: e.target.value })} required className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
                 </div>
                 <div>
-                  <div className="text-[11px] text-slate-400 mb-1">{t("宽 (cm)", "W (cm)")}</div>
-                  <input type="number" value={listingForm.width_cm} onChange={(e) => setListingForm({ ...listingForm, width_cm: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-400 mb-1">{t("高 (cm)", "H (cm)")}</div>
-                  <input type="number" value={listingForm.height_cm} onChange={(e) => setListingForm({ ...listingForm, height_cm: e.target.value })} className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
+                  <div className="text-[11px] text-slate-400 mb-1">{t("高 (cm) *", "H (cm) *")}</div>
+                  <input type="number" value={listingForm.height_cm} onChange={(e) => setListingForm({ ...listingForm, height_cm: e.target.value })} required className="w-full px-2 py-2 text-sm border border-slate-200 rounded-lg" />
                 </div>
               </div>
             </div>
 
-            {/* TikTok 危险品声明 */}
-            <div>
-              <div className="text-xs font-medium text-slate-500 mb-1">{t("⚠️ TikTok 合规声明", "⚠️ TikTok Compliance")}</div>
-              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
-                <input type="checkbox" checked={listingForm.is_dangerous} onChange={(e) => setListingForm({ ...listingForm, is_dangerous: e.target.checked })} className="h-3.5 w-3.5 rounded border-slate-300" />
-                {t("包含电池/液体/危险品 (Hazardous Goods/Batteries)", "Contains batteries/liquid/hazardous goods")}
-              </label>
+            {/* TikTok 危险品声明 + COD */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs font-medium text-slate-500 mb-1">{t("⚠️ TikTok 合规声明", "⚠️ TikTok Compliance")}</div>
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={listingForm.is_dangerous} onChange={(e) => setListingForm({ ...listingForm, is_dangerous: e.target.checked })} className="h-3.5 w-3.5 rounded border-slate-300" />
+                  {t("包含电池/液体/危险品", "Contains batteries/liquid/hazardous")}
+                </label>
+              </div>
+              <div>
+                <div className="text-xs font-medium text-slate-500 mb-1 flex items-center gap-1"><Truck size={12} /> {t("货到付款", "Cash on Delivery")}</div>
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={listingForm.is_cod} onChange={(e) => setListingForm({ ...listingForm, is_cod: e.target.checked })} className="h-3.5 w-3.5 rounded border-slate-300" />
+                  {t("支持 COD (Cash on Delivery)", "Support COD")}
+                </label>
+              </div>
             </div>
 
             {/* Shopee 物流渠道 */}
@@ -1183,7 +1338,10 @@ export function ProductListingCenter({ t, inventory, stores }) {
                       <th className="py-2 px-2 font-medium">{t("商家 SKU", "Seller SKU")}</th>
                       <th className="py-2 px-2 font-medium">{t("价格 (RM)", "Price (RM)")}</th>
                       <th className="py-2 px-2 font-medium">{t("库存", "Stock")}</th>
-                      <th className="py-2 px-2 font-medium">{t("规格图片 URL", "Spec Image URL")}</th>
+                      <th className="py-2 px-2 font-medium">{t("规格图片", "Spec Image")}</th>
+                      {/* SKU 级重量 (2026-08-24, new) — some variants (e.g.
+                          different sizes) really do weigh differently. */}
+                      <th className="py-2 px-2 font-medium">{t("重量 (kg)", "Weight (kg)")}</th>
                       <th className="py-2 px-2 font-medium w-6" />
                     </tr>
                   </thead>
@@ -1194,7 +1352,13 @@ export function ProductListingCenter({ t, inventory, stores }) {
                         <td className="py-1.5 px-2"><input value={r.sku || ""} onChange={(e) => updateVariationField(idx, "sku", e.target.value)} className="w-24 px-1.5 py-1 border border-slate-200 rounded" /></td>
                         <td className="py-1.5 px-2"><input type="number" value={r.price} onChange={(e) => updateVariationField(idx, "price", e.target.value)} className="w-20 px-1.5 py-1 border border-slate-200 rounded" /></td>
                         <td className="py-1.5 px-2"><input type="number" value={r.stock} onChange={(e) => updateVariationField(idx, "stock", e.target.value)} className="w-16 px-1.5 py-1 border border-slate-200 rounded" /></td>
-                        <td className="py-1.5 px-2"><input value={r.image_url || ""} onChange={(e) => updateVariationField(idx, "image_url", e.target.value)} className="w-36 px-1.5 py-1 border border-slate-200 rounded" /></td>
+                        <td className="py-1.5 px-2">
+                          <div className="flex items-center gap-1.5">
+                            {r.image_url ? <img src={r.image_url} alt="" className="h-7 w-7 rounded object-cover border border-slate-200 shrink-0" /> : <div className="h-7 w-7 rounded bg-slate-100 border border-slate-200 shrink-0" />}
+                            <input value={r.image_url || ""} onChange={(e) => updateVariationField(idx, "image_url", e.target.value)} className="w-28 px-1.5 py-1 border border-slate-200 rounded" />
+                          </div>
+                        </td>
+                        <td className="py-1.5 px-2"><input type="number" value={r.weight_kg ?? ""} onChange={(e) => updateVariationField(idx, "weight_kg", e.target.value)} className="w-16 px-1.5 py-1 border border-slate-200 rounded" /></td>
                         <td className="py-1.5 px-2"><button onClick={() => removeVariationRow(idx)} className="text-rose-400 hover:text-rose-600"><Trash2 size={13} /></button></td>
                       </tr>
                     ))}
