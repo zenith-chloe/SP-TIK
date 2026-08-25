@@ -871,6 +871,85 @@ Deno.serve(async (req: Request) => {
     }
   }
 
+  // 达人佣金同步 (2026-08-25, new) — live-verified real endpoint (a temp
+  // debug probe confirmed a genuine 200 response with real creator_username/
+  // commission_rate/estimated_paid_commission data, previously 105005-
+  // blocked before this shop's reauth added seller.affiliate_collaboration
+  // .read to its scopes). One row per order+sku_id, upserted so a later
+  // run naturally picks up actual_* fields once TikTok moves a row past
+  // "To-SETTLE" (empty {} pre-settlement is normalized to null, not 0, so
+  // "not yet settled" stays distinguishable from "settled at zero" — see
+  // the table's own migration comment). Paginated within one invocation's
+  // time budget same as the main order walk; a stray remaining page just
+  // gets picked up by the next cron tick since nothing here is order-
+  // dependent per page (every page's rows are upserted independently).
+  if (action === "syncAffiliateCommissions") {
+    const deadline = Date.now() + TIME_BUDGET_MS;
+    let totalRows = 0;
+    for (const account of accounts) {
+      try {
+        const { shopCipher } = await ensureShopCipher(creds, account);
+        let pageToken: string | undefined;
+        let pages = 0;
+        do {
+          const query: Record<string, string> = { shop_cipher: shopCipher, page_size: "50" };
+          if (pageToken) query.page_token = pageToken;
+          const data = await tiktokCall("POST", "/affiliate_seller/202410/orders/search", creds, account, query, {});
+          const orders = data.orders ?? [];
+          pageToken = data.next_page_token || undefined;
+          pages++;
+
+          // amountOf() reads TikTok's {amount, currency} shape; an empty {}
+          // (pre-settlement actual_* fields) becomes null, never 0 — see
+          // migration comment on why that distinction matters.
+          // deno-lint-ignore no-explicit-any
+          const amountOf = (m: any): number | null => (m && typeof m.amount === "string" ? Number(m.amount) : null);
+
+          const rows: Record<string, unknown>[] = [];
+          // deno-lint-ignore no-explicit-any
+          for (const o of orders as any[]) {
+            for (const sku of o.skus ?? []) {
+              rows.push({
+                platform_account_id: account.id,
+                order_no: o.id,
+                sku_id: sku.sku_id,
+                product_id: sku.product_id ?? null,
+                creator_username: sku.creator_username ?? null,
+                content_type: sku.content_type ?? null,
+                content_id: sku.content_id ?? null,
+                commission_model: sku.commission_model ?? null,
+                commission_rate: sku.commission_rate != null ? Number(sku.commission_rate) : null,
+                open_collaboration_id: sku.open_collaboration_id ?? null,
+                settlement_status: sku.settlement_status ?? null,
+                currency: sku.price?.currency ?? "MYR",
+                estimated_commission_base: amountOf(sku.estimated_commission_base),
+                estimated_paid_commission: amountOf(sku.estimated_paid_commission),
+                estimated_paid_partner_commission: amountOf(sku.estimated_paid_partner_commission),
+                estimated_paid_shop_ads_commission: amountOf(sku.estimated_paid_shop_ads_commission),
+                actual_commission_base: amountOf(sku.actual_commission_base),
+                actual_paid_commission: amountOf(sku.actual_paid_commission),
+                actual_paid_partner_commission: amountOf(sku.actual_paid_partner_commission),
+                actual_paid_shop_ads_commission: amountOf(sku.actual_paid_shop_ads_commission),
+                synced_at: new Date().toISOString(),
+              });
+            }
+          }
+          if (rows.length > 0) {
+            const { error: upsertErr } = await supabase.from("tiktok_affiliate_commissions").upsert(rows, { onConflict: "order_no,sku_id" });
+            if (!upsertErr) totalRows += rows.length;
+            else {
+              await supabase.from("sync_logs").insert({ action: "tiktok_affiliate_sync", status: "failed", message: `shop ${account.shop_id}: ${upsertErr.message}` });
+            }
+          }
+        } while (pageToken && pages < 50 && Date.now() < deadline);
+      } catch (e) {
+        await supabase.from("sync_logs").insert({ action: "tiktok_affiliate_sync", status: "failed", message: `shop ${account.shop_id}: ${(e as Error).message}` });
+      }
+    }
+    await supabase.from("sync_logs").insert({ action: "tiktok_affiliate_sync", status: "success", message: `synced ${totalRows} affiliate commission row(s)` });
+    return new Response(JSON.stringify({ ok: true, rows: totalRows }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+
   const url = new URL(req.url);
   if (url.searchParams.get("debug") === "1") {
     try {
