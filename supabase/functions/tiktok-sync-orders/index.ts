@@ -80,10 +80,23 @@
 // consent flow, and that screen never redirects back to
 // tiktok-auth-callback with a code (checked directly: platform_accounts'
 // auth_time/tokens were completely unchanged after the seller clicked
-// through it). `action: "refreshToken"` below is the fix: a silent
-// refresh_token grant needs no browser hop at all and is tried first by
-// the frontend's "更新连接" button, falling back to the OAuth link only
-// when there's no usable refresh_token (needsFullReauth: true).
+// through it) — TikTok's own message on that screen: "This app or
+// service cannot be renewed because it has already been authorized for
+// an unlimited time." `action: "verifyConnection"` below is the fix,
+// tried first by the frontend's "更新连接" button: it proves whatever
+// credential is on file (access_token, or refresh_token exchanged for a
+// fresh one) still actually authenticates with a real API call before
+// ever marking the shop 'connected' — TikTok's server-side grant being
+// "permanent" is a separate fact from whether OUR stored token copy
+// still exists/works, so status is never blindly toggled without that
+// real check. Falls back to the OAuth link only when there's truly
+// nothing to verify (needsFullReauth: true) — e.g. a shop whose
+// access_token/refresh_token were both cleared by 退出连接 and hasn't
+// completed a real reauth since; for that case the seller must cancel
+// the app's authorization in TikTok Seller Center (App Store > My apps
+// and incidents > Cancel authorization) before re-running the authorize
+// link, since "renew" refuses outright once TikTok considers the grant
+// permanent.
 //
 // Required secrets: TIKTOK_APP_KEY, TIKTOK_APP_SECRET
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -721,23 +734,37 @@ Deno.serve(async (req: Request) => {
     platformAccountId = body?.platformAccountId; // preferred — platform_accounts.id, unambiguous per store
     shopId = body?.shopId; // kept for backward compat
     fullSync = body?.fullSync === true;
-    action = body?.action; // "tiktokCategories" | "tiktokCategoryAttributes" | "tiktokBrands" | "refreshToken"
+    action = body?.action; // "tiktokCategories" | "tiktokCategoryAttributes" | "tiktokBrands" | "verifyConnection"
     categoryId = body?.categoryId;
   } catch {
     // no body - sync all shops
   }
 
-  // "更新连接" 静默续期 (2026-08-25, new) — for a shop TikTok already
-  // considers permanently/long-term authorized ("unlimited time"), hitting
-  // the browser OAuth authorize link shows TikTok's own "Renew" screen,
-  // which — confirmed live, twice — never redirects back to
-  // tiktok-auth-callback with a fresh code (no DB row change at all after
-  // clicking through it). The refresh_token grant needs no browser hop and
-  // no seller action at all, so it's tried first from the frontend; this
-  // action just wraps refreshTikTokToken for a single account, looked up
-  // WITHOUT the status='connected' filter below (an 'expired' shop with a
-  // still-valid refresh_token must be reachable here too).
-  if (action === "refreshToken") {
+  // "更新连接" 验证并重新连接 (2026-08-25; revised) — for a shop TikTok
+  // already considers permanently/long-term authorized ("unlimited
+  // time"), TikTok's own Renew screen refuses to proceed at all ("This
+  // app or service cannot be renewed because it has already been
+  // authorized for an unlimited time") and never redirects back to
+  // tiktok-auth-callback (confirmed live, twice: platform_accounts'
+  // auth_time/tokens were completely unchanged after clicking through
+  // it). IMPORTANT distinction this action enforces: TikTok's permanent
+  // *grant* record is not the same thing as OUR stored token copy — a
+  // shop can be "permanently authorized" on TikTok's side while our own
+  // access_token/refresh_token are both null (e.g. after 退出连接
+  // deliberately cleared them). Status is only ever flipped to
+  // 'connected' here AFTER a real TikTok API call actually succeeds with
+  // whatever credential we have on file — never a blind toggle. Three
+  // cases:
+  //   1. access_token on file → call a cheap real endpoint with it
+  //      directly; tiktokCall's own 105002-retry already refreshes via
+  //      refresh_token if that access_token turns out to be expired.
+  //   2. no access_token but a refresh_token exists → refresh first, then
+  //      the same real-call check.
+  //   3. neither on file → nothing to verify; needsFullReauth true. This
+  //      is the current state for a shop that went through 退出连接 and
+  //      hasn't completed a real OAuth reauth since — no code path can
+  //      responsibly mark that "connected" without a working credential.
+  if (action === "verifyConnection") {
     if (!platformAccountId) {
       return new Response(JSON.stringify({ error: "platformAccountId required" }), {
         status: 400,
@@ -746,7 +773,7 @@ Deno.serve(async (req: Request) => {
     }
     const { data: acct, error: acctErr } = await supabase
       .from("platform_accounts")
-      .select("id, refresh_token")
+      .select("id, shop_id, shop_cipher, access_token, refresh_token")
       .eq("id", platformAccountId)
       .eq("platform", "tiktok")
       .maybeSingle();
@@ -756,24 +783,27 @@ Deno.serve(async (req: Request) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-    if (!acct.refresh_token) {
-      // No stored refresh_token (e.g. after 退出连接, or never connected) —
-      // there's nothing to silently refresh; caller should fall back to
-      // the OAuth authorize link.
-      return new Response(JSON.stringify({ error: "no refresh_token on file", needsFullReauth: true }), {
+    if (!acct.access_token && !acct.refresh_token) {
+      // No credential on file at all — TikTok's server-side grant being
+      // "permanent" doesn't help us here; there is nothing to verify.
+      return new Response(JSON.stringify({ error: "no credentials on file for this shop", needsFullReauth: true }), {
         status: 409,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
     try {
-      const account = { id: acct.id, access_token: "", refresh_token: acct.refresh_token };
-      await refreshTikTokToken(creds, account);
+      const account = { id: acct.id, shop_id: acct.shop_id, shop_cipher: acct.shop_cipher, access_token: acct.access_token ?? "", refresh_token: acct.refresh_token ?? "" };
+      if (!account.access_token && account.refresh_token) {
+        await refreshTikTokToken(creds, account);
+      }
+      // Real, cheap call — proves the credential actually authenticates
+      // right now, not just that a value happens to be stored.
+      await tiktokCall("GET", "/authorization/202309/shops", creds, account, {});
+      await supabase.from("platform_accounts").update({ status: "connected" }).eq("id", acct.id);
       return new Response(JSON.stringify({ ok: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     } catch (e) {
-      // refresh_token itself invalid/expired — this really does need a
-      // full browser reauth, no way around it.
       await supabase.from("platform_accounts").update({ status: "expired" }).eq("id", acct.id);
       return new Response(JSON.stringify({ error: (e as Error).message, needsFullReauth: true }), {
         status: 409,

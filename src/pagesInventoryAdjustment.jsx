@@ -465,32 +465,38 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
     }));
   }
 
-  // 更新连接 (2026-08-25; revised same day) — TikTok shows its own "Renew"
-  // screen instead of a full consent flow for a shop it already considers
-  // long-term authorized, and — confirmed live, twice, via direct DB
-  // check — that screen never redirects back to tiktok-auth-callback with
-  // a fresh code, so the browser-hop path alone cannot update the token
-  // for such a shop. Since a silent refresh_token exchange needs no
-  // browser/seller action at all and doesn't touch this Renew screen,
-  // that's tried FIRST; the OAuth authorize link (tiktok-auth-start /
-  // tiktok-auth-callback, same as the original "连接" button) is only
-  // opened as a fallback when there's no usable refresh_token (e.g. after
-  // 退出连接, or the refresh_token itself has expired) — those are real
-  // "need a full reauth" cases where a browser hop is unavoidable either
-  // way. account_name / historical orders / products / stock are
-  // untouched either way. ?u= carries the current staff email through so
-  // a fallback OAuth callback can still attribute updated_by.
+  // 更新连接 (2026-08-25; revised twice) — TikTok's own Renew screen
+  // outright refuses for a shop it considers permanently authorized
+  // ("This app or service cannot be renewed because it has already been
+  // authorized for an unlimited time") and — confirmed live, via direct
+  // DB check — never redirects back to tiktok-auth-callback either way.
+  // IMPORTANT: TikTok's permanent *grant* on their side is not the same
+  // thing as our own stored access_token/refresh_token — a shop can be
+  // "permanently authorized" there while we hold no usable credential at
+  // all (e.g. after 退出连接 cleared it), so status is never flipped to
+  // "已连接" just because TikTok says the grant is permanent. This calls
+  // the edge function's "verifyConnection" action, which only marks the
+  // store connected AFTER a real TikTok API call actually succeeds with
+  // whatever credential is on file (refreshing first if only a
+  // refresh_token remains) — never a blind local toggle. The OAuth
+  // authorize link (same tiktok-auth-start / tiktok-auth-callback as the
+  // original "连接" button) is only opened as a fallback when there is
+  // truly no usable credential to verify (needsFullReauth) — that's a
+  // real "needs a fresh seller reauth" case a browser hop can't avoid.
+  // account_name / historical orders / products / stock are untouched
+  // either way. ?u= carries the current staff email through so a
+  // fallback OAuth callback can still attribute updated_by.
   const [updateState, setUpdateState] = useState({}); // { [storeId]: { status: "idle"|"refreshing"|"success"|"error", message } }
   async function updateConnection(storeId) {
     setUpdateState((prev) => ({ ...prev, [storeId]: { status: "refreshing", message: "" } }));
-    const { error } = await supabaseClient.functions.invoke("tiktok-sync-orders", { body: { action: "refreshToken", platformAccountId: storeId } });
+    const { error } = await supabaseClient.functions.invoke("tiktok-sync-orders", { body: { action: "verifyConnection", platformAccountId: storeId } });
     if (!error) {
-      setUpdateState((prev) => ({ ...prev, [storeId]: { status: "success", message: t("已静默续期连接（无需重新登录）", "Connection refreshed silently (no login needed)") } }));
+      setUpdateState((prev) => ({ ...prev, [storeId]: { status: "success", message: t("已验证并重新连接（无需重新登录）", "Verified and reconnected (no login needed)") } }));
       onRefresh?.();
       return;
     }
-    // needsFullReauth (409) — no refresh_token on file, or it's itself
-    // invalid: fall back to the real OAuth authorize link.
+    // needsFullReauth (409) — no credential on file, or it didn't actually
+    // authenticate: fall back to the real OAuth authorize link.
     setUpdateState((prev) => ({ ...prev, [storeId]: { status: "idle", message: "" } }));
     const qs = currentUserEmail ? `?u=${encodeURIComponent(currentUserEmail)}` : "";
     window.open(`${SUPABASE_URL}/functions/v1/tiktok-auth-start${qs}`, "_blank");
