@@ -142,6 +142,24 @@ function isInstantOrder(o) {
   return TIKTOK_INSTANT_DELIVERY_OPTIONS.has(o.deliveryOption) || (o.courier || "").toLowerCase().includes("instant");
 }
 
+// 投递失败 real status mapping (2026-08-26, new) — TikTok's synced order data
+// has never actually carried a literal "FAILED_DELIVERY" value (checked live
+// against 7,400+ real orders, 0 rows), but the explicit request names the
+// real TikTok values a delivery failure would carry if/when TikTok starts
+// returning one; RETURN_TO_SENDER/DELIVERY_FAILED/UNDELIVERED included
+// alongside FAILED_DELIVERY for the same reason. Shopee's real analogous
+// state is TO_RETURN ("item being returned to seller after a failed/refused
+// delivery" — Shopee's actual status, 4 real rows exist today, confirmed
+// live). Additive OR across every value, same pattern as
+// TIKTOK_INSTANT_DELIVERY_OPTIONS above — whichever of these a platform
+// actually starts returning is picked up immediately, no further code
+// change needed; today's count stays honest (real data, not fabricated).
+const TIKTOK_FAILED_DELIVERY_STATUSES = new Set(["FAILED_DELIVERY", "DELIVERY_FAILED", "UNDELIVERED", "RETURN_TO_SENDER"]);
+const SHOPEE_FAILED_DELIVERY_STATUSES = new Set(["TO_RETURN"]);
+function isFailedDeliveryOrder(o) {
+  return TIKTOK_FAILED_DELIVERY_STATUSES.has(o.platformStatus) || SHOPEE_FAILED_DELIVERY_STATUSES.has(o.platformStatus);
+}
+
 // Local calendar-day string (2026-08-26, new) — o.shipDeadline is a raw
 // timestamptz string from Postgres (e.g. "2026-08-26T23:59:59+00:00" — real
 // UTC instant); `.slice(0, 10)` used to read it used to just grab the UTC
@@ -733,9 +751,19 @@ const ORDER_STATUS_LABELS = {
   inTransit: { zh: "运输中", en: "In Transit" }, // = real platformStatus === "IN_TRANSIT" (2026-07-29: was the dead o.status==="物流中")
   delivered: { zh: "已送达", en: "Delivered" }, // = real platformStatus === "DELIVERED" only (2026-08-05: dropped COMPLETED — verified live against TikTok's own API total_count per status: DELIVERED=408, COMPLETED=5653, these are two distinct Seller Center buckets, not one; COMPLETED orders still show under 全部, just no longer inflate this card)
   completed: { zh: "已完成", en: "Completed" }, // = real platformStatus === "COMPLETED" — identical definition on both platforms (2026-08-17, new combo-card bottom half, paired with 已送达)
-  failed: { zh: "投递失败", en: "Delivery Failed" }, // no real data yet
+  // 2026-08-26: was "no real data yet" (TikTok's synced order data has
+  // never carried a literal FAILED_DELIVERY value) — now a real, clickable
+  // card/filter via isFailedDeliveryOrder() above, covering every real
+  // status value a delivery failure could carry on either platform. Still
+  // reads 0 today if no real order currently has one of those statuses —
+  // that stays an honest count, not a bug.
+  failed: { zh: "投递失败", en: "Delivery Failed" },
   returned: { zh: "退货/退款", en: "Return/Refund" }, // = o.status === "退款中"
-  cancelled: { zh: "已取消", en: "Cancelled" }, // = o.status === "已取消"
+  // 2026-08-26: card summary (count + "今天取消 N") removed from the top
+  // grid per explicit request — the chip below (STATUS_CHIPS) is now the
+  // ONLY way to see 已取消 orders, unchanged otherwise (same real
+  // o.status === "已取消" condition, same table view once clicked into).
+  cancelled: { zh: "已取消", en: "Cancelled" },
 };
 
 // Card border is neutral gray by default; icon/number colors are permanent
@@ -743,9 +771,10 @@ const ORDER_STATUS_LABELS = {
 // matches the status chip row's values below purely so the card can pick up
 // the same unified purple highlight the chips use when that exact status is
 // selected — a visual link only, not a click target (cards still have no
-// onClick, still can't change the filter themselves). 未付款/投递失败 have no
-// filterValue (same as their disabled chip counterparts) so they can never
-// highlight.
+// onClick, still can't change the filter themselves). 未付款 has no
+// filterValue (same as its disabled chip counterpart) so it can never
+// highlight. 投递失败 (2026-08-26) now has a real filterValue — see
+// isFailedDeliveryOrder() above.
 const ORDER_CENTER_CARDS = [
   { key: "all", ...ORDER_STATUS_LABELS.all, filterValue: "全部", iconBg: "bg-gradient-to-br from-amber-400 to-amber-600", iconColor: "text-white", numberColor: "text-amber-600", icon: Package, match: () => true },
   { key: "toShip", ...ORDER_STATUS_LABELS.toShip, filterValue: "__to_ship__", iconBg: "bg-gradient-to-br from-red-400 to-red-600", iconColor: "text-white", numberColor: "text-red-600", icon: PackagePlus, match: (o) => o.platformStatus === "AWAITING_SHIPMENT" },
@@ -764,21 +793,18 @@ const ORDER_CENTER_CARDS = [
   // 待取货. Confirmed it never overlaps 待取货's own AWAITING_COLLECTION/
   // PROCESSED match above.
   { key: "delivered", ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__", iconBg: "bg-gradient-to-br from-green-400 to-green-600", iconColor: "text-white", numberColor: "text-green-600", icon: CheckCircle, match: (o) => o.platformStatus === "DELIVERED" || (o.platform === "Shopee" && (o.platformStatus === "COMPLETED" || o.platformStatus === "TO_CONFIRM_RECEIVE")) },
+  // 投递失败 (2026-08-26, now real/clickable — was a plain non-clickable
+  // half of a split card with a narrower match) — see isFailedDeliveryOrder()
+  // above for the full real-status mapping and rationale.
+  { key: "failed", ...ORDER_STATUS_LABELS.failed, filterValue: "__failed_delivery__", iconBg: "bg-gradient-to-br from-slate-300 to-slate-500", iconColor: "text-white", numberColor: "text-slate-500", icon: AlertTriangle, match: isFailedDeliveryOrder },
 ];
-
-// 8th grid slot: 投递失败 (top, gray, no filterValue — never highlights) +
-// 已取消 (bottom, orange, filterValue "已取消" — highlights the whole shared
-// outer border, same as any other card, when that chip is selected).
-const FAILED_CANCELLED_SPLIT_CARD = {
-  top: { ...ORDER_STATUS_LABELS.failed, iconBg: "bg-gradient-to-br from-slate-300 to-slate-500", iconColor: "text-white", numberColor: "text-slate-500", icon: AlertTriangle, match: (o) => o.platformStatus === "FAILED_DELIVERY" || o.platformStatus === "UNDELIVERED" },
-  bottom: { ...ORDER_STATUS_LABELS.cancelled, filterValue: "已取消", iconBg: "bg-gradient-to-br from-orange-400 to-orange-600", iconColor: "text-white", numberColor: "text-orange-600", icon: XCircle, match: (o) => o.orderStatus === "cancelled" },
-};
 
 // Merged into one shared card frame (2026-08-05, UI-only): 未付款 (top, no
 // filterValue — was never clickable, unchanged) + 退货/退款 (bottom,
-// filterValue "退款中", was already clickable) — same layout pattern as
-// FAILED_CANCELLED_SPLIT_CARD above, same underlying cardCounts/match, just
-// grouped into one box instead of two separate grid cells.
+// filterValue "退款中", was already clickable) — same "shared frame, two
+// halves" pattern the old 投递失败+已取消 split card used before 已取消's
+// summary was removed from the grid (2026-08-26) and 投递失败 became its
+// own plain single card in ORDER_CENTER_CARDS above.
 const UNPAID_RETURNED_SPLIT_CARD = {
   top: { ...ORDER_STATUS_LABELS.unpaid, iconBg: "bg-gradient-to-br from-pink-400 to-pink-600", iconColor: "text-white", numberColor: "text-pink-600", icon: CreditCard, match: (o) => o.platformStatus === "UNPAID" },
   bottom: { ...ORDER_STATUS_LABELS.returned, filterValue: "退款中", iconBg: "bg-gradient-to-br from-rose-400 to-rose-600", iconColor: "text-white", numberColor: "text-rose-600", icon: RotateCcw, match: (o) => o.orderStatus === "returned" },
@@ -1025,7 +1051,9 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
     { ...ORDER_STATUS_LABELS.toPickup, filterValue: "__to_pickup__" },
     { ...ORDER_STATUS_LABELS.inTransit, filterValue: "__in_transit__" },
     { ...ORDER_STATUS_LABELS.delivered, filterValue: "__delivered__" },
-    { ...ORDER_STATUS_LABELS.failed, disabled: true },
+    // 2026-08-26: real filterValue now (was disabled — see
+    // isFailedDeliveryOrder() and ORDER_CENTER_CARDS above).
+    { ...ORDER_STATUS_LABELS.failed, filterValue: "__failed_delivery__" },
     { ...ORDER_STATUS_LABELS.returned, filterValue: "退款中" },
     { ...ORDER_STATUS_LABELS.cancelled, filterValue: "已取消" },
   ];
@@ -1157,8 +1185,12 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       // AWAITING_COLLECTION/PROCESSED).
       isShopee ? base().in("platform_status", ["DELIVERED", "COMPLETED", "TO_CONFIRM_RECEIVE"]) : base().eq("platform_status", "DELIVERED"),
       base().eq("order_status", "returned"),
-      base().eq("platform_status", "FAILED_DELIVERY"),
-      base().eq("platform_status", "UNDELIVERED"),
+      // 投递失败 (2026-08-26, widened) — was FAILED_DELIVERY/UNDELIVERED only
+      // (2 separate queries); now one query covering every real status value
+      // a delivery failure could carry on either platform, same set
+      // isFailedDeliveryOrder()/ORDER_CENTER_CARDS' "failed" card use — see
+      // that function's own comment for the full list + rationale.
+      base().in("platform_status", [...TIKTOK_FAILED_DELIVERY_STATUSES, ...SHOPEE_FAILED_DELIVERY_STATUSES]),
       base().eq("order_status", "cancelled"),
       // 今天取消: no dedicated "cancelled_at" column exists (not adding one
       // per explicit instruction), so this uses the existing `updated_at`
@@ -1184,7 +1216,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       // summing both at once.
       base().eq("platform_status", "COMPLETED"),
       excludeInstant(baseRows().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"])).limit(20000),
-    ]).then(([all_, unpaid, toShip, toPickup, inTransit, delivered, returned, failedA, failedB, cancelled_, cancelledToday, instantToProcess, instantProcessed, completed, toShipRows]) => {
+    ]).then(([all_, unpaid, toShip, toPickup, inTransit, delivered, returned, failed, cancelled_, cancelledToday, instantToProcess, instantProcessed, completed, toShipRows]) => {
       if (cancelled) return;
       setCardCounts({
         all: all_.count ?? 0,
@@ -1194,7 +1226,7 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         inTransit: inTransit.count ?? 0,
         delivered: delivered.count ?? 0,
         returned: returned.count ?? 0,
-        failed: (failedA.count ?? 0) + (failedB.count ?? 0),
+        failed: failed.count ?? 0,
         cancelled: cancelled_.count ?? 0,
         cancelledToday: cancelledToday.count ?? 0,
         instantToProcess: instantToProcess.count ?? 0,
@@ -1368,6 +1400,12 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
         // identical definition on both platforms; does not touch the
         // __delivered__ branch above at all.
         if (o.platformStatus !== "COMPLETED") return false;
+      } else if (statusFilter === "__failed_delivery__") {
+        // 投递失败 (2026-08-26, new — card/chip now real+clickable, was
+        // previously display-only). Same isFailedDeliveryOrder() the card's
+        // own count and the chip both key off, so clicking either is
+        // guaranteed to show exactly what it counted.
+        if (!isFailedDeliveryOrder(o)) return false;
       } else if (statusFilter !== "全部" && o.status !== statusFilter) {
         return false;
       }
@@ -1604,11 +1642,12 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
             `statusFilter` its matching chip below does — same `filterValue`,
             same `setStatusFilter` call, so results are guaranteed identical
             to clicking the chip, not a separate filter path. Only cards with
-            a `filterValue` are clickable (未付款/投递失败 have none — no real
-            status to reuse, so they stay plain, per "不要重新定义状态，只复用
-            现在已经确认好的 mapping"). Border goes purple when active — same
-            unified purple the chip row uses; icon/number colors and label
-            text never change either way. */}
+            a `filterValue` are clickable (未付款 has none — no real status to
+            reuse, stays plain, per "不要重新定义状态，只复用现在已经确认好的
+            mapping"; 投递失败 gained a real one 2026-08-26, see
+            isFailedDeliveryOrder() above). Border goes purple when active —
+            same unified purple the chip row uses; icon/number colors and
+            label text never change either way. */}
         <div className={`px-5 py-3 ${theme.bgWash} grid grid-cols-2 md:grid-cols-4 gap-3`}>
           {/* "delivered" is rendered separately now, as the top half of the
               已送达/已完成 combo card below (2026-08-17 restructure) — filtered
@@ -1661,44 +1700,17 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
               );
             })}
           </div>
-          {/* 8th slot: 投递失败 + 已取消 in one card — same outer rounded/
-              background as the other 7, each half reusing the same icon-
-              then-label-then-number vertical stack (just smaller) so it reads
-              as one unified stat card. Only the 已取消 half is clickable (same
-              filterValue its chip uses); 投递失败 has no filterValue, stays
-              plain. The shared outer border goes purple when 已取消 is active. */}
-          <div className={`bg-white rounded-2xl border-2 ${statusFilter === "已取消" ? "border-purple-400" : "border-slate-200"} flex flex-col divide-y divide-slate-100 card-3d`}>
-            {[FAILED_CANCELLED_SPLIT_CARD.top, FAILED_CANCELLED_SPLIT_CARD.bottom].map((half) => {
-              // 已取消: main number restored to the true total (cardCounts.cancelled,
-              // already fetched above, order_status==='cancelled', no date filter) —
-              // "今天取消" shown as a separate small line below using the other
-              // already-fetched value (cardCounts.cancelledToday). No new query.
-              const isCancelled = half.filterValue === "已取消";
-              const count = (isCancelled ? cardCounts.cancelled : cardCounts.failed) ?? all.filter(half.match).length;
-              const Icon = half.icon;
-              const clickable = half.filterValue !== undefined;
-              const HalfTag = clickable ? "button" : "div";
-              return (
-                <HalfTag
-                  key={half.zh}
-                  type={clickable ? "button" : undefined}
-                  onClick={clickable ? () => setStatusFilter(half.filterValue) : undefined}
-                  className={`flex-1 w-full flex flex-col items-center justify-center gap-1 py-1.5 ${clickable ? "cursor-pointer hover:bg-slate-50" : ""}`}
-                >
-                  <div className={`h-6 w-6 rounded-full flex items-center justify-center icon-badge-3d ${half.iconBg}`}>
-                    <Icon size={12} className={half.iconColor} />
-                  </div>
-                  <div className="text-[11px] text-slate-500 leading-none">{t(half.zh, half.en)}</div>
-                  <div className={`text-sm font-bold tabular-nums leading-none ${isCancelled ? "text-red-600" : half.numberColor}`}>{count}</div>
-                  {isCancelled && (
-                    <div className="text-[10px] text-slate-400 leading-none mt-0.5">
-                      {t(`今天取消 ${cardCounts.cancelledToday ?? 0}`, `Cancelled Today ${cardCounts.cancelledToday ?? 0}`)}
-                    </div>
-                  )}
-                </HalfTag>
-              );
-            })}
-          </div>
+          {/* 已取消 (2026-08-26, removed) — used to be the bottom half of an
+              8th-slot split card here, sharing a frame with 投递失败. Per
+              explicit request, its summary (count + "今天取消 N") no longer
+              appears anywhere in this card grid. 投递失败 now renders on its
+              own as a plain single card via the main ORDER_CENTER_CARDS loop
+              above (it has a real filterValue now — see isFailedDeliveryOrder()
+              above the labels). cardCounts.cancelled/cancelledToday are still
+              fetched (harmless, just unused here) — 已取消 orders remain fully
+              visible, unfiltered, the moment someone clicks the 已取消 chip
+              below (STATUS_CHIPS), same real o.status === "已取消" condition
+              as always. */}
 
           {/* 未付款 + 退货/退款, same shared-frame pattern as the split card
               above — same data (cardCounts.unpaid / cardCounts.returned),
