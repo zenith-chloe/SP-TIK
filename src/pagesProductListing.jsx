@@ -42,15 +42,16 @@ const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB — generous client-side guard
 // TikTok Partner Center, so this page now calls the REAL
 // GET /product/202309/categories and GET /product/202309/categories/
 // {id}/attributes through tiktok-sync-orders (action: "tiktokCategories" /
-// "tiktokCategoryAttributes"). Live-checked after the scope was enabled:
-// still fails with TikTok error 105005 for every currently-connected shop,
-// because an existing shop's access_token only carries the scopes it was
-// originally consented with — the seller has to fully re-authorize the
-// shop (redo the OAuth connect flow) before the new scope actually applies
-// to that shop's token; simply refreshing the token doesn't pick it up
-// (also live-checked). So today this still falls back to a
-// "needs re-auth" message; once a shop is reconnected, the same code path
-// starts rendering the real category tree with no further changes needed.
+// "tiktokCategoryAttributes"). Initially still failed with TikTok error
+// 105005 (an existing shop's access_token only carries the scopes it was
+// originally consented with; refreshing alone doesn't pick up a newly-
+// enabled app scope). 2026-08-26 update: KSG completed a full OAuth
+// reauth for an unrelated reason (Affiliate API access) and this was
+// live-checked again — real category data now returns successfully
+// (200 OK, genuine category tree), confirming the reauth also picked up
+// the Product scope. The "needs re-auth" fallback code path below is kept
+// (a shop that hasn't reauthorized since would still need it) but is no
+// longer the expected outcome for KSG specifically.
 //
 // Deliberately kept separate from `products` (pagesProducts.jsx /
 // ProductMaster) — see the AutoCount system-direction memory: AutoCount is
@@ -151,6 +152,81 @@ export function ProductListingCenter({ t, inventory, stores }) {
       const added = templates.filter((t) => !existingNames.has(t.attr_name)).map((t) => ({ name: t.attr_name, value: "" }));
       return { ...prev, [platformKey]: leafId, attributes: [...prev.attributes, ...added] };
     });
+  }
+
+  // 智能匹配分类 (2026-08-26, new) — real deterministic keyword-overlap
+  // scoring against whichever category source is actually loaded (the real
+  // TikTok tree once live, or the internal category_trees library for
+  // Shopee / a not-yet-reauthorized TikTok shop). This is NOT a live
+  // TikTok/Shopee "category prediction" API call — no such endpoint is
+  // reachable with this app's connected scopes — so it's labeled "智能匹配
+  // / Smart Match", not "AI", and only ever surfaces categories whose real
+  // name text actually shares words with the typed title; it never
+  // fabricates a suggestion out of nothing.
+  function titleTokens(str) {
+    return (str || "").toLowerCase().split(/[^a-z0-9一-鿿]+/).filter((w) => w.length > 1);
+  }
+  function overlapScore(tokens, text) {
+    const pathTokens = titleTokens(text);
+    return tokens.reduce((s, tok) => s + (pathTokens.some((pt) => pt.includes(tok) || tok.includes(pt)) ? 1 : 0), 0);
+  }
+  function suggestTiktokRealCategoryMatches(title) {
+    const tokens = titleTokens(title);
+    if (tokens.length === 0) return [];
+    const norm = tiktokRealCategories.map(normalizeTikTokCategory);
+    const byId = new Map(norm.map((c) => [c.id, c]));
+    function pathOf(c) {
+      const path = [c];
+      let cur = c;
+      while (cur.parentId && cur.parentId !== "0" && byId.has(cur.parentId)) {
+        cur = byId.get(cur.parentId);
+        path.unshift(cur);
+      }
+      return path;
+    }
+    const scored = norm
+      .filter((c) => c.isLeaf)
+      .map((leaf) => {
+        const path = pathOf(leaf);
+        return { path, score: overlapScore(tokens, path.map((p) => p.name).join(" ")) };
+      })
+      .filter((s) => s.score > 0);
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 5).map((s) => ({
+      l1id: s.path[0]?.id, l2id: s.path[1]?.id, leafId: s.path[s.path.length - 1]?.id,
+      label: s.path.map((p) => p.name).join(" > "),
+    }));
+  }
+  function suggestInternalCategoryMatches(title, platform) {
+    const tokens = titleTokens(title);
+    if (tokens.length === 0) return [];
+    const scored = categoryTrees
+      .filter((c) => c.platform === platform)
+      .map((row) => ({ row, score: overlapScore(tokens, `${row.level1} ${row.level2} ${row.level3}`) }))
+      .filter((s) => s.score > 0);
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 5).map((s) => ({ row: s.row, label: `${s.row.level1} > ${s.row.level2} > ${s.row.level3}` }));
+  }
+  // Applies one suggestion — routes to whichever category system is
+  // currently active for this platform, same setters the manual dropdowns
+  // above already use, so a suggestion click is indistinguishable from a
+  // human picking the same path by hand (including real attribute loading
+  // for the TikTok-real path via selectTiktokRealLeaf).
+  function applyCategorySuggestion(platform, suggestion) {
+    if (platform === "TikTok Shop" && tiktokApiStatus === "ok") {
+      setTiktokRealL1(suggestion.l1id || "");
+      setTiktokRealL2(suggestion.l2id || "");
+      selectTiktokRealLeaf(suggestion.leafId || "");
+      return;
+    }
+    const { row } = suggestion;
+    if (platform === "Shopee") {
+      setShopeeL1(row.level1); setShopeeL2(row.level2);
+      selectLeaf("shopee_category_leaf_id", row.id);
+    } else {
+      setTiktokL1(row.level1); setTiktokL2(row.level2);
+      selectLeaf("tiktok_category_leaf_id", row.id);
+    }
   }
 
   // ---- TikTok 真实类目 API (2026-08-24, new) — see the file-top note for
@@ -337,6 +413,63 @@ export function ProductListingCenter({ t, inventory, stores }) {
   const [showListingForm, setShowListingForm] = useState(false);
   const [editingListingId, setEditingListingId] = useState(null);
   const [listingForm, setListingForm] = useState(emptyListingForm);
+
+  // ---- 详情描述富文本编辑器 + 内嵌图片上传 (2026-08-26, new) — a plain
+  // contentEditable div rather than a new rich-text-editor dependency
+  // (matches this file's existing "no new library for one feature"
+  // convention — see the history.pushState routing comment below).
+  // listingForm.description now stores HTML (was plain text) so an
+  // inserted <img> can live inline with the text; a plain-text description
+  // saved before this change still displays fine (valid HTML, just no
+  // markup). Uncontrolled by design: the div's real DOM content is the
+  // source of truth while typing (onInput just mirrors it into state for
+  // saving), and is only ever force-synced from state when the form opens
+  // or switches which listing is being edited (see the effect below) —
+  // syncing on every keystroke would fight the browser's own cursor
+  // position and undo history.
+  const descriptionEditorRef = useRef(null);
+  const [descImageUploading, setDescImageUploading] = useState(false);
+  const [descImageError, setDescImageError] = useState("");
+  useEffect(() => {
+    if (showListingForm && descriptionEditorRef.current) {
+      descriptionEditorRef.current.innerHTML = listingForm.description || "";
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showListingForm, editingListingId]);
+  function syncDescriptionFromEditor() {
+    setListingForm((prev) => ({ ...prev, description: descriptionEditorRef.current?.innerHTML || "" }));
+  }
+  async function insertDescriptionImage(file) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setDescImageError(t("请上传照片文件", "Please upload a photo")); return; }
+    if (file.size > MAX_IMAGE_BYTES) { setDescImageError(t("照片过大（单张上限 20MB）", "Photo too large (20MB max each)")); return; }
+    setDescImageError("");
+    setDescImageUploading(true);
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const { error } = await supabaseClient.storage.from("product-images").upload(path, file, { upsert: false });
+    setDescImageUploading(false);
+    if (error) { setDescImageError(t("上传失败", "Upload failed")); console.error("description image upload failed", error); return; }
+    const { data: pub } = supabaseClient.storage.from("product-images").getPublicUrl(path);
+    const editor = descriptionEditorRef.current;
+    if (editor) {
+      editor.focus();
+      document.execCommand("insertHTML", false, `<img src="${pub.publicUrl}" style="max-width:100%;border-radius:8px;margin:4px 0;" />`);
+      syncDescriptionFromEditor();
+    }
+  }
+  // Paste-image support (2026-08-26, new) — intercepts an image pasted
+  // directly from the clipboard (e.g. a screenshot) and uploads it the
+  // same real way as the toolbar button, instead of silently pasting a
+  // giant base64 data: URI into the HTML (which would bloat the saved
+  // description and never survive a real TikTok/Shopee API's size limits).
+  function handleDescriptionPaste(e) {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItem = items.find((it) => it.type.startsWith("image/"));
+    if (!imageItem) return; // let normal text paste through
+    e.preventDefault();
+    const file = imageItem.getAsFile();
+    if (file) insertDescriptionImage(file);
+  }
 
   // ---- 独立全屏页面 + URL 同步 (2026-08-24, new) — 新增/编辑弹窗改为独立
   // 全屏页面（不再是 Modal）。本项目没有接入 react-router（整站都是
@@ -838,7 +971,15 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setBatchVariantPrice(""); setBatchVariantStock("");
     const { data, error } = await supabaseClient.from("product_listing_variations").select("*").eq("listing_id", listingId).order("created_at");
     if (error) { console.error("loadVariations failed", error); setVariationRows([]); return; }
-    setVariationRows(data || []);
+    // weight_kg column always holds the real kg value (converted on save,
+    // same convention as the top-level weight field) — weight_unit is only
+    // the display preference, so convert back to grams here for display
+    // when that's what was last used, mirroring line ~409's top-level mapping.
+    setVariationRows((data || []).map((r) => ({
+      ...r,
+      weight_kg: r.weight_kg != null ? String(r.weight_unit === "g" ? Math.round(r.weight_kg * 1000) : r.weight_kg) : "",
+      weight_unit: r.weight_unit || "kg",
+    })));
     setSpec1Name(data?.[0]?.spec1_name || "");
     setSpec2Name(data?.[0]?.spec2_name || "");
     setSpec1Values([...new Set((data || []).map((r) => r.spec1_value).filter(Boolean))].join(","));
@@ -877,7 +1018,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
       const key = `${a}|${b}`;
       // A newly-created row inherits whichever option photo was already
       // uploaded for its spec1 (or spec2, if spec1 has none) value.
-      combos.push(existing.get(key) || { spec1_value: a, spec2_value: b, sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: spec1OptionImages[a] || spec2OptionImages[b] || "", weight_kg: "" });
+      combos.push(existing.get(key) || { spec1_value: a, spec2_value: b, sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: spec1OptionImages[a] || spec2OptionImages[b] || "", weight_kg: "", weight_unit: "kg" });
     }
     setVariationRows(combos);
   }
@@ -970,6 +1111,17 @@ export function ProductListingCenter({ t, inventory, stores }) {
   function updateVariationField(idx, field, value) {
     setVariationRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
   }
+  // 单条变体重量单位切换 (2026-08-26, new) — same conversion-on-toggle
+  // logic as the top-level setWeightUnit() above (kg<->g), scoped to one
+  // row so switching units doesn't silently change the real weight typed.
+  function setVariantWeightUnit(idx, unit) {
+    setVariationRows((prev) => prev.map((r, i) => {
+      if (i !== idx || unit === r.weight_unit || !r.weight_kg) return i === idx ? { ...r, weight_unit: unit } : r;
+      const n = Number(r.weight_kg);
+      const converted = unit === "g" ? n * 1000 : n / 1000;
+      return { ...r, weight_unit: unit, weight_kg: String(+converted.toFixed(3)) };
+    }));
+  }
   function removeVariationRow(idx) {
     setVariationRows((prev) => prev.filter((_, i) => i !== idx));
     setSelectedVariantIdx((prev) => {
@@ -982,7 +1134,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // staff just needs one more variant instead of a full cartesian
   // regenerate via spec1/spec2 values.
   function addVariantRow() {
-    setVariationRows((prev) => [...prev, { spec1_value: "", spec2_value: "", sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: "", weight_kg: "" }]);
+    setVariationRows((prev) => [...prev, { spec1_value: "", spec2_value: "", sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: "", weight_kg: "", weight_unit: "kg" }]);
   }
   function toggleVariantSelect(idx) {
     setSelectedVariantIdx((prev) => {
@@ -1025,7 +1177,13 @@ export function ProductListingCenter({ t, inventory, stores }) {
         spec2_name: spec2Name.trim() || null, spec2_value: r.spec2_value || null,
         sku: r.sku?.trim() || null, price: Number(r.price) || 0, stock: Math.round(Number(r.stock)) || 0,
         image_url: r.image_url?.trim() || null,
-        weight_kg: r.weight_kg !== "" && r.weight_kg != null ? Number(r.weight_kg) : null,
+        // Automatic unit conversion on save (2026-08-26, new) — same
+        // convention as the top-level weight field (see line ~567): the
+        // DB column always stores real kg regardless of which unit the
+        // row was displayed/typed in; weight_unit is saved alongside
+        // purely so re-opening this listing shows the same unit again.
+        weight_kg: r.weight_kg !== "" && r.weight_kg != null ? Number(r.weight_kg) * (r.weight_unit === "g" ? 0.001 : 1) : null,
+        weight_unit: r.weight_unit === "g" ? "g" : "kg",
       }));
       const { error } = await supabaseClient.from("product_listing_variations").insert(rows);
       if (error) { showToast(t("变体保存失败", "Failed to save variations")); console.error("persistVariations insert failed", error); return false; }
@@ -1177,6 +1335,36 @@ export function ProductListingCenter({ t, inventory, stores }) {
                 <div className={`text-[11px] ${listingForm.title.length > TITLE_MAX_LEN ? "text-rose-500" : "text-slate-300"}`}>{listingForm.title.length}/{TITLE_MAX_LEN}</div>
               </div>
               <input value={listingForm.title} onChange={(e) => setListingForm({ ...listingForm, title: e.target.value })} maxLength={TITLE_MAX_LEN} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              {/* 智能匹配分类 (2026-08-26, new) — real keyword-overlap
+                  suggestions from whichever category source is loaded; see
+                  suggestTiktokRealCategoryMatches/suggestInternalCategoryMatches
+                  above for why this is "smart match", not "AI". Only shown
+                  once the title has enough text to actually score against. */}
+              {listingForm.title.trim().length >= 2 && (() => {
+                const matches = listingForm.platform === "TikTok Shop" && tiktokApiStatus === "ok"
+                  ? suggestTiktokRealCategoryMatches(listingForm.title)
+                  : suggestInternalCategoryMatches(listingForm.title, listingForm.platform);
+                if (matches.length === 0) return null;
+                return (
+                  <div className="mt-1.5">
+                    <div className="text-[10px] text-slate-400 mb-1 flex items-center gap-1">
+                      <Sparkles size={10} /> {t("智能匹配分类（点击应用）", "Smart-matched categories (click to apply)")}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {matches.map((m, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => applyCategorySuggestion(listingForm.platform, m)}
+                          className="text-[11px] px-2 py-1 rounded-full border border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100"
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -1222,10 +1410,39 @@ export function ProductListingCenter({ t, inventory, stores }) {
             </div>
           </div>
 
-          {/* 3. 详情描述 */}
+          {/* 3. 详情描述 — 富文本 + 内嵌图片上传 (2026-08-26, upgraded from
+              a plain textarea) */}
           <div className="bg-white border border-slate-200 rounded-xl p-5">
-            <div className="text-xs text-slate-400 mb-1">{t("详情描述", "Description")}</div>
-            <textarea value={listingForm.description} onChange={(e) => setListingForm({ ...listingForm, description: e.target.value })} rows={4} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-xs text-slate-400">{t("详情描述", "Description")}</div>
+              {/* AI 描述生成 (2026-08-26) — intentionally not wired up yet:
+                  this project has no real LLM/AI integration anywhere (the
+                  existing "AI智能功能" page is a keyword-matching demo, not
+                  real AI), so a working button here needs an API key/vendor
+                  decision first — flagged separately, not faked. */}
+            </div>
+            <div className="flex items-center gap-2 mb-1.5">
+              <label className={`text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer flex items-center gap-1 ${descImageUploading ? "border-slate-100 text-slate-300" : "border-slate-200 hover:bg-slate-50 text-slate-600"}`}>
+                <ImageIcon size={12} /> {descImageUploading ? t("上传中…", "Uploading…") : t("插入图片", "Insert Image")}
+                <input
+                  type="file"
+                  accept="image/*"
+                  disabled={descImageUploading}
+                  onChange={(e) => { insertDescriptionImage(e.target.files?.[0]); e.target.value = ""; }}
+                  className="hidden"
+                />
+              </label>
+              <span className="text-[10px] text-slate-400">{t("也可直接粘贴截图", "You can also paste a screenshot directly")}</span>
+            </div>
+            <div
+              ref={descriptionEditorRef}
+              contentEditable
+              suppressContentEditableWarning
+              onInput={syncDescriptionFromEditor}
+              onPaste={handleDescriptionPaste}
+              className="w-full min-h-[8rem] px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 [&_img]:max-w-full [&_img]:rounded-lg"
+            />
+            {descImageError && <div className="text-[11px] text-rose-600 mt-1">{descImageError}</div>}
           </div>
 
           {/* 4. 商品视频（可选）— 移至详情描述下方 */}
@@ -1367,7 +1584,13 @@ export function ProductListingCenter({ t, inventory, stores }) {
                       <div key={idx} className={`border rounded-lg p-3 ${selectedVariantIdx.has(idx) ? "border-indigo-300 bg-indigo-50/40" : "border-slate-200"}`}>
                         <div className="flex items-start gap-2">
                           <input type="checkbox" checked={selectedVariantIdx.has(idx)} onChange={() => toggleVariantSelect(idx)} className="h-3.5 w-3.5 rounded border-slate-300 mt-2" />
-                          {r.image_url ? <img src={r.image_url} alt="" className="h-10 w-10 rounded-md object-cover border border-slate-200 shrink-0" /> : <div className="h-10 w-10 rounded-md bg-slate-100 border border-slate-200 shrink-0" />}
+                          {/* Left-side thumbnail box removed (2026-08-26,
+                              explicit request) — it was display-only (no
+                              upload control of its own, just mirrored
+                              spec1OptionImages/spec2OptionImages from the
+                              chip editor above), so removing it loses no
+                              real functionality; the 规格名称 input is now
+                              the first element in this row. */}
                           <div className="flex-1 min-w-0 grid grid-cols-3 gap-2">
                             <div className="col-span-3 sm:col-span-1">
                               <div className="text-[11px] text-slate-400 mb-0.5">{t("规格名称", "Variant Name")}</div>
@@ -1386,7 +1609,32 @@ export function ProductListingCenter({ t, inventory, stores }) {
                         </div>
                         <div className="flex items-center gap-2 mt-2 pl-8">
                           <input value={r.sku || ""} onChange={(e) => updateVariationField(idx, "sku", e.target.value)} placeholder={t("商家 SKU", "Seller SKU")} className="w-28 px-1.5 py-1 text-[11px] border border-slate-200 rounded" />
-                          <input type="number" value={r.weight_kg ?? ""} onChange={(e) => updateVariationField(idx, "weight_kg", e.target.value)} placeholder={t("重量(kg)", "Weight(kg)")} className="w-20 px-1.5 py-1 text-[11px] border border-slate-200 rounded" />
+                          <div className="flex items-center border border-slate-200 rounded overflow-hidden">
+                            <input
+                              type="number"
+                              value={r.weight_kg ?? ""}
+                              onChange={(e) => updateVariationField(idx, "weight_kg", e.target.value)}
+                              placeholder={t(`重量(${r.weight_unit === "g" ? "g" : "kg"})`, `Weight(${r.weight_unit === "g" ? "g" : "kg"})`)}
+                              className="w-16 px-1.5 py-1 text-[11px] border-0 outline-none"
+                            />
+                            {/* kg/g 单位切换 (2026-08-26, new) — same
+                                toggle-button convention as the top-level
+                                weight field below; converts the typed
+                                number on switch (setVariantWeightUnit),
+                                real kg saved to the DB either way. */}
+                            <div className="flex text-[10px] border-l border-slate-200 shrink-0">
+                              {["kg", "g"].map((u) => (
+                                <button
+                                  key={u}
+                                  type="button"
+                                  onClick={() => setVariantWeightUnit(idx, u)}
+                                  className={`px-1.5 py-1 ${(r.weight_unit || "kg") === u ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+                                >
+                                  {u}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
                         </div>
                       </div>
                     ))}
