@@ -357,11 +357,20 @@ export function ProductListingCenter({ t, inventory, stores }) {
     if (error) { setTiktokRealAttrs([]); return; }
     const attrs = data?.attributes || (Array.isArray(data) ? data : []);
     setTiktokRealAttrs(attrs);
-    const templateNames = attrs.map((a) => ({ name: a.name || a.attribute_name || "", required: a.is_requried ?? a.required ?? false }))
-      .filter((a) => a.name);
+    // Enumerable option values (2026-08-27, new) — TikTok's real attribute
+    // response includes a `values` list ({id, name}) for SINGLE_SELECT/
+    // MULTIPLE_SELECT attribute types; captured here so the row below can
+    // render a clean dropdown instead of a free-text box, with "Enter a
+    // custom value" as an explicit escape hatch for any name not in the
+    // list. Attributes with no such list keep the plain text input.
+    const templateNames = attrs.map((a) => ({
+      name: a.name || a.attribute_name || "",
+      required: a.is_requried ?? a.required ?? false,
+      options: Array.isArray(a.values) ? a.values.map((v) => v.name || v.value || String(v)).filter(Boolean) : [],
+    })).filter((a) => a.name);
     setListingForm((prev) => {
       const existingNames = new Set(prev.attributes.map((a) => a.name));
-      const added = templateNames.filter((a) => !existingNames.has(a.name)).map((a) => ({ name: a.name, value: "" }));
+      const added = templateNames.filter((a) => !existingNames.has(a.name)).map((a) => ({ name: a.name, value: "", options: a.options }));
       return { ...prev, attributes: [...prev.attributes, ...added] };
     });
   }
@@ -446,6 +455,41 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // `brand` input otherwise.
   const [tiktokBrandsStatus, setTiktokBrandsStatus] = useState("idle"); // idle | loading | ok | error
   const [tiktokRealBrands, setTiktokRealBrands] = useState([]);
+  // Searchable brand picker (2026-08-27, new) — replaces the plain
+  // <select> with a TikTok-style search + list panel; reuses the same
+  // click-outside pattern as categoryPickerRef/aiKeywordWrapRef above.
+  const [showBrandPicker, setShowBrandPicker] = useState(false);
+  const [brandSearchQuery, setBrandSearchQuery] = useState("");
+  const brandPickerRef = useRef(null);
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (brandPickerRef.current && !brandPickerRef.current.contains(e.target)) setShowBrandPicker(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+  function pickTiktokBrand(b) {
+    const id = String(b.id ?? b.brand_id ?? "");
+    setListingForm((prev) => ({ ...prev, tiktok_brand_id: id, brand: b.name || b.brand_name || id }));
+    setShowBrandPicker(false);
+    setBrandSearchQuery("");
+  }
+  function chooseNoBrand() {
+    setListingForm((prev) => ({ ...prev, tiktok_brand_id: "", brand: "No Brand" }));
+    setShowBrandPicker(false);
+    setBrandSearchQuery("");
+  }
+  function addCustomBrand() {
+    const name = brandSearchQuery.trim();
+    if (!name) return;
+    // Not a real TikTok brand-library submission (no such write endpoint
+    // exists) — sets the free-text brand field to this name, same as
+    // manually typing it, just reachable from this panel's footer per the
+    // explicit request.
+    setListingForm((prev) => ({ ...prev, tiktok_brand_id: "", brand: name }));
+    setShowBrandPicker(false);
+    setBrandSearchQuery("");
+  }
   async function loadTiktokRealBrands() {
     const tiktokStore = (stores || []).find((s) => s.platform === "TikTok Shop");
     if (!tiktokStore) { setTiktokBrandsStatus("error"); return; }
@@ -974,6 +1018,12 @@ export function ProductListingCenter({ t, inventory, stores }) {
   function removeAttribute(idx) {
     setListingForm((prev) => ({ ...prev, attributes: prev.attributes.filter((_, i) => i !== idx) }));
   }
+  // Tracks which attribute rows are in "custom value" mode (2026-08-27,
+  // new) — separate from listingForm.attributes because picking "Enter a
+  // custom value…" from the dropdown must reveal the text input even
+  // before anything has been typed into it (a.value === "" at that point,
+  // so it can't be inferred from the value alone).
+  const [customAttrIdx, setCustomAttrIdx] = useState(new Set());
 
   async function saveListing() {
     if (!listingForm.title.trim()) { showToast(t("请填写商品标题", "Please enter a title")); return; }
@@ -1362,7 +1412,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
       const key = `${a}|${b}`;
       // A newly-created row inherits whichever option photo was already
       // uploaded for its spec1 (or spec2, if spec1 has none) value.
-      combos.push(existing.get(key) || { spec1_value: a, spec2_value: b, sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: spec1OptionImages[a] || spec2OptionImages[b] || "", weight_kg: "", weight_unit: "kg" });
+      combos.push(existing.get(key) || { spec1_value: a, spec2_value: b, sku: "", price: listingFormBasePriceFallback(), stock: 0, discount_percent: 0, image_url: spec1OptionImages[a] || spec2OptionImages[b] || "", weight_kg: "", weight_unit: "kg" });
     }
     setVariationRows(combos);
   }
@@ -1478,7 +1528,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // staff just needs one more variant instead of a full cartesian
   // regenerate via spec1/spec2 values.
   function addVariantRow() {
-    setVariationRows((prev) => [...prev, { spec1_value: "", spec2_value: "", sku: "", price: listingFormBasePriceFallback(), stock: 0, image_url: "", weight_kg: "", weight_unit: "kg" }]);
+    setVariationRows((prev) => [...prev, { spec1_value: "", spec2_value: "", sku: "", price: listingFormBasePriceFallback(), stock: 0, discount_percent: 0, image_url: "", weight_kg: "", weight_unit: "kg" }]);
   }
   function toggleVariantSelect(idx) {
     setSelectedVariantIdx((prev) => {
@@ -1520,6 +1570,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
         spec1_name: spec1Name.trim() || null, spec1_value: r.spec1_value || null,
         spec2_name: spec2Name.trim() || null, spec2_value: r.spec2_value || null,
         sku: r.sku?.trim() || null, price: Number(r.price) || 0, stock: Math.round(Number(r.stock)) || 0,
+        discount_percent: Math.min(100, Math.max(0, Number(r.discount_percent) || 0)),
         image_url: r.image_url?.trim() || null,
         // Automatic unit conversion on save (2026-08-26, new) — same
         // convention as the top-level weight field (see line ~567): the
@@ -1686,7 +1737,10 @@ export function ProductListingCenter({ t, inventory, stores }) {
             </div>
             <div>
               <div className="flex items-center justify-between mb-1">
-                <div className="text-xs text-slate-400">{t("商品标题", "Title")}</div>
+                <div className="flex items-center gap-2">
+                  <div className="text-xs text-slate-400">{t("商品标题", "Title")}</div>
+                  <button type="button" onClick={generateAiTitleKeywords} disabled={aiTitleLoading} className="text-[11px] text-indigo-600 hover:text-indigo-800 disabled:text-slate-300">+ {t("推荐", "suggestions")}</button>
+                </div>
                 <div className={`text-[11px] ${listingForm.title.length > TITLE_MAX_LEN ? "text-rose-500" : "text-slate-300"}`}>{listingForm.title.length}/{TITLE_MAX_LEN}</div>
               </div>
               <div className="flex gap-1.5 relative" ref={aiKeywordWrapRef}>
@@ -1745,6 +1799,30 @@ export function ProductListingCenter({ t, inventory, stores }) {
                   </div>
                 )}
               </div>
+              {/* Recommended search keywords (2026-08-27, new) — a plain
+                  derived hint, not a real buyer-search-volume feed (see
+                  the AI keyword dropdown above for why no such live data
+                  source exists in this project): just the words making up
+                  whichever category is currently selected, offered as
+                  quick title add-ons. */}
+              {(() => {
+                const label = currentCategoryLabel();
+                if (!label) return null;
+                const lastSegment = label.split(">").pop().trim();
+                const words = [...new Set(titleTokens(lastSegment))].slice(0, 5);
+                if (words.length === 0) return null;
+                return (
+                  <div className="mt-1 text-[11px] text-slate-400">
+                    {t("推荐搜索关键词（基于分类）：", "Recommended search keywords based on category: ")}
+                    {words.map((w, i) => (
+                      <span key={w}>
+                        {i > 0 && ", "}
+                        <button type="button" onClick={() => appendTitleKeyword(w, "")} className="text-indigo-600 hover:underline">{w}</button>
+                      </span>
+                    ))}
+                  </div>
+                );
+              })()}
               {/* 智能匹配分类 (2026-08-26, new) — real keyword-overlap
                   suggestions from whichever category source is loaded; see
                   suggestTiktokRealCategoryMatches/suggestInternalCategoryMatches
@@ -1778,7 +1856,12 @@ export function ProductListingCenter({ t, inventory, stores }) {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="text-xs text-slate-400 mb-1">Category</div>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="text-xs text-slate-400">Category</div>
+                  {listingForm.platform === "TikTok Shop" && tiktokApiStatus === "ok" && (
+                    <button type="button" onClick={() => setShowCategoryPicker(true)} className="text-[11px] text-indigo-600 hover:text-indigo-800">+ {t("推荐", "suggestions")}</button>
+                  )}
+                </div>
                 {/* 类目树 — 平台隔离 (2026-08-25) — Shopee's page only ever
                     queries the internal Shopee category library; TikTok's page
                     only ever queries the real TikTok Category API (with the
@@ -1950,24 +2033,63 @@ export function ProductListingCenter({ t, inventory, stores }) {
                     a plain free-text brand field. */}
                 {listingForm.platform === "TikTok Shop" ? (
                   <>
-                    <div className="text-xs text-slate-400 mb-1">
-                      {tiktokBrandsStatus === "ok" ? t("品牌（官方品牌库）", "Brand (official library)") : t("品牌", "Brand")}
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-xs text-slate-400">
+                        {tiktokBrandsStatus === "ok" ? t("品牌（官方品牌库）", "Brand (official library)") : t("品牌", "Brand")}
+                      </div>
+                      {tiktokBrandsStatus === "ok" && tiktokRealBrands.length > 0 && (
+                        <button type="button" onClick={() => setShowBrandPicker(true)} className="text-[11px] text-indigo-600 hover:text-indigo-800">+ {t("推荐", "suggestions")}</button>
+                      )}
                     </div>
                     {tiktokBrandsStatus === "ok" && tiktokRealBrands.length > 0 ? (
-                      <select
-                        value={listingForm.tiktok_brand_id}
-                        onChange={(e) => {
-                          const b = tiktokRealBrands.find((x) => String(x.id ?? x.brand_id) === e.target.value);
-                          setListingForm({ ...listingForm, tiktok_brand_id: e.target.value, brand: b?.name || b?.brand_name || listingForm.brand });
-                        }}
-                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
-                      >
-                        <option value="">No Brand</option>
-                        {tiktokRealBrands.map((b) => {
-                          const id = String(b.id ?? b.brand_id ?? "");
-                          return <option key={id} value={id}>{b.name || b.brand_name || id}</option>;
-                        })}
-                      </select>
+                      <div className="relative" ref={brandPickerRef}>
+                        <button
+                          type="button"
+                          onClick={() => setShowBrandPicker((v) => !v)}
+                          className="w-full flex items-center justify-between px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white hover:border-slate-300 text-left"
+                        >
+                          <span className={listingForm.brand && listingForm.brand !== "No Brand" ? "text-slate-700" : "text-slate-400"}>
+                            {listingForm.brand || "No Brand"}
+                          </span>
+                          <ChevronDown size={13} className={`text-slate-400 shrink-0 ml-2 transition-transform ${showBrandPicker ? "rotate-180" : ""}`} />
+                        </button>
+                        {showBrandPicker && (
+                          <div className="absolute z-30 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg card-3d overflow-hidden">
+                            <div className="p-2 border-b border-slate-100">
+                              <input
+                                autoFocus
+                                value={brandSearchQuery}
+                                onChange={(e) => setBrandSearchQuery(e.target.value)}
+                                placeholder={t(`搜索 ${tiktokRealBrands.length}+ 个品牌`, `Search from ${tiktokRealBrands.length}+ brands`)}
+                                className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+                              />
+                            </div>
+                            <div className="max-h-56 overflow-y-auto">
+                              {tiktokRealBrands
+                                .filter((b) => !brandSearchQuery.trim() || (b.name || b.brand_name || "").toLowerCase().includes(brandSearchQuery.trim().toLowerCase()))
+                                .slice(0, 50)
+                                .map((b) => {
+                                  const id = String(b.id ?? b.brand_id ?? "");
+                                  const name = b.name || b.brand_name || id;
+                                  return (
+                                    <button key={id} type="button" onClick={() => pickTiktokBrand(b)} className="w-full flex items-center gap-2 text-left px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 border-b border-slate-50 last:border-b-0">
+                                      {b.logo_url || b.logo ? (
+                                        <img src={b.logo_url || b.logo} alt="" className="h-5 w-5 rounded object-contain shrink-0" />
+                                      ) : (
+                                        <span className="h-5 w-5 rounded bg-slate-100 text-slate-400 flex items-center justify-center text-[10px] shrink-0">{name[0]?.toUpperCase()}</span>
+                                      )}
+                                      <span className="truncate">{name}</span>
+                                    </button>
+                                  );
+                                })}
+                            </div>
+                            <div className="flex items-center justify-between gap-2 p-2 border-t border-slate-100 bg-slate-50">
+                              <button type="button" onClick={addCustomBrand} disabled={!brandSearchQuery.trim()} className="text-[11px] text-indigo-600 hover:text-indigo-800 disabled:text-slate-300 disabled:cursor-not-allowed">+ {t("添加新品牌", "Add new brand")}</button>
+                              <button type="button" onClick={chooseNoBrand} className="text-[11px] text-slate-500 hover:text-slate-700">{t("选择「无品牌」", "Choose 'No brand'")}</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <input value={listingForm.brand} onChange={(e) => setListingForm({ ...listingForm, brand: e.target.value })} placeholder="No Brand" className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
                     )}
@@ -2055,7 +2177,20 @@ export function ProductListingCenter({ t, inventory, stores }) {
           <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-xs font-medium text-slate-500">{t("💰 销售信息与多规格", "💰 Sales Info & Variants")}</div>
-              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
+              <div className="flex items-center gap-3">
+                {/* Auction Product (2026-08-27, new) — TikTok Seller Center
+                    has a real time-limited-auction listing type, but this
+                    ERP has no bidding/auction backend at all, so the toggle
+                    is shown (matching the reference layout) but disabled
+                    with an honest "not available" hint rather than faking
+                    a working switch. */}
+                <label className="flex items-center gap-2 text-xs text-slate-300 cursor-not-allowed select-none" title={t("暂未支持拍卖商品", "Auction listings not supported yet")}>
+                  {t("拍卖商品", "Auction Product")}
+                  <button type="button" disabled className="relative w-9 h-5 rounded-full bg-slate-100 cursor-not-allowed">
+                    <span className="absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white" />
+                  </button>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
                 {t("多规格 (Multiple Variations)", "Multiple Variations")}
                 <button
                   type="button"
@@ -2064,7 +2199,8 @@ export function ProductListingCenter({ t, inventory, stores }) {
                 >
                   <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${multiVariantsOn ? "translate-x-4" : "translate-x-0.5"}`} />
                 </button>
-              </label>
+                </label>
+              </div>
             </div>
 
             {!multiVariantsOn ? (
@@ -2175,8 +2311,8 @@ export function ProductListingCenter({ t, inventory, stores }) {
                               chip editor above), so removing it loses no
                               real functionality; the 规格名称 input is now
                               the first element in this row. */}
-                          <div className="flex-1 min-w-0 grid grid-cols-3 gap-2">
-                            <div className="col-span-3 sm:col-span-1">
+                          <div className="flex-1 min-w-0 grid grid-cols-2 sm:grid-cols-5 gap-2">
+                            <div className="col-span-2 sm:col-span-1">
                               <div className="text-[11px] text-slate-400 mb-0.5">{t("规格名称", "Variant Name")}</div>
                               <input value={r.spec1_value || ""} onChange={(e) => updateVariationField(idx, "spec1_value", e.target.value)} placeholder={t("如 BLACK SPRING", "e.g. BLACK SPRING")} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
                             </div>
@@ -2187,6 +2323,21 @@ export function ProductListingCenter({ t, inventory, stores }) {
                             <div>
                               <div className="text-[11px] text-slate-400 mb-0.5">{t("Stock", "Stock")}</div>
                               <input type="number" value={r.stock} onChange={(e) => updateVariationField(idx, "stock", e.target.value)} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                            </div>
+                            <div>
+                              <div className="text-[11px] text-slate-400 mb-0.5">{t("折扣 (%)", "Discount (%)")}</div>
+                              <input type="number" min="0" max="100" value={r.discount_percent ?? 0} onChange={(e) => updateVariationField(idx, "discount_percent", e.target.value)} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                            </div>
+                            <div>
+                              <div className="text-[11px] text-slate-400 mb-0.5">{t("折后价 (RM)", "Sale Price (RM)")}</div>
+                              {/* Client-side computed display only (2026-08-27,
+                                  new) — Retail Price × (1 − Discount%), rounded
+                                  to cents; not a separate persisted column, so
+                                  it always exactly reflects the two real saved
+                                  fields it's derived from. */}
+                              <div className="w-full px-2 py-1.5 text-xs border border-slate-100 bg-slate-50 rounded-lg text-slate-500">
+                                RM {(Number(r.price || 0) * (1 - Math.min(100, Math.max(0, Number(r.discount_percent) || 0)) / 100)).toFixed(2)}
+                              </div>
                             </div>
                           </div>
                           <button onClick={() => removeVariationRow(idx)} className="text-rose-400 hover:text-rose-600 mt-2 shrink-0"><Trash2 size={14} /></button>
@@ -2327,13 +2478,47 @@ export function ProductListingCenter({ t, inventory, stores }) {
                 <button onClick={addAttribute} className="text-xs text-indigo-600 hover:text-indigo-800">+ {t("添加属性", "Add")}</button>
               </div>
               <div className="space-y-1.5">
-                {listingForm.attributes.map((a, idx) => (
-                  <div key={idx} className="flex gap-2">
-                    <input value={a.name} onChange={(e) => updateAttribute(idx, "name", e.target.value)} placeholder={t("属性名（如 Warranty Type）", "Attribute name (e.g. Warranty Type)")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
-                    <input value={a.value} onChange={(e) => updateAttribute(idx, "value", e.target.value)} placeholder={t("值（如 1 Year）", "Value (e.g. 1 Year)")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
-                    <button onClick={() => removeAttribute(idx)} className="text-rose-400 hover:text-rose-600"><Trash2 size={14} /></button>
-                  </div>
-                ))}
+                {listingForm.attributes.map((a, idx) => {
+                  // Dropdown + custom value (2026-08-27, new) — only for
+                  // attributes whose real TikTok response included an
+                  // enumerable `values` list (see selectTiktokRealLeaf);
+                  // everything else (free-text attribute types, or any
+                  // manually-added row) keeps the plain text input.
+                  const hasOptions = Array.isArray(a.options) && a.options.length > 0;
+                  const showCustomInput = hasOptions && (customAttrIdx.has(idx) || (a.value && !a.options.includes(a.value)));
+                  return (
+                    <div key={idx} className="flex gap-2">
+                      <input value={a.name} onChange={(e) => updateAttribute(idx, "name", e.target.value)} placeholder={t("属性名（如 Warranty Type）", "Attribute name (e.g. Warranty Type)")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                      {hasOptions ? (
+                        <div className="flex-1 flex gap-1.5">
+                          <select
+                            value={showCustomInput ? "__custom__" : a.value}
+                            onChange={(e) => {
+                              if (e.target.value === "__custom__") {
+                                setCustomAttrIdx((prev) => new Set(prev).add(idx));
+                                updateAttribute(idx, "value", "");
+                              } else {
+                                setCustomAttrIdx((prev) => { const next = new Set(prev); next.delete(idx); return next; });
+                                updateAttribute(idx, "value", e.target.value);
+                              }
+                            }}
+                            className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg bg-white"
+                          >
+                            <option value="">{t("请选择", "Select")}</option>
+                            {a.options.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                            <option value="__custom__">{t("自定义值…", "Enter a custom value…")}</option>
+                          </select>
+                          {showCustomInput && (
+                            <input value={a.value} onChange={(e) => updateAttribute(idx, "value", e.target.value)} placeholder={t("自定义值", "Custom value")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                          )}
+                        </div>
+                      ) : (
+                        <input value={a.value} onChange={(e) => updateAttribute(idx, "value", e.target.value)} placeholder={t("值（如 1 Year）", "Value (e.g. 1 Year)")} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                      )}
+                      <button onClick={() => removeAttribute(idx)} className="text-rose-400 hover:text-rose-600"><Trash2 size={14} /></button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
