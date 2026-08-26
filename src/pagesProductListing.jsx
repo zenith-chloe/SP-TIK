@@ -25,6 +25,24 @@ const MAX_VIDEO_BYTES = 100 * 1024 * 1024; // 100MB — generous client-side gua
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB — generous client-side guard for photo uploads
 const MAX_PRODUCT_IMAGES = 9; // real TikTok Shop product-image limit, per explicit request
 
+// Manually-curated Malay -> {zh, en} glossary for TikTok's real category
+// names (2026-08-26, explicit request). TikTok's real Category API only
+// ever returns Malay local_name — no EN/CN fields exist in the live
+// response — so this is a static display-only translation, not fabricated
+// platform data. Keyed by lowercased/trimmed Malay name. Extend as new
+// real category names are observed; unknown names fall back to Malay.
+const TIKTOK_CATEGORY_NAME_TRANSLATIONS = {
+  "bekalan rumah": { zh: "家居用品", en: "Home Supplies" },
+  "peralatan dapur": { zh: "厨房用品", en: "Kitchen Utensils" },
+  "tekstil & perabot lembut": { zh: "家纺与软装", en: "Textiles & Soft Furnishings" },
+  "automotif & motosikal": { zh: "汽车与摩托车", en: "Automotive & Motorcycle" },
+  "aksesori motosikal": { zh: "摩托车配件", en: "Motorcycle Accessories" },
+  "aksesori automotif": { zh: "汽车配件", en: "Automotive Accessories" },
+  "topi keledar": { zh: "头盔", en: "Helmet" },
+  "palam pencucuh": { zh: "火花塞", en: "Spark Plug" },
+  "penjagaan & aksesori kenderaan": { zh: "车辆护理与配件", en: "Vehicle Care & Accessories" },
+};
+
 // 商品发布中心 (2026-08-24) — data-source note, same spirit as the Ads
 // Costs page's note: this is a real Supabase-backed feature
 // (product_listings / product_listing_stores tables), but there is NO
@@ -269,11 +287,22 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // data) — normalized defensively across the field names TikTok's docs use
   // (local_name/name, parent_id, is_leaf/leaf). Spot-check this once a shop
   // is re-authorized and adjust if the real shape differs.
+  //
+  // Display translation (2026-08-26, new) — TikTok's real category API only
+  // ever returns the Malay local_name (no EN/CN fields exist in the real
+  // response), so a manually-curated CN/EN glossary is used to translate
+  // known names for display. Unknown names honestly fall back to the
+  // original Malay text rather than guessing a translation. The real
+  // official category_id (rawName's `id`) is never altered by this — only
+  // the label shown to staff changes.
   function normalizeTikTokCategory(c) {
+    const rawName = c.local_name || c.name || c.category_name || t("未命名分类", "Unnamed category");
+    const tr = TIKTOK_CATEGORY_NAME_TRANSLATIONS[rawName.trim().toLowerCase()];
     return {
       id: String(c.id ?? c.category_id ?? ""),
       parentId: c.parent_id != null ? String(c.parent_id) : (c.parentId != null ? String(c.parentId) : "0"),
-      name: c.local_name || c.name || c.category_name || t("未命名分类", "Unnamed category"),
+      name: tr ? t(tr.zh, tr.en) : rawName,
+      rawName,
       isLeaf: !!(c.is_leaf ?? c.leaf ?? false),
     };
   }
@@ -385,7 +414,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
     return norm
       .filter((c) => c.isLeaf)
       .map((leaf) => ({ leaf, path: pathOf(leaf) }))
-      .filter(({ path }) => path.some((p) => p.name.toLowerCase().includes(q)))
+      .filter(({ path }) => path.some((p) => p.name.toLowerCase().includes(q) || p.rawName.toLowerCase().includes(q)))
       .slice(0, 30)
       .map(({ leaf, path }) => ({ l1id: path[0]?.id, l2id: path[1]?.id, leafId: leaf.id, label: path.map((p) => p.name).join(" > ") }));
   }
