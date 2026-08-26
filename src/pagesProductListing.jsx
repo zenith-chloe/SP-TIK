@@ -23,6 +23,7 @@ const WEIGHT_QUICK_PRESETS_G = [200, 250, 500, 1000, 2000, 5000];
 const TITLE_MAX_LEN = 255; // real TikTok Shop product-title limit
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024; // 100MB — generous client-side guard, not a confirmed real TikTok limit
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB — generous client-side guard for photo uploads
+const MAX_PRODUCT_IMAGES = 9; // real TikTok Shop product-image limit, per explicit request
 
 // 商品发布中心 (2026-08-24) — data-source note, same spirit as the Ads
 // Costs page's note: this is a real Supabase-backed feature
@@ -365,9 +366,22 @@ export function ProductListingCenter({ t, inventory, stores }) {
   const [imageUploading, setImageUploading] = useState(false);
   const [imageError, setImageError] = useState("");
   async function handleImageFiles(fileList) {
-    const files = Array.from(fileList || []);
+    let files = Array.from(fileList || []);
     if (files.length === 0) return;
     setImageError("");
+    // MAX_PRODUCT_IMAGES cap (2026-08-26, new) — TikTok Shop's own real
+    // per-listing image limit, per explicit request. Truncates the batch
+    // rather than rejecting it outright, so selecting e.g. 5 photos with
+    // only 3 slots left still uploads those 3 instead of uploading none.
+    const remaining = MAX_PRODUCT_IMAGES - listingForm.image_urls.length;
+    if (remaining <= 0) {
+      setImageError(t(`最多只能上传 ${MAX_PRODUCT_IMAGES} 张图片`, `You can upload up to ${MAX_PRODUCT_IMAGES} images`));
+      return;
+    }
+    if (files.length > remaining) {
+      setImageError(t(`最多只能上传 ${MAX_PRODUCT_IMAGES} 张图片，已只取前 ${remaining} 张`, `You can upload up to ${MAX_PRODUCT_IMAGES} images — only the first ${remaining} were used`));
+      files = files.slice(0, remaining);
+    }
     setImageUploading(true);
     const uploaded = [];
     for (const file of files) {
@@ -1427,10 +1441,16 @@ export function ProductListingCenter({ t, inventory, stores }) {
         </div>
 
         <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-5">
-          {/* 1. 商品图片 — 置顶 */}
+          {/* 1. 商品图片 — 置顶 (2026-08-26, upgraded to match TikTok Shop's
+              own uploader layout: one horizontal scrollable row, "+" slot
+              always immediately after the last image, up to MAX_PRODUCT_IMAGES
+              total, delete button hidden until hover.) */}
           <div className="bg-white border border-slate-200 rounded-xl p-5">
-            <div className="text-xs text-slate-400 mb-1 flex items-center gap-1"><ImageIcon size={12} /> {t("商品图片", "Product Images")}</div>
-            <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+            <div className="text-xs text-slate-400 mb-1 flex items-center justify-between">
+              <span className="flex items-center gap-1"><ImageIcon size={12} /> {t("商品图片", "Product Images")}</span>
+              <span className="text-slate-300">{listingForm.image_urls.length}/{MAX_PRODUCT_IMAGES}</span>
+            </div>
+            <div className="flex flex-nowrap gap-2 overflow-x-auto pb-1">
               {listingForm.image_urls.map((url, idx) => (
                 <div
                   key={url}
@@ -1445,12 +1465,12 @@ export function ProductListingCenter({ t, inventory, stores }) {
                     setDragOverImageIdx(null);
                   }}
                   onDragEnd={() => { setDraggedImageIdx(null); setDragOverImageIdx(null); }}
-                  className={`relative aspect-square rounded-lg border overflow-hidden bg-slate-50 cursor-grab active:cursor-grabbing transition-shadow ${
+                  className={`group relative h-20 w-20 shrink-0 rounded-lg border overflow-hidden bg-slate-50 cursor-grab active:cursor-grabbing transition-shadow ${
                     dragOverImageIdx === idx && draggedImageIdx !== idx ? "border-purple-400 ring-2 ring-purple-300" : "border-slate-200"
                   } ${draggedImageIdx === idx ? "opacity-40" : ""}`}
                 >
                   <img src={url} alt="" className="w-full h-full object-cover pointer-events-none" />
-                  {/* 主图 / Main Cover badge (2026-08-26, new) — always the
+                  {/* 主图 / Main Cover badge (2026-08-26) — always the
                       first array element, matches what saveListing() sends
                       as the payload's main image_url. */}
                   {idx === 0 && (
@@ -1458,29 +1478,34 @@ export function ProductListingCenter({ t, inventory, stores }) {
                       {t("主图", "Main Cover")}
                     </div>
                   )}
+                  {/* Delete button — hidden until hover (2026-08-26, was
+                      always-visible), matching TikTok's own uploader. */}
                   <button
                     type="button"
                     onClick={() => removeImageAt(idx)}
-                    className="absolute top-0.5 right-0.5 h-5 w-5 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80"
+                    aria-label={t("删除图片", "Delete image")}
+                    className="absolute top-0.5 right-0.5 h-5 w-5 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-rose-600"
                   >
                     <X size={12} />
                   </button>
                 </div>
               ))}
-              <label className={`aspect-square rounded-lg border border-dashed flex flex-col items-center justify-center gap-1 cursor-pointer ${imageUploading ? "border-slate-100 text-slate-300" : "border-slate-300 text-slate-400 hover:bg-slate-50"}`}>
-                <Plus size={16} />
-                <span className="text-[10px] text-center px-1">{imageUploading ? t("上传中…", "Uploading…") : t("添加图片", "Add Image")}</span>
-                <input type="file" accept="image/*" multiple disabled={imageUploading} onChange={(e) => { handleImageFiles(e.target.files); e.target.value = ""; }} className="hidden" />
-              </label>
+              {listingForm.image_urls.length < MAX_PRODUCT_IMAGES && (
+                <label className={`h-20 w-20 shrink-0 rounded-lg border border-dashed flex flex-col items-center justify-center gap-1 cursor-pointer ${imageUploading ? "border-slate-100 text-slate-300" : "border-slate-300 text-slate-400 hover:bg-slate-50"}`}>
+                  <Plus size={16} />
+                  <span className="text-[10px] text-center px-1">{imageUploading ? t("上传中…", "Uploading…") : t("添加图片", "Add Image")}</span>
+                  <input type="file" accept="image/*" multiple disabled={imageUploading} onChange={(e) => { handleImageFiles(e.target.files); e.target.value = ""; }} className="hidden" />
+                </label>
+              )}
             </div>
             <div className="flex items-center gap-2 mt-2">
               <label className={`text-xs px-3 py-2 rounded-lg border cursor-pointer flex items-center gap-1 ${imageUploading ? "border-slate-100 text-slate-300" : "border-slate-200 hover:bg-slate-50 text-slate-600"}`}>
                 <Camera size={12} /> {t("拍照", "Take Photo")}
-                <input type="file" accept="image/*" capture="environment" disabled={imageUploading} onChange={(e) => { handleImageFiles(e.target.files); e.target.value = ""; }} className="hidden" />
+                <input type="file" accept="image/*" capture="environment" disabled={imageUploading || listingForm.image_urls.length >= MAX_PRODUCT_IMAGES} onChange={(e) => { handleImageFiles(e.target.files); e.target.value = ""; }} className="hidden" />
               </label>
               <label className={`text-xs px-3 py-2 rounded-lg border cursor-pointer flex items-center gap-1 ${imageUploading ? "border-slate-100 text-slate-300" : "border-slate-200 hover:bg-slate-50 text-slate-600"}`}>
                 <Upload size={12} /> {t("上传照片", "Upload Photo")}
-                <input type="file" accept="image/*" multiple disabled={imageUploading} onChange={(e) => { handleImageFiles(e.target.files); e.target.value = ""; }} className="hidden" />
+                <input type="file" accept="image/*" multiple disabled={imageUploading || listingForm.image_urls.length >= MAX_PRODUCT_IMAGES} onChange={(e) => { handleImageFiles(e.target.files); e.target.value = ""; }} className="hidden" />
               </label>
             </div>
             {imageError && <div className="text-[11px] text-rose-600 mt-1">{imageError}</div>}
