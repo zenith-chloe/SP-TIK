@@ -585,7 +585,38 @@ export function ProductListingCenter({ t, inventory, stores }) {
     const editor = descriptionEditorRef.current;
     if (editor) {
       editor.focus();
-      document.execCommand("insertHTML", false, `<img src="${pub.publicUrl}" style="max-width:100%;border-radius:8px;margin:4px 0;" />`);
+      // Bounded size (2026-08-26, explicit request) — object-fit: contain
+      // keeps the real aspect ratio instead of stretching/cropping; a
+      // trailing <br> after the wrapper guarantees the caret always has a
+      // real text line to land on directly below the image, since some
+      // browsers otherwise trap the cursor at the image's edge.
+      document.execCommand(
+        "insertHTML",
+        false,
+        `<span class="desc-img-wrap" contenteditable="false" style="position:relative;display:inline-block;max-width:100%;margin:4px 0;">` +
+          `<img src="${pub.publicUrl}" style="display:block;max-width:100%;max-height:300px;object-fit:contain;border-radius:8px;" />` +
+          `<button type="button" class="desc-img-del" contenteditable="false" style="position:absolute;top:4px;right:4px;width:20px;height:20px;border-radius:9999px;border:none;background:rgba(15,23,42,0.65);color:#fff;font-size:12px;line-height:20px;text-align:center;cursor:pointer;opacity:0;transition:opacity .15s;">✕</button>` +
+        `</span><br>`,
+      );
+      syncDescriptionFromEditor();
+    }
+  }
+  // Hover-to-reveal delete + click-to-remove for inserted description
+  // images (2026-08-26, explicit request) — event delegation on the editor
+  // container so it keeps working for images inserted at any point, not
+  // just ones present when the listener was attached.
+  function handleDescriptionEditorMouseOver(e) {
+    const wrap = e.target.closest?.(".desc-img-wrap");
+    if (wrap) { const btn = wrap.querySelector(".desc-img-del"); if (btn) btn.style.opacity = "1"; }
+  }
+  function handleDescriptionEditorMouseOut(e) {
+    const wrap = e.target.closest?.(".desc-img-wrap");
+    if (wrap) { const btn = wrap.querySelector(".desc-img-del"); if (btn) btn.style.opacity = "0"; }
+  }
+  function handleDescriptionEditorClick(e) {
+    if (e.target.classList?.contains("desc-img-del")) {
+      e.preventDefault();
+      e.target.closest(".desc-img-wrap")?.remove();
       syncDescriptionFromEditor();
     }
   }
@@ -749,6 +780,22 @@ export function ProductListingCenter({ t, inventory, stores }) {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+  // Deterministic offline fallback (2026-08-26, explicit request — mirrors
+  // generateFallbackKeywords' "never fails or blocks" discipline) — a
+  // template built from whatever the seller has actually filled in
+  // (title/category/brand/attributes), not a real AI call. Used only when
+  // the real ai-generate call fails (e.g. ANTHROPIC_API_KEY not configured).
+  function generateFallbackDescription(title, category, brand, attributes) {
+    const name = title || category || t("本商品", "This product");
+    const bulletSource = (attributes || []).filter((a) => a.name?.trim());
+    const bullets = bulletSource.length
+      ? bulletSource.map((a) => `<li>${a.name}${a.value ? `: ${a.value}` : ""}</li>`).join("")
+      : t("<li>做工精细，品质可靠</li><li>适用范围广，性价比高</li>", "<li>Well-made and reliable</li><li>Wide compatibility, great value</li>");
+    return t(
+      `<p><strong>${name}</strong>${brand ? ` — ${brand}` : ""}${category ? `，属于「${category}」类目` : ""}。</p><ul>${bullets}</ul><p>欢迎选购，如有疑问请联系客服。</p>`,
+      `<p><strong>${name}</strong>${brand ? ` by ${brand}` : ""}${category ? ` — ${category}` : ""}.</p><ul>${bullets}</ul><p>Feel free to reach out with any questions before you order.</p>`,
+    );
+  }
   async function generateAiDescription() {
     if (!listingForm.title.trim() && !currentCategoryLabel()) {
       showToast(t("请先输入商品标题或选择分类", "Enter a title or select a category first"));
@@ -760,13 +807,12 @@ export function ProductListingCenter({ t, inventory, stores }) {
     });
     setAiDescLoading(false);
     const errMessage = await extractInvokeError(error, data);
-    if (errMessage) {
-      showToast(errMessage);
-      console.error("generateAiDescription failed", errMessage);
-      return;
-    }
-    setListingForm((prev) => ({ ...prev, description: data.html }));
-    if (descriptionEditorRef.current) descriptionEditorRef.current.innerHTML = data.html;
+    const html = errMessage
+      ? generateFallbackDescription(listingForm.title, currentCategoryLabel(), listingForm.brand, listingForm.attributes)
+      : data.html;
+    if (errMessage) console.error("generateAiDescription failed, using offline fallback", errMessage);
+    setListingForm((prev) => ({ ...prev, description: html }));
+    if (descriptionEditorRef.current) descriptionEditorRef.current.innerHTML = html;
   }
 
   // ---- 独立全屏页面 + URL 同步 (2026-08-24, new) — 新增/编辑弹窗改为独立
@@ -1975,7 +2021,10 @@ export function ProductListingCenter({ t, inventory, stores }) {
               suppressContentEditableWarning
               onInput={syncDescriptionFromEditor}
               onPaste={handleDescriptionPaste}
-              className="w-full min-h-[8rem] px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 [&_img]:max-w-full [&_img]:rounded-lg"
+              onMouseOver={handleDescriptionEditorMouseOver}
+              onMouseOut={handleDescriptionEditorMouseOut}
+              onClick={handleDescriptionEditorClick}
+              className="w-full min-h-[8rem] px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 [&_img]:max-w-full [&_img]:max-h-[300px] [&_img]:object-contain [&_img]:rounded-lg"
             />
             {descImageError && <div className="text-[11px] text-rose-600 mt-1">{descImageError}</div>}
           </div>
