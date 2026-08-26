@@ -819,6 +819,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
     function handleClickOutside(e) {
       if (aiKeywordWrapRef.current && !aiKeywordWrapRef.current.contains(e.target)) {
         setShowAiKeywordDropdown(false);
+        setShowTitleSuggestDropdown(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -857,6 +858,87 @@ export function ProductListingCenter({ t, inventory, stores }) {
     if (errMessage) console.error("generateAiDescription failed, using offline fallback", errMessage);
     setListingForm((prev) => ({ ...prev, description: html }));
     if (descriptionEditorRef.current) descriptionEditorRef.current.innerHTML = html;
+  }
+
+  // ---- Title "+suggestions": 3 alternative full titles (2026-08-27, new)
+  // — real Gemini/Anthropic call via ai-generate's "title_suggestions"
+  // action (see that function's provider-selection comment); on any
+  // failure falls back to 3 local deterministic variations built from
+  // generateFallbackKeywords' modifiers, so the dropdown always has
+  // something to click even offline.
+  const [aiTitleSuggestLoading, setAiTitleSuggestLoading] = useState(false);
+  const [titleSuggestions, setTitleSuggestions] = useState([]);
+  const [showTitleSuggestDropdown, setShowTitleSuggestDropdown] = useState(false);
+  function fallbackTitleSuggestions(title, category) {
+    const fb = generateFallbackKeywords(title, category);
+    const seed = fb.seed || title || category || t("商品", "Product");
+    return [fb.trending[0], fb.competitor[0], fb.trending[1] || fb.competitor[1]]
+      .filter(Boolean)
+      .map((mod) => `${seed} ${mod}`.trim())
+      .slice(0, 3);
+  }
+  async function generateAiTitleSuggestions() {
+    if (!listingForm.title.trim() && !currentCategoryLabel()) {
+      showToast(t("请先输入商品标题或选择分类", "Enter a title or select a category first"));
+      return;
+    }
+    setAiTitleSuggestLoading(true);
+    const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
+      body: { action: "title_suggestions", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand },
+    });
+    setAiTitleSuggestLoading(false);
+    const errMessage = await extractInvokeError(error, data);
+    const titles = errMessage || !data?.titles?.length
+      ? fallbackTitleSuggestions(listingForm.title, currentCategoryLabel())
+      : data.titles;
+    if (errMessage) console.error("generateAiTitleSuggestions failed, using offline fallback", errMessage);
+    setTitleSuggestions(titles);
+    setShowTitleSuggestDropdown(true);
+  }
+  function applyTitleSuggestion(title) {
+    setListingForm((prev) => ({ ...prev, title: title.slice(0, TITLE_MAX_LEN) }));
+    setShowTitleSuggestDropdown(false);
+  }
+
+  // ---- Category & Brand "+suggestions" (2026-08-27, new) — real Gemini/
+  // Anthropic call via ai-generate's "category_brand_suggest" action,
+  // guessing a plausible category/brand name from the title alone. The
+  // suggested category NAME is matched onto a real category via the
+  // existing keyword-overlap suggestTiktokRealCategoryMatches/
+  // suggestInternalCategoryMatches (never trusts an AI-invented id); the
+  // suggested brand is a plain free-text fill. Falls back to the same
+  // local matcher (no AI) if the call fails, so it never blocks.
+  const [aiCatBrandLoading, setAiCatBrandLoading] = useState(false);
+  const [catBrandSuggestion, setCatBrandSuggestion] = useState(null); // { categoryLabel, categoryMatch, brand } | null
+  async function generateAiCategoryBrandSuggestion() {
+    if (!listingForm.title.trim()) {
+      showToast(t("请先输入商品标题", "Enter a title first"));
+      return;
+    }
+    setAiCatBrandLoading(true);
+    const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
+      body: { action: "category_brand_suggest", title: listingForm.title },
+    });
+    setAiCatBrandLoading(false);
+    const errMessage = await extractInvokeError(error, data);
+    const suggestedCategory = errMessage ? "" : (data?.category || "");
+    const suggestedBrand = errMessage ? "" : (data?.brand || "");
+    if (errMessage) console.error("generateAiCategoryBrandSuggestion failed, using local match only", errMessage);
+    const matchSource = suggestedCategory || listingForm.title;
+    const matches = listingForm.platform === "TikTok Shop" && tiktokApiStatus === "ok"
+      ? suggestTiktokRealCategoryMatches(matchSource)
+      : suggestInternalCategoryMatches(matchSource, listingForm.platform);
+    setCatBrandSuggestion({
+      categoryLabel: suggestedCategory || null,
+      categoryMatch: matches[0] || null,
+      brand: suggestedBrand && suggestedBrand !== "No Brand" ? suggestedBrand : "",
+    });
+  }
+  function applySuggestedCategory() {
+    if (catBrandSuggestion?.categoryMatch) applyCategorySuggestion(listingForm.platform, catBrandSuggestion.categoryMatch);
+  }
+  function applySuggestedBrand() {
+    if (catBrandSuggestion?.brand) setListingForm((prev) => ({ ...prev, brand: catBrandSuggestion.brand, tiktok_brand_id: "" }));
   }
 
   // ---- 独立全屏页面 + URL 同步 (2026-08-24, new) — 新增/编辑弹窗改为独立
@@ -1739,12 +1821,30 @@ export function ProductListingCenter({ t, inventory, stores }) {
               <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-2">
                   <div className="text-xs text-slate-400">{t("商品标题", "Title")}</div>
-                  <button type="button" onClick={generateAiTitleKeywords} disabled={aiTitleLoading} className="text-[11px] text-indigo-600 hover:text-indigo-800 disabled:text-slate-300">+ {t("推荐", "suggestions")}</button>
+                  <button type="button" onClick={generateAiTitleSuggestions} disabled={aiTitleSuggestLoading} className="text-[11px] text-indigo-600 hover:text-indigo-800 disabled:text-slate-300">+ {aiTitleSuggestLoading ? t("生成中…", "Generating…") : t("推荐", "suggestions")}</button>
                 </div>
                 <div className={`text-[11px] ${listingForm.title.length > TITLE_MAX_LEN ? "text-rose-500" : "text-slate-300"}`}>{listingForm.title.length}/{TITLE_MAX_LEN}</div>
               </div>
               <div className="flex gap-1.5 relative" ref={aiKeywordWrapRef}>
                 <input value={listingForm.title} onChange={(e) => setListingForm({ ...listingForm, title: e.target.value })} maxLength={TITLE_MAX_LEN} className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+                {/* Title "+suggestions" dropdown (2026-08-27, new) — 3 full
+                    alternative titles from Gemini/Anthropic via
+                    generateAiTitleSuggestions(); click replaces the title
+                    entirely (distinct from the keyword-append dropdown
+                    below, which builds up the title piece by piece). */}
+                {showTitleSuggestDropdown && titleSuggestions.length > 0 && (
+                  <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg card-3d p-2 space-y-1">
+                    <div className="flex items-center justify-between px-1">
+                      <div className="text-[10px] text-slate-400">{t("AI 推荐标题（点击替换）", "AI-suggested titles (click to replace)")}</div>
+                      <button type="button" onClick={() => setShowTitleSuggestDropdown(false)} className="text-slate-300 hover:text-slate-600"><X size={12} /></button>
+                    </div>
+                    {titleSuggestions.map((s, i) => (
+                      <button key={i} type="button" onClick={() => applyTitleSuggestion(s)} className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-indigo-50 text-slate-600">
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {/* AI 标题生成 (2026-08-26, refined) — real Anthropic call
                     via ai-generate's "keywords" action; see
                     generateAiTitleKeywords() above for the honest
@@ -1858,9 +1958,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <div className="text-xs text-slate-400">Category</div>
-                  {listingForm.platform === "TikTok Shop" && tiktokApiStatus === "ok" && (
-                    <button type="button" onClick={() => setShowCategoryPicker(true)} className="text-[11px] text-indigo-600 hover:text-indigo-800">+ {t("推荐", "suggestions")}</button>
-                  )}
+                  <button type="button" onClick={generateAiCategoryBrandSuggestion} disabled={aiCatBrandLoading} className="text-[11px] text-indigo-600 hover:text-indigo-800 disabled:text-slate-300">+ {aiCatBrandLoading ? t("生成中…", "Generating…") : t("推荐", "suggestions")}</button>
                 </div>
                 {/* 类目树 — 平台隔离 (2026-08-25) — Shopee's page only ever
                     queries the internal Shopee category library; TikTok's page
@@ -2037,9 +2135,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                       <div className="text-xs text-slate-400">
                         {tiktokBrandsStatus === "ok" ? t("品牌（官方品牌库）", "Brand (official library)") : t("品牌", "Brand")}
                       </div>
-                      {tiktokBrandsStatus === "ok" && tiktokRealBrands.length > 0 && (
-                        <button type="button" onClick={() => setShowBrandPicker(true)} className="text-[11px] text-indigo-600 hover:text-indigo-800">+ {t("推荐", "suggestions")}</button>
-                      )}
+                      <button type="button" onClick={generateAiCategoryBrandSuggestion} disabled={aiCatBrandLoading} className="text-[11px] text-indigo-600 hover:text-indigo-800 disabled:text-slate-300">+ {aiCatBrandLoading ? t("生成中…", "Generating…") : t("推荐", "suggestions")}</button>
                     </div>
                     {tiktokBrandsStatus === "ok" && tiktokRealBrands.length > 0 ? (
                       <div className="relative" ref={brandPickerRef}>
@@ -2096,12 +2192,37 @@ export function ProductListingCenter({ t, inventory, stores }) {
                   </>
                 ) : (
                   <>
-                    <div className="text-xs text-slate-400 mb-1">{t("品牌", "Brand")}</div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-xs text-slate-400">{t("品牌", "Brand")}</div>
+                      <button type="button" onClick={generateAiCategoryBrandSuggestion} disabled={aiCatBrandLoading} className="text-[11px] text-indigo-600 hover:text-indigo-800 disabled:text-slate-300">+ {aiCatBrandLoading ? t("生成中…", "Generating…") : t("推荐", "suggestions")}</button>
+                    </div>
                     <input value={listingForm.brand} onChange={(e) => setListingForm({ ...listingForm, brand: e.target.value })} placeholder="No Brand" className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
                   </>
                 )}
               </div>
             </div>
+            {/* AI 类目/品牌推荐结果 (2026-08-27, new) — one shared panel for
+                both fields since a single generateAiCategoryBrandSuggestion()
+                call covers both; each half only renders once it has
+                something real to offer (a matched real category / a
+                non-empty brand guess). */}
+            {catBrandSuggestion && (catBrandSuggestion.categoryMatch || catBrandSuggestion.brand) && (
+              <div className="flex flex-wrap items-center gap-2 text-[11px] bg-indigo-50 border border-indigo-100 rounded-lg px-2.5 py-1.5">
+                <Sparkles size={11} className="text-indigo-500 shrink-0" />
+                <span className="text-slate-400">{t("AI 推荐：", "AI suggests:")}</span>
+                {catBrandSuggestion.categoryMatch && (
+                  <button type="button" onClick={applySuggestedCategory} className="px-2 py-0.5 rounded-full border border-indigo-200 text-indigo-600 bg-white hover:bg-indigo-100">
+                    {t("类目", "Category")}: {catBrandSuggestion.categoryMatch.label}
+                  </button>
+                )}
+                {catBrandSuggestion.brand && (
+                  <button type="button" onClick={applySuggestedBrand} className="px-2 py-0.5 rounded-full border border-indigo-200 text-indigo-600 bg-white hover:bg-indigo-100">
+                    {t("品牌", "Brand")}: {catBrandSuggestion.brand}
+                  </button>
+                )}
+                <button type="button" onClick={() => setCatBrandSuggestion(null)} className="ml-auto text-slate-300 hover:text-slate-600"><X size={12} /></button>
+              </div>
+            )}
           </div>
 
           {/* 3. 详情描述 — 富文本 + 内嵌图片上传 (2026-08-26, upgraded from
