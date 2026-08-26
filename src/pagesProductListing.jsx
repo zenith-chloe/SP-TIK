@@ -687,6 +687,25 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // selected (TikTok-real tree, then the internal category_trees library).
   const [aiTitleLoading, setAiTitleLoading] = useState(false);
   const [aiDescLoading, setAiDescLoading] = useState(false);
+  // Language selector for all AI actions (2026-08-27, new) — sent as
+  // `language` in every ai-generate call; see that function's
+  // LANGUAGE_CONFIG for the matching system-prompt instructions. Also
+  // drives the local offline-fallback description headers below so
+  // fallback output stays consistent with whichever language was picked,
+  // not just the real API path.
+  const AI_LANGUAGE_OPTIONS = [
+    { value: "my_en", label: t("马来语+英语（MY 市场）", "Bahasa Melayu & English (MY Market)") },
+    { value: "my", label: t("仅马来语", "Bahasa Melayu Only") },
+    { value: "en", label: t("仅英语", "English Only") },
+    { value: "zh", label: "中文" },
+  ];
+  const AI_LANGUAGE_HEADERS = {
+    my_en: { benefits: "Kelebihan Utama", features: "Ciri-Ciri Produk", specs: "Spesifikasi", cta: "Jom order sekarang!" },
+    my: { benefits: "Kelebihan Utama", features: "Ciri-Ciri Produk", specs: "Spesifikasi", cta: "Order sekarang sebelum kehabisan stok!" },
+    en: { benefits: "Key Benefits", features: "Product Features", specs: "Specifications", cta: "Order now while stocks last!" },
+    zh: { benefits: "核心卖点", features: "产品特点", specs: "规格参数", cta: "现在下单，库存有限！" },
+  };
+  const [aiLanguage, setAiLanguage] = useState("my_en");
   function currentCategoryLabel() {
     if (listingForm.tiktok_real_category_id && tiktokRealCategories.length > 0) {
       const norm = tiktokRealCategories.map(normalizeTikTokCategory);
@@ -768,7 +787,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
     // below instead of erroring, so this button can never fail or block.
     try {
       const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
-        body: { action: "keywords", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand },
+        body: { action: "keywords", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand, language: aiLanguage },
       });
       const errMessage = await extractInvokeError(error, data);
       if (errMessage) throw new Error(errMessage);
@@ -832,14 +851,16 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // the real ai-generate call fails (e.g. ANTHROPIC_API_KEY not configured).
   function generateFallbackDescription(title, category, brand, attributes) {
     const name = title || category || t("本商品", "This product");
-    const bulletSource = (attributes || []).filter((a) => a.name?.trim());
-    const bullets = bulletSource.length
-      ? bulletSource.map((a) => `<li>${a.name}${a.value ? `: ${a.value}` : ""}</li>`).join("")
-      : t("<li>做工精细，品质可靠</li><li>适用范围广，性价比高</li>", "<li>Well-made and reliable</li><li>Wide compatibility, great value</li>");
-    return t(
-      `<p><strong>${name}</strong>${brand ? ` — ${brand}` : ""}${category ? `，属于「${category}」类目` : ""}。</p><ul>${bullets}</ul><p>欢迎选购，如有疑问请联系客服。</p>`,
-      `<p><strong>${name}</strong>${brand ? ` by ${brand}` : ""}${category ? ` — ${category}` : ""}.</p><ul>${bullets}</ul><p>Feel free to reach out with any questions before you order.</p>`,
-    );
+    const h = AI_LANGUAGE_HEADERS[aiLanguage] || AI_LANGUAGE_HEADERS.my_en;
+    const specsBullets = (attributes || []).filter((a) => a.name?.trim())
+      .map((a) => `<li>${a.name}${a.value ? `: ${a.value}` : ""}</li>`).join("") || "<li>-</li>";
+    const benefitsBullets = "<li>Kualiti terjamin / Quality assured</li><li>Harga berpatutan / Great value</li>";
+    const featuresBullets = "<li>Reka bentuk tahan lama / Durable design</li><li>Sesuai untuk kegunaan harian / Suitable for daily use</li>";
+    return `<p><strong>${name}</strong>${brand ? ` — ${brand}` : ""}${category ? ` (${category})` : ""}</p>`
+      + `<p><strong>${h.benefits}</strong></p><ul>${benefitsBullets}</ul>`
+      + `<p><strong>${h.features}</strong></p><ul>${featuresBullets}</ul>`
+      + `<p><strong>${h.specs}</strong></p><ul>${specsBullets}</ul>`
+      + `<p>${h.cta}</p>`;
   }
   async function generateAiDescription() {
     if (!listingForm.title.trim() && !currentCategoryLabel()) {
@@ -848,7 +869,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
     }
     setAiDescLoading(true);
     const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
-      body: { action: "description", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand, attributes: listingForm.attributes },
+      body: { action: "description", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand, attributes: listingForm.attributes, language: aiLanguage },
     });
     setAiDescLoading(false);
     const errMessage = await extractInvokeError(error, data);
@@ -884,7 +905,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
     }
     setAiTitleSuggestLoading(true);
     const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
-      body: { action: "title_suggestions", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand },
+      body: { action: "title_suggestions", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand, language: aiLanguage },
     });
     setAiTitleSuggestLoading(false);
     const errMessage = await extractInvokeError(error, data);
@@ -917,7 +938,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
     }
     setAiCatBrandLoading(true);
     const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
-      body: { action: "category_brand_suggest", title: listingForm.title },
+      body: { action: "category_brand_suggest", title: listingForm.title, language: aiLanguage },
     });
     setAiCatBrandLoading(false);
     const errMessage = await extractInvokeError(error, data);
@@ -1810,6 +1831,18 @@ export function ProductListingCenter({ t, inventory, stores }) {
 
           {/* 2. 关联真实商品 SKU / 商品标题 / 分类 / 品牌 */}
           <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+            {/* AI 语言选择器 (2026-08-27, new) — applies to every AI button/
+                "+推荐" link in this form (title suggestions, keywords,
+                category/brand suggestion, AI 描述生成); sent as `language`
+                on every ai-generate call, see that function's
+                LANGUAGE_CONFIG for the matching prompt instructions. */}
+            <div className="flex items-center justify-end gap-2">
+              <Bot size={13} className="text-slate-400" />
+              <span className="text-[11px] text-slate-400">{t("AI 生成语言", "AI output language")}</span>
+              <select value={aiLanguage} onChange={(e) => setAiLanguage(e.target.value)} className="text-[11px] px-2 py-1 border border-slate-200 rounded-lg bg-white">
+                {AI_LANGUAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
             <div>
               <div className="text-xs text-slate-400 mb-1">{t("关联真实商品 SKU（可选，自动带入）", "Link a real product SKU (optional, auto-fills)")}</div>
               <select value={listingForm.sku} onChange={(e) => pickRealProduct(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg">

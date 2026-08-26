@@ -20,7 +20,13 @@
 // generateFallback* functions).
 //
 // Body: { action, title, category, attributes, brand,
-//   existingDescriptionText }
+//   existingDescriptionText, language }
+// - language (2026-08-27, new): "my_en" (default, mixed BM+English MY
+//   market style) | "my" (Bahasa Melayu only) | "en" (English only) |
+//   "zh" (Simplified Chinese only) — see LANGUAGE_CONFIG below. Every
+//   action's system prompt is instructed to strictly follow it; the
+//   "description" action's section headers (Kelebihan Utama/Ciri-Ciri
+//   Produk/Spesifikasi etc.) also switch per language.
 // - "title": generates a keyword-rich, high-converting product title.
 // - "title_suggestions" (2026-08-27, new): returns exactly 3 alternative
 //   full titles to choose from, instead of rewriting in place.
@@ -156,6 +162,32 @@ Deno.serve(async (req: Request) => {
   const attrLines = attributes.filter((a) => a.name).map((a) => `- ${a.name}: ${a.value || "(未填写 / not filled)"}`).join("\n");
   const ai = (system: string, user: string, maxTokens: number) => callAi(geminiKey, anthropicKey, system, user, maxTokens);
 
+  // Language selector (2026-08-27, new) — the frontend's dropdown next to
+  // the AI buttons ("MY market mixed" / "BM only" / "English only" /
+  // "中文") sends one of these codes; unknown/missing codes default to
+  // the original MY-market mixed behavior so every existing call site
+  // (which doesn't send this field yet) keeps working unchanged.
+  const LANGUAGE_CONFIG: Record<string, { instruction: string; headers: { benefits: string; features: string; specs: string; cta: string } }> = {
+    my_en: {
+      instruction: "Write in natural mixed Bahasa Melayu + English, the real code-switching style top TikTok Shop Malaysia sellers use (e.g. \"Topi Keledar\", \"Visor Bogo Original\", \"Motorcycle Accessories\"). Use high-converting localized Malaysian e-commerce search terms, not textbook translations.",
+      headers: { benefits: "Kelebihan Utama", features: "Ciri-Ciri Produk", specs: "Spesifikasi", cta: "Jom order sekarang!" },
+    },
+    my: {
+      instruction: "Write strictly in Bahasa Melayu only — no English words except real untranslatable brand/model names. Use high-converting localized Malaysian e-commerce search terms, natural to how Malay-speaking TikTok Shop buyers actually search and read.",
+      headers: { benefits: "Kelebihan Utama", features: "Ciri-Ciri Produk", specs: "Spesifikasi", cta: "Order sekarang sebelum kehabisan stok!" },
+    },
+    en: {
+      instruction: "Write strictly in English only — no Bahasa Melayu or Chinese words. Use high-converting English e-commerce search terms as used by top TikTok Shop Malaysia sellers targeting English-reading buyers.",
+      headers: { benefits: "Key Benefits", features: "Product Features", specs: "Specifications", cta: "Order now while stocks last!" },
+    },
+    zh: {
+      instruction: "Write strictly in Simplified Chinese (中文) only. Use high-converting Chinese e-commerce search terms as used by Chinese-reading TikTok Shop Malaysia buyers.",
+      headers: { benefits: "核心卖点", features: "产品特点", specs: "规格参数", cta: "现在下单，库存有限！" },
+    },
+  };
+  const language = String(body.language ?? "my_en");
+  const langConfig = LANGUAGE_CONFIG[language] || LANGUAGE_CONFIG.my_en;
+
   try {
     if (action === "title") {
       if (!title && !category) {
@@ -164,7 +196,7 @@ Deno.serve(async (req: Request) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      const system = "You are an e-commerce listing copywriter for TikTok Shop and Shopee sellers in Malaysia. Generate ONE single-line product title, no quotes, no markdown, no explanation — just the title text itself. Keep it under 255 characters, front-load the most searched keywords, include brand/category/key specs naturally, and match the tone of real high-converting Malaysian marketplace listings (mixed English/Malay is fine when natural).";
+      const system = `You are an e-commerce listing copywriter for TikTok Shop and Shopee sellers in Malaysia. Generate ONE single-line product title, no quotes, no markdown, no explanation — just the title text itself. Keep it under 255 characters, front-load the most searched keywords, include brand/category/key specs naturally. ${langConfig.instruction}`;
       const user = `Current draft title: ${title || "(empty)"}\nCategory: ${category || "(not selected)"}\nBrand: ${brand || "No Brand"}\n\nRewrite this into one high-converting, keyword-optimized product title.`;
       const generatedTitle = await ai(system, user, 200);
       return new Response(JSON.stringify({ title: generatedTitle.replace(/^["']|["']$/g, "").slice(0, 255) }), {
@@ -179,7 +211,7 @@ Deno.serve(async (req: Request) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      const system = "You are an e-commerce SEO copywriter for TikTok Shop sellers in Malaysia. Output ONLY strict JSON, no markdown fences, no explanation, in exactly this shape: {\"titles\":[\"...\",\"...\",\"...\"]} — exactly 3 alternative full product titles, each under 255 characters, front-loading the most-searched keywords for this product/category, mixed English/Malay where natural. No numbering, no quotes inside the strings, no duplicates.";
+      const system = `You are an e-commerce SEO copywriter for TikTok Shop sellers in Malaysia. Output ONLY strict JSON, no markdown fences, no explanation, in exactly this shape: {"titles":["...","...","..."]} — exactly 3 alternative full product titles, each under 255 characters, front-loading the most-searched keywords for this product/category. No numbering, no quotes inside the strings, no duplicates. ${langConfig.instruction}`;
       const user = `Current draft title: ${title || "(empty)"}\nCategory: ${category || "(not selected)"}\nBrand: ${brand || "No Brand"}`;
       const raw = await ai(system, user, 400);
       let parsed: { titles?: string[] };
@@ -201,7 +233,7 @@ Deno.serve(async (req: Request) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      const system = "You are an e-commerce listing copywriter for TikTok Shop and Shopee sellers in Malaysia. Output ONLY simple HTML using exclusively these tags: <p> <ul> <li> <strong> — no other tags, no markdown, no code fences, no explanation. Structure: one short marketing intro paragraph, then a '<strong>Product Features</strong>' section as a bullet list of selling highlights, then a '<strong>Specifications</strong>' section as a bullet list (using any real attributes given), then a short closing selling-point paragraph. Keep it professional and sales-focused, not exaggerated/false.";
+      const system = `You are an e-commerce listing copywriter for TikTok Shop and Shopee sellers in Malaysia. Output ONLY simple HTML using exclusively these tags: <p> <ul> <li> <strong> — no other tags, no markdown, no code fences, no explanation. Structure exactly in this order: one short marketing intro paragraph, then a '<strong>${langConfig.headers.benefits}</strong>' section as a bullet list of the top selling highlights, then a '<strong>${langConfig.headers.features}</strong>' section as a bullet list, then a '<strong>${langConfig.headers.specs}</strong>' section as a bullet list (using any real attributes given), then a short closing paragraph ending with a buying call-to-action similar in spirit to "${langConfig.headers.cta}". Keep it professional and sales-focused, not exaggerated/false. ${langConfig.instruction}`;
       const user = `Product title: ${title || "(not entered)"}\nCategory: ${category || "(not selected)"}\nBrand: ${brand || "No Brand"}\nKnown attributes:\n${attrLines || "(none filled in yet)"}\n\nWrite the product description.`;
       const html = await ai(system, user, 800);
       return new Response(JSON.stringify({ html }), {
@@ -216,7 +248,7 @@ Deno.serve(async (req: Request) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      const system = "You are a product-cataloging assistant for TikTok Shop sellers in Malaysia. Output ONLY strict JSON, no markdown fences, no explanation, in exactly this shape: {\"category\":\"...\",\"brand\":\"...\"} — a short plausible category name (2-4 words, e.g. \"Motorcycle Helmet\") and a plausible brand name guessed from the title (use \"No Brand\" if the title gives no brand hint — never invent a specific real brand name that isn't implied by the title).";
+      const system = `You are a product-cataloging assistant for TikTok Shop sellers in Malaysia. Output ONLY strict JSON, no markdown fences, no explanation, in exactly this shape: {"category":"...","brand":"..."} — a short plausible category name (2-4 words) and a plausible brand name guessed from the title (use "No Brand" if the title gives no brand hint — never invent a specific real brand name that isn't implied by the title). ${langConfig.instruction}`;
       const user = `Product title: ${title}`;
       const raw = await ai(system, user, 150);
       let parsed: { category?: string; brand?: string };
@@ -237,7 +269,7 @@ Deno.serve(async (req: Request) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      const system = "You are an e-commerce SEO researcher for TikTok Shop and Shopee sellers in Malaysia. Based on your general knowledge of how buyers search and how competing listings are titled in this marketplace (NOT live data — you have no real-time search access), suggest short keyword phrases for the given seed word/category. Output ONLY strict JSON, no markdown fences, no explanation, in exactly this shape: {\"trending\":[\"...\",\"...\"],\"competitor\":[\"...\",\"...\"]}. \"trending\" = 6-8 short phrases a real buyer would plausibly type into search for this product (mixed English/Malay is fine when natural). \"competitor\" = 6-8 short phrases/keyword combinations commonly seen in real competitor listing titles for this product type (brand-neutral, model numbers, common descriptors). Each phrase must be 1-4 words, no full sentences, no numbering, no duplicates between the two lists.";
+      const system = `You are an e-commerce SEO researcher for TikTok Shop and Shopee sellers in Malaysia. Based on your general knowledge of how buyers search and how competing listings are titled in this marketplace (NOT live data — you have no real-time search access), suggest short keyword phrases for the given seed word/category. Output ONLY strict JSON, no markdown fences, no explanation, in exactly this shape: {"trending":["...","..."],"competitor":["...","..."]}. "trending" = 6-8 short phrases a real buyer would plausibly type into search for this product. "competitor" = 6-8 short phrases/keyword combinations commonly seen in real competitor listing titles for this product type (brand-neutral, model numbers, common descriptors). Each phrase must be 1-4 words, no full sentences, no numbering, no duplicates between the two lists. ${langConfig.instruction}`;
       const user = `Seed keyword/title: ${title || "(empty)"}\nCategory: ${category || "(not selected)"}\nBrand: ${brand || "No Brand"}`;
       const raw = await ai(system, user, 500);
       let parsed: { trending?: string[]; competitor?: string[] };
