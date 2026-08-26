@@ -1,0 +1,22 @@
+-- Seller Discount (2026-08-26) — real TikTok field, live-verified against
+-- real order 585732518380734339 via a temporary Get Order Detail debug
+-- probe (order/202309/orders?ids=...): TikTok's line_items carry BOTH
+-- `platform_discount` (TikTok-funded, "0" for this order) and
+-- `seller_discount` ("7.25" for this order) as two genuinely separate real
+-- fields, both already present in the regular POST /order/202309/orders/search
+-- response too (confirmed live — no extra API call needed for ongoing sync).
+--
+-- Corrects the pre-settlement Est. Revenue formula: previously used
+-- original_price alone (correct only when seller_discount = 0, e.g. real
+-- order 585688274303748056 whose whole gap was platform_discount), which
+-- overstated revenue — and every percentage-based fee built on it — for
+-- any order where a real seller discount actually applies. Real formula,
+-- verified to the cent against order 585732518380734339 (RM145 - RM7.25 =
+-- RM137.75 revenue; commission RM9.67, transaction RM5.21, BXP RM6.69,
+-- support RM0.54, affiliate RM2.76, total fees RM24.87, payout RM112.88 —
+-- all six numbers match TikTok's real official settlement preview exactly):
+--   Est. Revenue = original_price - seller_discount
+-- platform_discount is deliberately NOT subtracted — it's TikTok's own
+-- subsidy, not a real cost to the seller (same rationale as the existing
+-- tiktok_platform_discount credit line on settled orders).
+alter table order_items add column if not exists seller_discount numeric default 0;

@@ -449,7 +449,7 @@ export default function App() {
       while (true) {
         const { data, error } = await supabaseClient
           .from("order_items")
-          .select("order_id, sku, product_name, variation, qty, unit_price, original_price, image_url")
+          .select("order_id, sku, product_name, variation, qty, unit_price, original_price, seller_discount, image_url")
           .in("order_id", chunk)
           .range(from, from + PAGE_SIZE - 1);
         if (error) {

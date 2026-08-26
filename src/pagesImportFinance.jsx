@@ -756,19 +756,28 @@ function resolveTikTokBxpFee(o, revenue) {
 // real (still-unsettled) order today, no fallback guess rate. Total =
 // Est. Revenue - sum of Est. Fees; zero-amount lines drop out automatically.
 export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEstimate) {
-  const lineItems = o.items && o.items.length > 0 ? o.items : [{ unitPrice: o.unitPrice, qty: o.qty, originalPrice: o.originalPrice }];
-  // Est. Revenue base (2026-08-24, user-confirmed fix, live-verified against
-  // real order 585688274303748056): TikTok's own real pre-settlement
-  // estimate uses original_price ("subtotal before/after seller discounts"
-  // in its Settlement Breakdown UI), not sale_price — sale_price already
-  // nets out platform_discount (TikTok-funded, not a real cost to the
-  // seller), so basing revenue on it undercounted vs TikTok's own number
-  // (real gap: RM138 vs our RM124.20 on that order, exactly explained by
-  // that order's platform_discount). `it.originalPrice` is the real synced
-  // field (order_items.original_price, tiktok-sync-orders); falls back to
-  // unitPrice*qty for rows synced before this field existed (originalPrice
-  // will be 0 on those) so nothing breaks for not-yet-resynced orders.
-  const itemRevenue = (it) => (it.originalPrice > 0 ? it.originalPrice : it.unitPrice * it.qty);
+  const lineItems = o.items && o.items.length > 0 ? o.items : [{ unitPrice: o.unitPrice, qty: o.qty, originalPrice: o.originalPrice, sellerDiscount: o.sellerDiscount }];
+  // Est. Revenue base (2026-08-24, user-confirmed fix; revised 2026-08-26
+  // once a second real order exposed the missing half of the formula).
+  // TikTok's own real pre-settlement estimate uses original_price MINUS
+  // seller_discount only — NOT original_price alone, and NOT sale_price.
+  // sale_price nets out BOTH platform_discount (TikTok-funded, not a real
+  // cost to the seller — deliberately not subtracted here) AND
+  // seller_discount (seller-funded, a genuine real cost — this IS
+  // subtracted). Live-verified against two real orders with opposite
+  // discount compositions: 585688274303748056 (seller_discount=0,
+  // platform_discount=13.80 → revenue = original_price exactly, RM138) and
+  // 585732518380734339 (seller_discount=7.25, platform_discount=0 → revenue
+  // = 145-7.25 = RM137.75, and every downstream fee — commission RM9.67,
+  // transaction RM5.21, BXP RM6.69, support RM0.54, affiliate RM2.76,
+  // payout RM112.88 — matches TikTok's real settlement preview to the
+  // cent). `it.originalPrice`/`it.sellerDiscount` are the real synced
+  // fields (order_items.original_price/seller_discount, tiktok-sync-orders);
+  // falls back to unitPrice*qty for rows synced before original_price
+  // existed (originalPrice will be 0 on those) so nothing breaks for
+  // not-yet-resynced orders — sellerDiscount defaults to 0 either way,
+  // which is always a safe "no seller discount" default, never "unknown".
+  const itemRevenue = (it) => (it.originalPrice > 0 ? it.originalPrice - (it.sellerDiscount || 0) : it.unitPrice * it.qty);
   const revenue = +lineItems.reduce((sum, it) => sum + itemRevenue(it), 0).toFixed(2);
   const commissionAmt = +lineItems
     .reduce((sum, it) => sum + itemRevenue(it) * resolveTikTokCommissionRate(it), 0)

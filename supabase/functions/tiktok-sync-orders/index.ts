@@ -98,6 +98,23 @@
 // link, since "renew" refuses outright once TikTok considers the grant
 // permanent.
 //
+// 2026-08-26 — seller_discount capture. Real order 585732518380734339
+// (user-provided TikTok settlement preview: RM145 subtotal - RM7.25 seller
+// discount = RM137.75, all downstream fees based on RM137.75) exposed a gap
+// in the 2026-08-24 original_price fix: that fix always used original_price
+// as-is for Est. Revenue, correct only when the original_price↔sale_price
+// gap is entirely platform_discount (TikTok-funded, doesn't reduce seller
+// revenue) — but this order's gap was entirely seller_discount (seller-
+// funded, genuinely reduces revenue), and original_price alone overstated
+// it by RM7.25. Live-verified via a temporary Get Order Detail debug probe
+// (order/202309/orders?ids=...) that TikTok's real line_items carry
+// `platform_discount` and `seller_discount` as two separate real fields —
+// then confirmed both are ALSO already present in the regular order-search
+// response used for ongoing sync (no extra API call needed). Real formula:
+// Est. Revenue = original_price - seller_discount (see upsertOrderPage's
+// own comment for the exact live verification against both this order and
+// the earlier platform_discount-only reference order).
+//
 // Required secrets: TIKTOK_APP_KEY, TIKTOK_APP_SECRET
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -390,25 +407,35 @@ async function upsertOrderPage(
     // for every line_item after the first, under-deducting stock.
     // original_price (2026-08-24, new) — real field, already present in this
     // same line_items payload (no new API call), previously not captured.
-    // sale_price already nets out platform_discount (TikTok-funded, not a
-    // real cost to the seller), so pre-settlement Est. Revenue built from
-    // sale_price undercounts vs TikTok's own real estimate, which is based
-    // on original_price ("subtotal before/after seller discounts" in
-    // TikTok's Settlement Breakdown UI — live-verified against real order
-    // 585688274303748056: TikTok showed RM138 revenue, we showed RM124.20,
-    // gap of RM13.80 exactly explained by this order's real platform_discount).
-    // Summed the same way sale_price already is, for the same reason
+    // sale_price nets out BOTH platform_discount (TikTok-funded) AND
+    // seller_discount (seller-funded) from original_price. Real pre-
+    // settlement Est. Revenue = original_price - seller_discount only —
+    // platform_discount is deliberately NOT subtracted, since it's TikTok's
+    // own subsidy, not a real cost to the seller. Live-verified against two
+    // real orders with opposite discount compositions: 585688274303748056
+    // (seller_discount=0, platform_discount=13.80 — revenue = original_price
+    // exactly, TikTok showed RM138) and 585732518380734339 (seller_discount=
+    // 7.25, platform_discount=0 — revenue = 145-7.25 = RM137.75, and every
+    // downstream fee — commission RM9.67, transaction RM5.21, BXP RM6.69,
+    // support RM0.54, affiliate RM2.76, payout RM112.88 — matches TikTok's
+    // real settlement preview to the cent). seller_discount confirmed
+    // present in this same line_items payload via a temporary Get Order
+    // Detail debug probe, then confirmed also present in the regular
+    // order-search response used here (no extra API call needed for
+    // ongoing sync). Both fields summed the same way sale_price already is
     // (multiple line_items per SKU).
-    const itemsBySku = new Map<string, { productName: string; variation: string | null; qty: number; subtotal: number; originalPrice: number; imageUrl: string | null }>();
+    const itemsBySku = new Map<string, { productName: string; variation: string | null; qty: number; subtotal: number; originalPrice: number; sellerDiscount: number; imageUrl: string | null }>();
     for (const item of o.line_items ?? []) {
       const sku = item.seller_sku || item.sku_id || String(item.id);
       const salePrice = Number(item.sale_price ?? 0);
       const originalPrice = Number(item.original_price ?? item.sale_price ?? 0);
+      const sellerDiscount = Number(item.seller_discount ?? 0);
       const existing = itemsBySku.get(sku);
       if (existing) {
         existing.qty += 1;
         existing.subtotal += salePrice;
         existing.originalPrice += originalPrice;
+        existing.sellerDiscount += sellerDiscount;
       } else {
         itemsBySku.set(sku, {
           productName: item.product_name,
@@ -416,6 +443,7 @@ async function upsertOrderPage(
           qty: 1,
           subtotal: salePrice,
           originalPrice,
+          sellerDiscount,
           imageUrl: item.sku_image ?? null,
         });
       }
@@ -432,6 +460,7 @@ async function upsertOrderPage(
           unit_price: grouped.subtotal / grouped.qty,
           subtotal: grouped.subtotal,
           original_price: grouped.originalPrice,
+          seller_discount: grouped.sellerDiscount,
           image_url: grouped.imageUrl,
         },
         { onConflict: "order_id,sku" },

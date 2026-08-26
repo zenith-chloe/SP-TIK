@@ -254,12 +254,21 @@ export function mapDbOrder(order, items) {
       qty: it.qty || 1,
       unitPrice: Number(it.unit_price || 0),
       // originalPrice (2026-08-24) — real TikTok list price before any
-      // platform-funded discount (order_items.original_price, synced by
-      // tiktok-sync-orders). Falls back to 0 for rows synced before this
-      // field existed / for Shopee (never populated there) — consumers must
-      // treat 0 as "unknown" and fall back to unitPrice*qty, not as a real
-      // zero-price item.
+      // discount (order_items.original_price, synced by tiktok-sync-orders).
+      // Falls back to 0 for rows synced before this field existed / for
+      // Shopee (never populated there) — consumers must treat 0 as
+      // "unknown" and fall back to unitPrice*qty, not as a real zero-price
+      // item.
       originalPrice: Number(it.original_price || 0),
+      // sellerDiscount (2026-08-26) — real seller-funded discount
+      // (order_items.seller_discount, synced by tiktok-sync-orders),
+      // separate from TikTok's own platform-funded discount (which is
+      // deliberately NOT subtracted from Est. Revenue — see
+      // tiktokEstimatedBreakdown's own comment). 0 for rows synced before
+      // this field existed, which is the same as "no seller discount" —
+      // no separate "unknown" state needed here (unlike originalPrice)
+      // since 0 is always a safe, honest default for a discount amount.
+      sellerDiscount: Number(it.seller_discount || 0),
     })),
     shippingFee: Number(order.shipping_fee || 0),
     platformFee: 0,
