@@ -1688,7 +1688,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="text-xs text-slate-400 mb-1">Category / 类目 / Kategori</div>
+                <div className="text-xs text-slate-400 mb-1">{t("类目", "Category")}</div>
                 {/* 类目树 — 平台隔离 (2026-08-25) — Shopee's page only ever
                     queries the internal Shopee category library; TikTok's page
                     only ever queries the real TikTok Category API (with the
@@ -1747,7 +1747,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                           className="w-full flex items-center justify-between px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white hover:border-slate-300 text-left"
                         >
                           <span className={listingForm.tiktok_real_category_id ? "text-slate-700" : "text-slate-400"}>
-                            {tiktokRealSelectedPathLabel() || "Select category / 请选择类目 / Pilih kategori"}
+                            {tiktokRealSelectedPathLabel() || t("请选择类目", "Select category")}
                           </span>
                           <ChevronDown size={13} className={`text-slate-400 shrink-0 ml-2 transition-transform ${showCategoryPicker ? "rotate-180" : ""}`} />
                         </button>
@@ -1758,7 +1758,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                                 autoFocus
                                 value={categorySearchQuery}
                                 onChange={(e) => setCategorySearchQuery(e.target.value)}
-                                placeholder="Search / 搜索类目 / Cari kategori"
+                                placeholder={t("搜索类目", "Search category")}
                                 className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
                               />
                             </div>
