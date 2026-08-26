@@ -2450,14 +2450,28 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
   // "genuinely organic, no creator involved" rather than "just hasn't been
   // synced yet". TikTok only; Shopee orders skip both fetches entirely.
   const [affiliateAmt, setAffiliateAmt] = useState(undefined); // number | "organic" | undefined (unknown/loading)
+  // Affiliate Shop Ads Commission (2026-08-26, new) — separate real fee
+  // TikTok's own settlement preview itemizes on its own line (confirmed
+  // live against real order 585731533702923353's official screenshot:
+  // -RM1.75, exactly matching this order's real
+  // tiktok_affiliate_commissions.estimated_paid_shop_ads_commission). Kept
+  // as its own number (not folded into affiliateAmt above) since it's a
+  // genuinely distinct fee — an order can have a real ads-commission
+  // charge with zero organic/partner commission, same as this one (its
+  // estimated_paid_commission is null while estimated_paid_shop_ads_commission
+  // is real). Defaults to 0 (not undefined) when no row/value exists — this
+  // fee simply doesn't apply then, unlike affiliateAmt above which has its
+  // own "not synced yet vs. genuinely organic" distinction to preserve.
+  const [affiliateAdsAmt, setAffiliateAdsAmt] = useState(0);
   useEffect(() => {
-    if (order.platform !== "TikTok Shop") { setAffiliateAmt(undefined); return; }
+    if (order.platform !== "TikTok Shop") { setAffiliateAmt(undefined); setAffiliateAdsAmt(0); return; }
     let cancelled = false;
     setAffiliateAmt(undefined);
+    setAffiliateAdsAmt(0);
     Promise.all([
       supabaseClient
         .from("tiktok_affiliate_commissions")
-        .select("estimated_paid_commission")
+        .select("estimated_paid_commission, estimated_paid_shop_ads_commission")
         .eq("order_no", order.id),
       supabaseClient
         .from("sync_logs")
@@ -2470,6 +2484,8 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
     ]).then(([rowsRes, lastSyncRes]) => {
       if (cancelled) return;
       const rows = rowsRes.data || [];
+      const adsSum = rows.reduce((s, r) => s + (r.estimated_paid_shop_ads_commission != null ? Number(r.estimated_paid_shop_ads_commission) : 0), 0);
+      setAffiliateAdsAmt(+adsSum.toFixed(2));
       if (rows.length > 0) {
         const sum = rows.reduce((s, r) => s + (r.estimated_paid_commission != null ? Number(r.estimated_paid_commission) : 0), 0);
         setAffiliateAmt(+sum.toFixed(2));
@@ -2502,7 +2518,7 @@ function ShopeeStyleOrderDrawerContent({ t, order, onClose, onPrint, onUpdateSta
   // to do here now; incomeBreakdown()'s result already includes both.
   const incomeDetail = hasRealData
     ? incomeBreakdown(order, settlement, t)
-    : (order.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(order, t, affiliateAmt) : estimatedBreakdown(order, t));
+    : (order.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(order, t, affiliateAmt, affiliateAdsAmt) : estimatedBreakdown(order, t));
   // Real buyer_payment_info (2026-08-20) — Shopee's own get_escrow_detail
   // response, same raw_response already stored by shopee-pending-estimate-sync.
   const buyerPaymentInfo = settlement?.raw_response?.response?.buyer_payment_info || null;

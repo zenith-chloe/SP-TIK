@@ -755,7 +755,7 @@ function resolveTikTokBxpFee(o, revenue) {
 // explicitly confirms participation — both correctly resolve to 0 on every
 // real (still-unsettled) order today, no fallback guess rate. Total =
 // Est. Revenue - sum of Est. Fees; zero-amount lines drop out automatically.
-export function tiktokEstimatedBreakdown(o, t, affiliateEstimate) {
+export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEstimate) {
   const lineItems = o.items && o.items.length > 0 ? o.items : [{ unitPrice: o.unitPrice, qty: o.qty, originalPrice: o.originalPrice }];
   // Est. Revenue base (2026-08-24, user-confirmed fix, live-verified against
   // real order 585688274303748056): TikTok's own real pre-settlement
@@ -814,6 +814,18 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate) {
   const affiliateAmt = typeof affiliateEstimate === "number"
     ? +affiliateEstimate.toFixed(2)
     : Number(resolveTikTokAffiliateCommission(o, lineItems));
+  // Affiliate Shop Ads Commission (2026-08-26, new) — a distinct real fee
+  // from the organic/partner commission line above, itemized separately by
+  // TikTok's own settlement preview (live-verified against real order
+  // 585731533702923353: TikTok shows -RM1.75 on this exact line, and this
+  // order's real tiktok_affiliate_commissions.estimated_paid_shop_ads_commission
+  // is 1.75 — combined with the other real fees below, revenue RM38.80 -
+  // commission RM2.72 - transaction RM1.53 - BXP RM1.89 - support RM0.54 -
+  // ads RM1.75 = total fees RM8.43, payout RM30.37 — matches TikTok's real
+  // numbers on this order exactly). Caller passes a plain number (0 when
+  // absent) — no "not synced" disclaimer needed for this one since it's a
+  // simple additive fee line, not the thing affiliateNote below is about.
+  const affiliateAdsAmt = typeof affiliateAdsEstimate === "number" ? +affiliateAdsEstimate.toFixed(2) : 0;
   const fees = [
     { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
     // pct here is the effective rate vs merchandise revenue (matches how
@@ -826,6 +838,7 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate) {
     { label: t("平台支持费", "Platform Support Fee"), amount: platformSupportAmt, pct: revenue > 0 ? (platformSupportAmt / revenue) * 100 : 0 },
     { label: t("预估卖家运费", "Est. Seller Shipping Fee"), amount: shippingAmt, pct: revenue > 0 ? (shippingAmt / revenue) * 100 : 0 },
     { label: t("预估达人佣金", "Est. Affiliate Commission"), amount: affiliateAmt, pct: revenue > 0 ? (affiliateAmt / revenue) * 100 : 0 },
+    { label: t("达人/商城广告佣金 (Affiliate Shop Ads Commission)", "Affiliate Shop Ads Commission"), amount: affiliateAdsAmt, pct: revenue > 0 ? (affiliateAdsAmt / revenue) * 100 : 0 },
   ].filter((f) => f.amount !== 0);
   const totalFees = +fees.reduce((sum, f) => sum + f.amount, 0).toFixed(2);
   // Affiliate commission placeholder note (2026-08-22, user request; revised
@@ -868,8 +881,8 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate) {
 // else (Shopee) keeps using the flat-rate estimatedBreakdown(). Single
 // switch point so Finance page and Order Drawer can never diverge on which
 // function they call for a given platform again.
-export function estimateBreakdownForPlatform(o, t, affiliateEstimate) {
-  return o.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(o, t, affiliateEstimate) : estimatedBreakdown(o, t);
+export function estimateBreakdownForPlatform(o, t, affiliateEstimate, affiliateAdsEstimate) {
+  return o.platform === "TikTok Shop" ? tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEstimate) : estimatedBreakdown(o, t);
 }
 
 // Shared expand-panel renderer (2026-08-19, new; isEstimate added 2026-08-20)
@@ -1192,21 +1205,33 @@ export function Finance({ t, orders, stores }) {
   // orders with no settlement row yet, so historical/settled revenue numbers
   // can't be distorted by a pre-settlement estimate changing later.
   const [affiliateEstimates, setAffiliateEstimates] = useState({}); // order_no -> summed estimated_paid_commission
+  // Affiliate Shop Ads Commission (2026-08-26, new) — a distinct real fee
+  // from the organic/partner commission above (see tiktokEstimatedBreakdown's
+  // own comment for the full real-order verification), summed separately
+  // per order_no since a row can carry a real ads-commission value with a
+  // null estimated_paid_commission (exactly real order 585731533702923353).
+  const [affiliateAdsEstimates, setAffiliateAdsEstimates] = useState({});
   useEffect(() => {
-    if (activePlatform !== "TikTok Shop") { setAffiliateEstimates({}); return; }
+    if (activePlatform !== "TikTok Shop") { setAffiliateEstimates({}); setAffiliateAdsEstimates({}); return; }
     let cancelled = false;
     supabaseClient
       .from("tiktok_affiliate_commissions")
-      .select("order_no, estimated_paid_commission")
+      .select("order_no, estimated_paid_commission, estimated_paid_shop_ads_commission")
       .then(({ data, error }) => {
         if (cancelled) return;
         if (error) { console.error("tiktok_affiliate_commissions fetch failed", error); return; }
         const byOrderNo = {};
+        const adsByOrderNo = {};
         (data || []).forEach((r) => {
-          if (r.estimated_paid_commission == null) return;
-          byOrderNo[r.order_no] = (byOrderNo[r.order_no] || 0) + Number(r.estimated_paid_commission);
+          if (r.estimated_paid_commission != null) {
+            byOrderNo[r.order_no] = (byOrderNo[r.order_no] || 0) + Number(r.estimated_paid_commission);
+          }
+          if (r.estimated_paid_shop_ads_commission != null) {
+            adsByOrderNo[r.order_no] = (adsByOrderNo[r.order_no] || 0) + Number(r.estimated_paid_shop_ads_commission);
+          }
         });
         setAffiliateEstimates(byOrderNo);
+        setAffiliateAdsEstimates(adsByOrderNo);
       });
     return () => { cancelled = true; };
   }, [activePlatform]);
@@ -1718,7 +1743,7 @@ export function Finance({ t, orders, stores }) {
               // synced, or TikTok) fall back to estimatedBreakdown().
               const hasRealData = isReal || isRealEstimate;
               const real = settlements[o.id];
-              const detail = hasRealData ? incomeBreakdown(o, real, t) : estimateBreakdownForPlatform(o, t, affiliateEstimates[o.id]);
+              const detail = hasRealData ? incomeBreakdown(o, real, t) : estimateBreakdownForPlatform(o, t, affiliateEstimates[o.id], affiliateAdsEstimates[o.id]);
               const rate = platformFeeRate(o.platform);
               // Row-summary total (2026-08-21) — derived from `detail.fees`
               // (the same estimateBreakdownForPlatform() result the expanded
@@ -1962,7 +1987,7 @@ export function Finance({ t, orders, stores }) {
         if (!o) return null;
         const finance = orderFinance(o);
         const real = settlements[o.id];
-        const detail = (finance.isReal || finance.isRealEstimate) ? incomeBreakdown(o, real, t) : estimateBreakdownForPlatform(o, t, affiliateEstimates[o.id]);
+        const detail = (finance.isReal || finance.isRealEstimate) ? incomeBreakdown(o, real, t) : estimateBreakdownForPlatform(o, t, affiliateEstimates[o.id], affiliateAdsEstimates[o.id]);
         return (
           <SettlementDetailDrawer
             order={o}
