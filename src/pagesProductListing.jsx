@@ -44,6 +44,10 @@ const TIKTOK_CATEGORY_NAME_TRANSLATIONS = {
   "bahagian motosikal": { zh: "摩托车配件", en: "Motorcycle Parts" },
   "elektronik kereta": { zh: "车载电子", en: "Car Electronics" },
   "motosikal penghantaran manual": { zh: "手动传动摩托车", en: "Manual Transmission Motorcycle" },
+  "perkakas rumah": { zh: "五金工具", en: "Home Hardware" },
+  "pakaian & pakaian dalam wanita": { zh: "女装与内衣", en: "Women's Apparel & Underwear" },
+  "fesyen muslim": { zh: "穆斯林时尚", en: "Muslim Fashion" },
+  "kasut": { zh: "鞋类", en: "Shoes" },
 };
 
 // Word-level fallback glossary (2026-08-26) — used only when the full
@@ -89,14 +93,25 @@ const TIKTOK_CATEGORY_WORD_TRANSLATIONS = {
   "gelang": { zh: "环", en: "Ring" },
   "roda": { zh: "轮", en: "Wheel" },
   "kelengkapan": { zh: "配件", en: "Fittings" },
+  "perkakas": { zh: "五金", en: "Hardware" },
+  "pakaian": { zh: "服装", en: "Apparel" },
+  "dalam": { zh: "内", en: "Under" },
+  "wanita": { zh: "女", en: "Women's" },
+  "lelaki": { zh: "男", en: "Men's" },
+  "fesyen": { zh: "时尚", en: "Fashion" },
+  "muslim": { zh: "穆斯林", en: "Muslim" },
+  "kanak-kanak": { zh: "儿童", en: "Kids" },
+  "bayi": { zh: "婴儿", en: "Baby" },
 };
 
-// Splits a Malay category phrase and substitutes each recognised word via
-// TIKTOK_CATEGORY_WORD_TRANSLATIONS. Returns null (no match at all) so the
-// caller can fall back to the raw Malay text.
+// Splits a Malay category phrase and substitutes recognised words via
+// TIKTOK_CATEGORY_WORD_TRANSLATIONS (2026-08-26, all-or-nothing per
+// explicit request — mixing an untranslated Malay word into an otherwise-
+// translated phrase, e.g. "Perkakas家居", is banned). Returns null unless
+// EVERY word token has a known translation; the caller then falls back to
+// the full raw Malay text instead of a half-translated hybrid string.
 function translateTikTokCategoryWords(raw) {
   const parts = raw.split(/(\s+|&|-)/);
-  let matchedAny = false;
   const zhParts = [];
   const enParts = [];
   for (const part of parts) {
@@ -104,10 +119,9 @@ function translateTikTokCategoryWords(raw) {
     if (part === "&") { zhParts.push("与"); enParts.push("&"); continue; }
     if (part === "-") { zhParts.push("-"); enParts.push("-"); continue; }
     const w = TIKTOK_CATEGORY_WORD_TRANSLATIONS[part.trim().toLowerCase()];
-    if (w) { matchedAny = true; zhParts.push(w.zh); enParts.push(w.en); }
-    else { zhParts.push(part); enParts.push(part); }
+    if (!w) return null; // any unknown word aborts the whole phrase — no partial mixing
+    zhParts.push(w.zh); enParts.push(w.en);
   }
-  if (!matchedAny) return null;
   return { zh: zhParts.join(""), en: enParts.join(" ").replace(/\s+/g, " ").trim() };
 }
 
