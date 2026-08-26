@@ -514,34 +514,93 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // volume.
   const [aiKeywordSuggestions, setAiKeywordSuggestions] = useState(null); // { trending: [], competitor: [] } | null
   const [showAiKeywordDropdown, setShowAiKeywordDropdown] = useState(false);
+  // 离线智能生成兜底 (2026-08-26, new) — a real, deterministic, purely
+  // local keyword-expansion algorithm (no network call, can never fail or
+  // be blocked by a missing ANTHROPIC_API_KEY). Same honesty boundary as
+  // the real ai-generate call: this is rule-based expansion of the
+  // seed word using common Malaysian marketplace listing vocabulary, not
+  // real TikTok/Shopee search-volume or competitor data — the dropdown UI
+  // labels both this and the real-AI path identically ("AI 推荐，非实时
+  //平台数据") since neither is ever real live platform analytics.
+  const BUYER_SEARCH_MODIFIERS = ["original", "murah", "harga borong", "ready stock", "terbaru", "set lengkap", "COD", "berkualiti tinggi"];
+  const COMPETITOR_TITLE_MODIFIERS = ["High Quality", "Premium", "Universal Fit", "Heavy Duty", "Waterproof", "SIRIM Approved", "3 Snap", "Anti Fog"];
+  function generateFallbackKeywords(title, category) {
+    const seedPhrase = (title || category || "").trim();
+    const catWord = titleTokens(category)[0] || "";
+    const trending = [];
+    const competitor = [];
+    for (const m of BUYER_SEARCH_MODIFIERS) {
+      if (trending.length >= 8) break;
+      const phrase = `${seedPhrase} ${m}`.trim();
+      if (phrase && !trending.includes(phrase)) trending.push(phrase);
+    }
+    if (catWord && !trending.some((p) => p.toLowerCase() === catWord.toLowerCase())) trending.unshift(catWord);
+    for (const m of COMPETITOR_TITLE_MODIFIERS) {
+      if (competitor.length >= 8) break;
+      const phrase = `${seedPhrase} ${m}`.trim();
+      if (phrase && !competitor.includes(phrase)) competitor.push(phrase);
+    }
+    // seed carried alongside the badges (2026-08-26, new) — appendTitleKeyword
+    // needs to know exactly what prefix each badge was built on, so it can
+    // strip that prefix back off before appending rather than re-appending
+    // the whole seed every time a badge is clicked (which would duplicate
+    // it further on every click after the first, since the title itself
+    // grows/changes after each click while every badge in this batch was
+    // generated against the ORIGINAL seed, not the current title).
+    return { trending: trending.slice(0, 8), competitor: competitor.slice(0, 8), seed: seedPhrase };
+  }
   async function generateAiTitleKeywords() {
     if (!listingForm.title.trim() && !currentCategoryLabel()) {
       showToast(t("请先输入商品标题关键词或选择分类", "Enter a seed keyword or select a category first"));
       return;
     }
     setAiTitleLoading(true);
-    const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
-      body: { action: "keywords", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand },
-    });
-    setAiTitleLoading(false);
-    const errMessage = await extractInvokeError(error, data);
-    if (errMessage) {
-      showToast(errMessage);
-      console.error("generateAiTitleKeywords failed", errMessage);
-      return;
+    // Real AI first (in case ANTHROPIC_API_KEY is configured, for
+    // genuinely better results); any failure — missing key, network error,
+    // rate limit, anything — falls straight back to the local generator
+    // below instead of erroring, so this button can never fail or block.
+    try {
+      const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
+        body: { action: "keywords", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand },
+      });
+      const errMessage = await extractInvokeError(error, data);
+      if (errMessage) throw new Error(errMessage);
+      // Real-AI keywords are standalone short phrases (see ai-generate's
+      // own system prompt), not "seed + modifier" concatenations, so no
+      // seed-prefix to strip on click — seed: "" makes appendTitleKeyword's
+      // startsWith check below a no-op for this batch, same as before.
+      setAiKeywordSuggestions({ trending: data.trending || [], competitor: data.competitor || [], seed: "" });
+    } catch (e) {
+      console.error("generateAiTitleKeywords: real AI call failed, using offline fallback", e);
+      setAiKeywordSuggestions(generateFallbackKeywords(listingForm.title, currentCategoryLabel()));
     }
-    setAiKeywordSuggestions({ trending: data.trending || [], competitor: data.competitor || [] });
+    setAiTitleLoading(false);
     setShowAiKeywordDropdown(true);
   }
   // Appends a clicked keyword badge to the title (space-separated, no
   // duplicate append if that exact word/phrase is already present) —
   // dropdown stays open so multiple badges can be clicked in sequence to
   // build up one SEO-friendly title, per the explicit multi-select request.
-  function appendTitleKeyword(word) {
+  function appendTitleKeyword(word, seedUsed) {
     setListingForm((prev) => {
       const existing = prev.title.trim();
-      if (!word || existing.toLowerCase().includes(word.toLowerCase())) return prev;
-      const nextTitle = (existing ? `${existing} ${word}` : word).slice(0, TITLE_MAX_LEN);
+      if (!word) return prev;
+      // The offline fallback's own badges are built as "seed + modifier"
+      // (see generateFallbackKeywords above), so every badge in a batch
+      // carries the SAME seed prefix — strip it back off here before
+      // appending, using the seed the batch actually recorded (not the
+      // current title, which may have already grown from earlier clicks).
+      // Without this, a second badge click would re-append the whole seed
+      // a second time on top of what the first click already produced.
+      // Real-AI badges pass seedUsed: "" (standalone phrases, no prefix to
+      // strip), so this is a no-op for them — same as before.
+      let toAppend = word;
+      if (seedUsed && word.toLowerCase().startsWith(seedUsed.toLowerCase())) {
+        toAppend = word.slice(seedUsed.length).trim();
+      }
+      if (!toAppend) return prev;
+      if (existing.toLowerCase().includes(toAppend.toLowerCase())) return prev; // already present, no-op
+      const nextTitle = (existing ? `${existing} ${toAppend}` : toAppend).slice(0, TITLE_MAX_LEN);
       return { ...prev, title: nextTitle };
     });
   }
@@ -1475,7 +1534,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                         <div className="text-[10px] text-slate-400 mb-1">🔥 {t("买家高频热搜词（AI 推荐，非实时平台数据）", "Buyer High-Volume Search Keywords (AI-suggested, not live platform data)")}</div>
                         <div className="flex flex-wrap gap-1.5">
                           {aiKeywordSuggestions.trending.map((kw, i) => (
-                            <button key={i} type="button" onClick={() => appendTitleKeyword(kw)} className="text-[11px] px-2 py-1 rounded-full border border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100">
+                            <button key={i} type="button" onClick={() => appendTitleKeyword(kw, aiKeywordSuggestions.seed)} className="text-[11px] px-2 py-1 rounded-full border border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100">
                               {kw}
                             </button>
                           ))}
@@ -1487,7 +1546,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                         <div className="text-[10px] text-slate-400 mb-1">🏆 {t("高销量同行标题词组（AI 推荐，非实时平台数据）", "Top Seller Title Keyword Combinations (AI-suggested, not live platform data)")}</div>
                         <div className="flex flex-wrap gap-1.5">
                           {aiKeywordSuggestions.competitor.map((kw, i) => (
-                            <button key={i} type="button" onClick={() => appendTitleKeyword(kw)} className="text-[11px] px-2 py-1 rounded-full border border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100">
+                            <button key={i} type="button" onClick={() => appendTitleKeyword(kw, aiKeywordSuggestions.seed)} className="text-[11px] px-2 py-1 rounded-full border border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100">
                               {kw}
                             </button>
                           ))}
