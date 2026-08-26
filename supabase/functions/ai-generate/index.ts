@@ -8,12 +8,25 @@
 // (same "real API first, never fabricate" discipline as every other
 // integration in this project — see tiktok-sync-orders' own history).
 //
-// Body: { action: "title" | "description", title, category, attributes,
-//   brand, existingDescriptionText }
+// Body: { action: "title" | "description" | "keywords", title, category,
+//   attributes, brand, existingDescriptionText }
 // - "title": generates a keyword-rich, high-converting product title.
 // - "description": generates structured marketing copy (features,
 //   specs, selling points) as simple HTML (<p>/<ul>/<li>/<strong> only —
 //   safe to insert into the rich-text editor's contentEditable div).
+// - "keywords" (2026-08-26, new): suggests candidate title keywords in two
+//   groups. IMPORTANT HONESTY NOTE: this project has no real integration
+//   to TikTok/Shopee's buyer-facing search-autocomplete or competitor-
+//   listing APIs (the Partner/Open APIs this project connects to are
+//   seller-scoped — orders/products/categories/affiliate for the seller's
+//   OWN shop — they don't expose other sellers' listings or live buyer
+//   search-volume data, and no such capability exists anywhere else in
+//   this project). This action returns Claude's own inferred guess at
+//   plausible high-traffic search terms and competitor-style title
+//   phrasing for the given product, based on its general knowledge of
+//   e-commerce marketplaces — NOT live scraped platform analytics. The
+//   frontend labels this honestly ("AI 推荐，非实时平台数据") rather than
+//   claiming it's real search-volume data.
 //
 // Required secret: ANTHROPIC_API_KEY
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -107,6 +120,29 @@ Deno.serve(async (req: Request) => {
       const user = `Product title: ${title || "(not entered)"}\nCategory: ${category || "(not selected)"}\nBrand: ${brand || "No Brand"}\nKnown attributes:\n${attrLines || "(none filled in yet)"}\n\nWrite the product description.`;
       const html = await callClaude(apiKey, system, user, 800);
       return new Response(JSON.stringify({ html }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (action === "keywords") {
+      if (!title && !category) {
+        return new Response(JSON.stringify({ error: "请先输入商品标题关键词或分类，再使用 AI 标题生成 / Enter a seed keyword or category first" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const system = "You are an e-commerce SEO researcher for TikTok Shop and Shopee sellers in Malaysia. Based on your general knowledge of how buyers search and how competing listings are titled in this marketplace (NOT live data — you have no real-time search access), suggest short keyword phrases for the given seed word/category. Output ONLY strict JSON, no markdown fences, no explanation, in exactly this shape: {\"trending\":[\"...\",\"...\"],\"competitor\":[\"...\",\"...\"]}. \"trending\" = 6-8 short phrases a real buyer would plausibly type into search for this product (mixed English/Malay is fine when natural). \"competitor\" = 6-8 short phrases/keyword combinations commonly seen in real competitor listing titles for this product type (brand-neutral, model numbers, common descriptors). Each phrase must be 1-4 words, no full sentences, no numbering, no duplicates between the two lists.";
+      const user = `Seed keyword/title: ${title || "(empty)"}\nCategory: ${category || "(not selected)"}\nBrand: ${brand || "No Brand"}`;
+      const raw = await callClaude(apiKey, system, user, 500);
+      let parsed: { trending?: string[]; competitor?: string[] };
+      try {
+        const jsonText = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+        parsed = JSON.parse(jsonText);
+      } catch {
+        throw new Error("AI returned an unparseable response — please try again");
+      }
+      const clean = (arr: unknown) => (Array.isArray(arr) ? arr.map((s) => String(s).trim()).filter(Boolean).slice(0, 8) : []);
+      return new Response(JSON.stringify({ trending: clean(parsed.trending), competitor: clean(parsed.competitor) }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }

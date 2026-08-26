@@ -493,27 +493,71 @@ export function ProductListingCenter({ t, inventory, stores }) {
     }
     return listingForm.category || "";
   }
-  async function generateAiTitle() {
+  // Extracts the real error string out of a supabaseClient.functions.invoke()
+  // result — supabase-js only gives a generic "non-2xx" message by default,
+  // the real one lives in error.context's response body (same pattern
+  // callTikTokProductApi above already established for TikTok errors).
+  async function extractInvokeError(error, data) {
+    if (data?.error) return data.error;
+    if (error) {
+      try { return (await error.context?.json())?.error; } catch { /* fall back below */ }
+    }
+    return null;
+  }
+  // AI 标题关键词推荐 (2026-08-26, refined from a plain title-rewrite) —
+  // calls the real ai-generate Edge Function's "keywords" action. HONESTY
+  // NOTE (see that function's own comment for the full explanation): this
+  // project has no real integration to TikTok/Shopee's buyer-search or
+  // competitor-listing data, so these are Claude's own inferred keyword
+  // guesses, not live platform analytics — labeled as such in the dropdown
+  // UI below ("AI 推荐，非实时平台数据"), never presented as real search
+  // volume.
+  const [aiKeywordSuggestions, setAiKeywordSuggestions] = useState(null); // { trending: [], competitor: [] } | null
+  const [showAiKeywordDropdown, setShowAiKeywordDropdown] = useState(false);
+  async function generateAiTitleKeywords() {
     if (!listingForm.title.trim() && !currentCategoryLabel()) {
-      showToast(t("请先输入商品标题或选择分类", "Enter a title or select a category first"));
+      showToast(t("请先输入商品标题关键词或选择分类", "Enter a seed keyword or select a category first"));
       return;
     }
     setAiTitleLoading(true);
     const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
-      body: { action: "title", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand },
+      body: { action: "keywords", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand },
     });
     setAiTitleLoading(false);
-    if (error || data?.error) {
-      let message = data?.error;
-      if (!message) {
-        try { message = (await error.context?.json())?.error; } catch { /* fall back below */ }
-      }
-      showToast(message || t("AI 标题生成失败", "AI title generation failed"));
-      console.error("generateAiTitle failed", error || data?.error);
+    const errMessage = await extractInvokeError(error, data);
+    if (errMessage) {
+      showToast(errMessage);
+      console.error("generateAiTitleKeywords failed", errMessage);
       return;
     }
-    setListingForm((prev) => ({ ...prev, title: data.title }));
+    setAiKeywordSuggestions({ trending: data.trending || [], competitor: data.competitor || [] });
+    setShowAiKeywordDropdown(true);
   }
+  // Appends a clicked keyword badge to the title (space-separated, no
+  // duplicate append if that exact word/phrase is already present) —
+  // dropdown stays open so multiple badges can be clicked in sequence to
+  // build up one SEO-friendly title, per the explicit multi-select request.
+  function appendTitleKeyword(word) {
+    setListingForm((prev) => {
+      const existing = prev.title.trim();
+      if (!word || existing.toLowerCase().includes(word.toLowerCase())) return prev;
+      const nextTitle = (existing ? `${existing} ${word}` : word).slice(0, TITLE_MAX_LEN);
+      return { ...prev, title: nextTitle };
+    });
+  }
+  // Click-outside-to-close for the keyword dropdown (2026-08-26, new) —
+  // same pattern as the order search auto-suggest dropdown built earlier
+  // this session (pagesOverviewOrders.jsx).
+  const aiKeywordWrapRef = useRef(null);
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (aiKeywordWrapRef.current && !aiKeywordWrapRef.current.contains(e.target)) {
+        setShowAiKeywordDropdown(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
   async function generateAiDescription() {
     if (!listingForm.title.trim() && !currentCategoryLabel()) {
       showToast(t("请先输入商品标题或选择分类", "Enter a title or select a category first"));
@@ -524,13 +568,10 @@ export function ProductListingCenter({ t, inventory, stores }) {
       body: { action: "description", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand, attributes: listingForm.attributes },
     });
     setAiDescLoading(false);
-    if (error || data?.error) {
-      let message = data?.error;
-      if (!message) {
-        try { message = (await error.context?.json())?.error; } catch { /* fall back below */ }
-      }
-      showToast(message || t("AI 描述生成失败", "AI description generation failed"));
-      console.error("generateAiDescription failed", error || data?.error);
+    const errMessage = await extractInvokeError(error, data);
+    if (errMessage) {
+      showToast(errMessage);
+      console.error("generateAiDescription failed", errMessage);
       return;
     }
     setListingForm((prev) => ({ ...prev, description: data.html }));
@@ -1400,20 +1441,61 @@ export function ProductListingCenter({ t, inventory, stores }) {
                 <div className="text-xs text-slate-400">{t("商品标题", "Title")}</div>
                 <div className={`text-[11px] ${listingForm.title.length > TITLE_MAX_LEN ? "text-rose-500" : "text-slate-300"}`}>{listingForm.title.length}/{TITLE_MAX_LEN}</div>
               </div>
-              <div className="flex gap-1.5">
+              <div className="flex gap-1.5 relative" ref={aiKeywordWrapRef}>
                 <input value={listingForm.title} onChange={(e) => setListingForm({ ...listingForm, title: e.target.value })} maxLength={TITLE_MAX_LEN} className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg" />
-                {/* AI 标题生成 (2026-08-26, new) — real Anthropic call via
-                    ai-generate Edge Function; see generateAiTitle() above
-                    for the honest-error-on-missing-API-key behavior. */}
+                {/* AI 标题生成 (2026-08-26, refined) — real Anthropic call
+                    via ai-generate's "keywords" action; see
+                    generateAiTitleKeywords() above for the honest
+                    "AI-suggested, not live platform data" framing and the
+                    missing-API-key error handling. */}
                 <button
                   type="button"
-                  onClick={generateAiTitle}
+                  onClick={generateAiTitleKeywords}
                   disabled={aiTitleLoading}
                   className={`shrink-0 text-xs px-3 py-2 rounded-lg border flex items-center gap-1 whitespace-nowrap ${aiTitleLoading ? "border-slate-100 text-slate-300" : "border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100"}`}
                 >
                   <Sparkles size={12} className={aiTitleLoading ? "animate-spin" : ""} />
                   {aiTitleLoading ? t("生成中…", "Generating…") : t("AI 标题生成", "AI Title")}
                 </button>
+                {/* AI 关键词推荐下拉框 (2026-08-26, new) — two labeled
+                    groups, each badge click-to-append (multi-select, per
+                    explicit request); "AI 推荐，非实时平台数据" is
+                    deliberately part of both section headers so staff
+                    never mistake this for real TikTok/Shopee search-volume
+                    or competitor analytics — see ai-generate's own comment
+                    for why no such live data source exists in this project. */}
+                {showAiKeywordDropdown && aiKeywordSuggestions && (
+                  <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg card-3d p-3 space-y-3 max-h-96 overflow-y-auto">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] font-medium text-slate-500">{t("AI 关键词建议", "AI Keyword Suggestions")}</div>
+                      <button type="button" onClick={() => setShowAiKeywordDropdown(false)} className="text-slate-300 hover:text-slate-600"><X size={13} /></button>
+                    </div>
+                    {aiKeywordSuggestions.trending.length > 0 && (
+                      <div>
+                        <div className="text-[10px] text-slate-400 mb-1">🔥 {t("买家高频热搜词（AI 推荐，非实时平台数据）", "Buyer High-Volume Search Keywords (AI-suggested, not live platform data)")}</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {aiKeywordSuggestions.trending.map((kw, i) => (
+                            <button key={i} type="button" onClick={() => appendTitleKeyword(kw)} className="text-[11px] px-2 py-1 rounded-full border border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100">
+                              {kw}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {aiKeywordSuggestions.competitor.length > 0 && (
+                      <div>
+                        <div className="text-[10px] text-slate-400 mb-1">🏆 {t("高销量同行标题词组（AI 推荐，非实时平台数据）", "Top Seller Title Keyword Combinations (AI-suggested, not live platform data)")}</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {aiKeywordSuggestions.competitor.map((kw, i) => (
+                            <button key={i} type="button" onClick={() => appendTitleKeyword(kw)} className="text-[11px] px-2 py-1 rounded-full border border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100">
+                              {kw}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               {/* 智能匹配分类 (2026-08-26, new) — real keyword-overlap
                   suggestions from whichever category source is loaded; see
