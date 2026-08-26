@@ -25,143 +25,39 @@ const MAX_VIDEO_BYTES = 100 * 1024 * 1024; // 100MB — generous client-side gua
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB — generous client-side guard for photo uploads
 const MAX_PRODUCT_IMAGES = 9; // real TikTok Shop product-image limit, per explicit request
 
-// Manually-curated Malay -> {zh, en} glossary for TikTok's real category
-// names (2026-08-26, explicit request). TikTok's real Category API only
-// ever returns Malay local_name — no EN/CN fields exist in the live
-// response — so this is a static display-only translation, not fabricated
-// platform data. Keyed by lowercased/trimmed Malay name. Extend as new
-// real category names are observed; unknown names fall back to Malay.
-const TIKTOK_CATEGORY_NAME_TRANSLATIONS = {
-  "bekalan rumah": { zh: "家居用品", en: "Home Supplies" },
-  "peralatan dapur": { zh: "厨房用品", en: "Kitchen Utensils" },
-  "tekstil & perabot lembut": { zh: "家纺与软装", en: "Textiles & Soft Furnishings" },
-  "automotif & motosikal": { zh: "汽车与摩托车", en: "Automotive & Motorcycle" },
-  "aksesori motosikal": { zh: "摩托车配件", en: "Motorcycle Accessories" },
-  "aksesori automotif": { zh: "汽车配件", en: "Automotive Accessories" },
-  "topi keledar": { zh: "头盔", en: "Helmet" },
-  "palam pencucuh": { zh: "火花塞", en: "Spark Plug" },
-  "penjagaan & aksesori kenderaan": { zh: "车辆护理与配件", en: "Vehicle Care & Accessories" },
-  "bahagian motosikal": { zh: "摩托车配件", en: "Motorcycle Parts" },
-  "elektronik kereta": { zh: "车载电子", en: "Car Electronics" },
-  "motosikal penghantaran manual": { zh: "手动传动摩托车", en: "Manual Transmission Motorcycle" },
-  "perkakas rumah": { zh: "五金工具", en: "Home Hardware" },
-  "pakaian & pakaian dalam wanita": { zh: "女装与内衣", en: "Women's Apparel & Underwear" },
-  "fesyen muslim": { zh: "穆斯林时尚", en: "Muslim Fashion" },
-  "kasut": { zh: "鞋类", en: "Shoes" },
-  "penjagaan diri": { zh: "个人护理", en: "Personal Care" },
-  "alat tulis": { zh: "文具", en: "Stationery" },
-  "haiwan peliharaan": { zh: "宠物用品", en: "Pet Supplies" },
-  "jam tangan": { zh: "手表", en: "Watches" },
-  "barang kemas": { zh: "珠宝", en: "Jewellery" },
-  "seluar dalam": { zh: "内裤", en: "Underwear" },
-  "sarung tangan": { zh: "手套", en: "Gloves" },
-  "baju kurung": { zh: "马来传统服", en: "Baju Kurung" },
+// Malay -> English glossary for TikTok's real category names (2026-08-26,
+// simplified per explicit request: English-only, no CN, no word-splitting).
+// TikTok's real Category API only ever returns Malay local_name — no
+// English field exists in the live response — so this is a static
+// display-only lookup, not fabricated platform data. Keyed by lowercased/
+// trimmed Malay name; unmapped names fall back to the raw Malay text
+// rather than a guessed translation.
+const TIKTOK_CATEGORY_EN_NAMES = {
+  "bekalan rumah": "Home & Living",
+  "peralatan dapur": "Kitchen Utensils",
+  "tekstil & perabot lembut": "Textiles & Soft Furnishings",
+  "automotif & motosikal": "Automotive & Motorcycle",
+  "aksesori motosikal": "Motorcycle Accessories",
+  "aksesori automotif": "Automotive Accessories",
+  "topi keledar": "Helmet",
+  "palam pencucuh": "Spark Plug",
+  "penjagaan & aksesori kenderaan": "Vehicle Care & Accessories",
+  "bahagian motosikal": "Motorcycle Parts",
+  "elektronik kereta": "Car Electronics",
+  "motosikal penghantaran manual": "Manual Transmission Motorcycle",
+  "perkakas rumah": "Home Hardware",
+  "pakaian & pakaian dalam wanita": "Women's Apparel & Underwear",
+  "fesyen muslim": "Muslim Fashion",
+  "kasut": "Shoes",
+  "penjagaan diri": "Personal Care",
+  "alat tulis": "Stationery",
+  "haiwan peliharaan": "Pet Supplies",
+  "jam tangan": "Watches",
+  "barang kemas": "Jewellery",
+  "seluar dalam": "Underwear",
+  "sarung tangan": "Gloves",
+  "baju kurung": "Baju Kurung",
 };
-
-// Word-level fallback glossary (2026-08-26) — used only when the full
-// phrase above has no exact match. TikTok's real category API returns
-// Malay-only names with no EN/CN fields, so full phrase-level coverage of
-// every real category is not guaranteed; this splits a phrase into words
-// and substitutes each recognised Malay word, which covers most
-// real sub-category names (L2/L3) not yet added to the phrase glossary
-// above. Unrecognised words are left in Malay rather than guessed.
-const TIKTOK_CATEGORY_WORD_TRANSLATIONS = {
-  "motosikal": { zh: "摩托车", en: "Motorcycle" },
-  "bahagian": { zh: "配件", en: "Parts" },
-  "elektronik": { zh: "电子", en: "Electronics" },
-  "kereta": { zh: "汽车", en: "Car" },
-  "penghantaran": { zh: "传动", en: "Transmission" },
-  "manual": { zh: "手动", en: "Manual" },
-  "automotif": { zh: "汽车", en: "Automotive" },
-  "aksesori": { zh: "配件", en: "Accessories" },
-  "kenderaan": { zh: "车辆", en: "Vehicle" },
-  "penjagaan": { zh: "护理", en: "Care" },
-  "topi": { zh: "帽", en: "Cap" },
-  "keledar": { zh: "头盔", en: "Helmet" },
-  "palam": { zh: "塞", en: "Plug" },
-  "pencucuh": { zh: "点火", en: "Ignition" },
-  "bekalan": { zh: "用品", en: "Supplies" },
-  "rumah": { zh: "家居", en: "Home" },
-  "peralatan": { zh: "用具", en: "Equipment" },
-  "dapur": { zh: "厨房", en: "Kitchen" },
-  "tekstil": { zh: "纺织品", en: "Textiles" },
-  "perabot": { zh: "家具", en: "Furniture" },
-  "lembut": { zh: "软", en: "Soft" },
-  "minyak": { zh: "机油", en: "Oil" },
-  "enjin": { zh: "引擎", en: "Engine" },
-  "brek": { zh: "刹车", en: "Brake" },
-  "tayar": { zh: "轮胎", en: "Tyre" },
-  "bateri": { zh: "电池", en: "Battery" },
-  "lampu": { zh: "灯", en: "Light" },
-  "cermin": { zh: "镜", en: "Mirror" },
-  "rantai": { zh: "链条", en: "Chain" },
-  "penyaman": { zh: "空调", en: "Air Conditioner" },
-  "udara": { zh: "空气", en: "Air" },
-  "penapis": { zh: "滤清器", en: "Filter" },
-  "gelang": { zh: "环", en: "Ring" },
-  "roda": { zh: "轮", en: "Wheel" },
-  "kelengkapan": { zh: "配件", en: "Fittings" },
-  "perkakas": { zh: "五金", en: "Hardware" },
-  "pakaian": { zh: "服装", en: "Apparel" },
-  "dalam": { zh: "内", en: "Under" },
-  "wanita": { zh: "女", en: "Women's" },
-  "lelaki": { zh: "男", en: "Men's" },
-  "fesyen": { zh: "时尚", en: "Fashion" },
-  "muslim": { zh: "穆斯林", en: "Muslim" },
-  "kanak-kanak": { zh: "儿童", en: "Kids" },
-  "bayi": { zh: "婴儿", en: "Baby" },
-  "kecantikan": { zh: "美容", en: "Beauty" },
-  "diri": { zh: "个人", en: "Self" },
-  "kesihatan": { zh: "健康", en: "Health" },
-  "makanan": { zh: "食品", en: "Food" },
-  "minuman": { zh: "饮料", en: "Beverages" },
-  "runcit": { zh: "杂货", en: "Groceries" },
-  "telefon": { zh: "手机", en: "Phone" },
-  "komputer": { zh: "电脑", en: "Computer" },
-  "gajet": { zh: "数码配件", en: "Gadgets" },
-  "sukan": { zh: "运动", en: "Sports" },
-  "riadah": { zh: "户外休闲", en: "Outdoor" },
-  "mainan": { zh: "玩具", en: "Toys" },
-  "hobi": { zh: "爱好", en: "Hobbies" },
-  "buku": { zh: "图书", en: "Books" },
-  "alat": { zh: "用具", en: "Tool" },
-  "tulis": { zh: "文具", en: "Stationery" },
-  "haiwan": { zh: "宠物", en: "Pet" },
-  "peliharaan": { zh: "饲养", en: "Kept" },
-  "beg": { zh: "包袋", en: "Bags" },
-  "jam": { zh: "钟表", en: "Clock" },
-  "tangan": { zh: "手", en: "Hand" },
-  "barang": { zh: "物品", en: "Item" },
-  "kemas": { zh: "首饰", en: "Jewellery" },
-  "seluar": { zh: "裤子", en: "Pants" },
-  "baju": { zh: "上衣", en: "Tops" },
-  "coli": { zh: "胸罩", en: "Bra" },
-  "sarung": { zh: "套", en: "Cover" },
-  "stokin": { zh: "袜子", en: "Socks" },
-  "tudung": { zh: "头巾", en: "Hijab" },
-  "kurung": { zh: "传统服", en: "Traditional Wear" },
-};
-
-// Splits a Malay category phrase and substitutes recognised words via
-// TIKTOK_CATEGORY_WORD_TRANSLATIONS (2026-08-26, all-or-nothing per
-// explicit request — mixing an untranslated Malay word into an otherwise-
-// translated phrase, e.g. "Perkakas家居", is banned). Returns null unless
-// EVERY word token has a known translation; the caller then falls back to
-// the full raw Malay text instead of a half-translated hybrid string.
-function translateTikTokCategoryWords(raw) {
-  const parts = raw.split(/(\s+|&|-)/);
-  const zhParts = [];
-  const enParts = [];
-  for (const part of parts) {
-    if (/^\s+$/.test(part)) { zhParts.push(""); enParts.push(part); continue; }
-    if (part === "&") { zhParts.push("与"); enParts.push("&"); continue; }
-    if (part === "-") { zhParts.push("-"); enParts.push("-"); continue; }
-    const w = TIKTOK_CATEGORY_WORD_TRANSLATIONS[part.trim().toLowerCase()];
-    if (!w) return null; // any unknown word aborts the whole phrase — no partial mixing
-    zhParts.push(w.zh); enParts.push(w.en);
-  }
-  return { zh: zhParts.join(""), en: enParts.join(" ").replace(/\s+/g, " ").trim() };
-}
 
 // 商品发布中心 (2026-08-24) — data-source note, same spirit as the Ads
 // Costs page's note: this is a real Supabase-backed feature
@@ -416,12 +312,11 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // official category_id (rawName's `id`) is never altered by this — only
   // the label shown to staff changes.
   function normalizeTikTokCategory(c) {
-    const rawName = c.local_name || c.name || c.category_name || t("未命名分类", "Unnamed category");
-    const tr = TIKTOK_CATEGORY_NAME_TRANSLATIONS[rawName.trim().toLowerCase()] || translateTikTokCategoryWords(rawName);
+    const rawName = c.local_name || c.name || c.category_name || "Unnamed category";
     return {
       id: String(c.id ?? c.category_id ?? ""),
       parentId: c.parent_id != null ? String(c.parent_id) : (c.parentId != null ? String(c.parentId) : "0"),
-      name: tr ? t(tr.zh, tr.en) : rawName,
+      name: TIKTOK_CATEGORY_EN_NAMES[rawName.trim().toLowerCase()] || rawName,
       rawName,
       isLeaf: !!(c.is_leaf ?? c.leaf ?? false),
     };
@@ -1837,7 +1732,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="text-xs text-slate-400 mb-1">{t("类目", "Category")}</div>
+                <div className="text-xs text-slate-400 mb-1">Category</div>
                 {/* 类目树 — 平台隔离 (2026-08-25) — Shopee's page only ever
                     queries the internal Shopee category library; TikTok's page
                     only ever queries the real TikTok Category API (with the
@@ -1896,7 +1791,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                           className="w-full flex items-center justify-between px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white hover:border-slate-300 text-left"
                         >
                           <span className={listingForm.tiktok_real_category_id ? "text-slate-700" : "text-slate-400"}>
-                            {tiktokRealSelectedPathLabel() || t("请选择类目", "Select category")}
+                            {tiktokRealSelectedPathLabel() || "Select category"}
                           </span>
                           <ChevronDown size={13} className={`text-slate-400 shrink-0 ml-2 transition-transform ${showCategoryPicker ? "rotate-180" : ""}`} />
                         </button>
@@ -1907,7 +1802,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                                 autoFocus
                                 value={categorySearchQuery}
                                 onChange={(e) => setCategorySearchQuery(e.target.value)}
-                                placeholder={t("搜索类目", "Search category")}
+                                placeholder="Search category"
                                 className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
                               />
                             </div>
