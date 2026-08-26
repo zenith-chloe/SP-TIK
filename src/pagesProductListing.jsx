@@ -1688,8 +1688,177 @@ export function ProductListingCenter({ t, inventory, stores }) {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="text-xs text-slate-400 mb-1">{t("分类", "Category")}</div>
-                <input value={listingForm.category} onChange={(e) => setListingForm({ ...listingForm, category: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+                <div className="text-xs text-slate-400 mb-1">{t("类目", "Category")}</div>
+                {/* 类目树 — 平台隔离 (2026-08-25) — Shopee's page only ever
+                    queries the internal Shopee category library; TikTok's page
+                    only ever queries the real TikTok Category API (with the
+                    internal-library/reauth fallback). Never both at once.
+                    Relocated 2026-08-26 to sit beside Brand in one row
+                    (explicit layout request); logic/handlers unchanged. */}
+                {listingForm.platform === "Shopee" && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-xs font-medium text-slate-500">{t("🗂 Shopee 三级分类（内部类目库）", "🗂 Shopee Category (internal library)")}</div>
+                      <button onClick={() => setShowCategoryManager(true)} className="text-[11px] text-indigo-600 hover:text-indigo-800">{t("管理类目库", "Manage")}</button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <select value={shopeeL1} onChange={(e) => { setShopeeL1(e.target.value); setShopeeL2(""); selectLeaf("shopee_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
+                        <option value="">{t("第1级", "Level 1")}</option>
+                        {categoryOptions("Shopee", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                      <select value={shopeeL2} onChange={(e) => { setShopeeL2(e.target.value); selectLeaf("shopee_category_leaf_id", ""); }} disabled={!shopeeL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                        <option value="">{t("第2级", "Level 2")}</option>
+                        {categoryOptions("Shopee", "level2", shopeeL1).map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                      <select value={listingForm.shopee_category_leaf_id} onChange={(e) => selectLeaf("shopee_category_leaf_id", e.target.value)} disabled={!shopeeL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                        <option value="">{t("第3级", "Level 3")}</option>
+                        {categoryOptions("Shopee", "level3", shopeeL1, shopeeL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
+                      </select>
+                    </div>
+                    {(() => {
+                      const leaf = categoryTrees.find((c) => c.id === listingForm.shopee_category_leaf_id);
+                      return leaf?.commission_rate != null ? (
+                        <div className="text-[11px] text-amber-600 mt-1">{t(`预计佣金 ${leaf.commission_rate}%`, `Est. commission ${leaf.commission_rate}%`)}</div>
+                      ) : null;
+                    })()}
+                  </div>
+                )}
+                {listingForm.platform === "TikTok Shop" && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-xs font-medium text-slate-500">
+                        {tiktokApiStatus === "ok"
+                          ? t("🗂 TikTok 三级分类（官方真实类目）", "🗂 TikTok Category (real, official)")
+                          : t("🗂 TikTok 三级分类（内部类目库）", "🗂 TikTok Category (internal library)")}
+                      </div>
+                      {tiktokApiStatus === "loading" && <span className="text-[11px] text-slate-400">{t("加载官方类目中…", "Loading official categories…")}</span>}
+                    </div>
+
+                    {tiktokApiStatus === "error" && tiktokApiError?.needsReauth && (
+                      <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                        {t(
+                          "检测到商品权限，如提示 Access Denied 请在【店铺管理】中点击「重新授权」以更新权限。（对应「产品搬仓/搬店」页面店铺管理区域的「使用 TikTok Shop 登录连接」按钮——对已连接店铺重新走一次该流程即可刷新权限。）在权限刷新前，暂时使用下方内部类目库。",
+                          "Product permission detected, but if you see Access Denied, go to Store Management and click \"Re-authorize\" to refresh it. (That's the \"Connect with TikTok Shop Login\" button under Product Move / Store Management — running it again for an already-connected store refreshes its permissions.) Using the internal category library below until then.",
+                        )}
+                      </div>
+                    )}
+                    {tiktokApiStatus === "error" && !tiktokApiError?.needsReauth && (
+                      <div className="text-[11px] text-slate-400 mb-2">{tiktokApiError?.message}</div>
+                    )}
+
+                    {tiktokApiStatus === "ok" ? (
+                      <div className="relative" ref={categoryPickerRef}>
+                        <button
+                          type="button"
+                          onClick={() => setShowCategoryPicker((v) => !v)}
+                          className="w-full flex items-center justify-between px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white hover:border-slate-300 text-left"
+                        >
+                          <span className={listingForm.tiktok_real_category_id ? "text-slate-700" : "text-slate-400"}>
+                            {tiktokRealSelectedPathLabel() || t("请选择类目 / Select category", "Select category")}
+                          </span>
+                          <ChevronDown size={13} className={`text-slate-400 shrink-0 ml-2 transition-transform ${showCategoryPicker ? "rotate-180" : ""}`} />
+                        </button>
+                        {showCategoryPicker && (
+                          <div className="absolute z-30 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg card-3d overflow-hidden">
+                            <div className="p-2 border-b border-slate-100">
+                              <input
+                                autoFocus
+                                value={categorySearchQuery}
+                                onChange={(e) => setCategorySearchQuery(e.target.value)}
+                                placeholder={t("搜索类目 / Search category", "Search category")}
+                                className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+                              />
+                            </div>
+                            {categorySearchQuery.trim() ? (
+                              <div className="max-h-72 overflow-y-auto">
+                                {searchTiktokRealLeaves(categorySearchQuery).map((r) => (
+                                  <button
+                                    key={r.leafId}
+                                    type="button"
+                                    onClick={() => pickCategoryFromCascade(r.l1id, r.l2id, r.leafId)}
+                                    className="w-full text-left px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 border-b border-slate-50 last:border-b-0"
+                                  >
+                                    {r.label}
+                                  </button>
+                                ))}
+                                {searchTiktokRealLeaves(categorySearchQuery).length === 0 && (
+                                  <div className="px-3 py-3 text-xs text-slate-400 text-center">{t("没有匹配的类目", "No matching categories")}</div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-3 h-72">
+                                <div className="overflow-y-auto border-r border-slate-100">
+                                  {tiktokRealOptions(1).map((c) => (
+                                    <button
+                                      key={c.id}
+                                      type="button"
+                                      onClick={() => { setTiktokRealL1(c.id); setTiktokRealL2(""); selectTiktokRealLeaf(""); }}
+                                      className={`w-full text-left px-2.5 py-2 text-xs border-b border-slate-50 ${tiktokRealL1 === c.id ? "bg-indigo-50 text-indigo-600 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
+                                    >
+                                      {c.name}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="overflow-y-auto border-r border-slate-100">
+                                  {tiktokRealOptions(2, tiktokRealL1).map((c) => (
+                                    <button
+                                      key={c.id}
+                                      type="button"
+                                      onClick={() => { setTiktokRealL2(c.id); selectTiktokRealLeaf(""); }}
+                                      className={`w-full text-left px-2.5 py-2 text-xs border-b border-slate-50 ${tiktokRealL2 === c.id ? "bg-indigo-50 text-indigo-600 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
+                                    >
+                                      {c.name}
+                                    </button>
+                                  ))}
+                                  {tiktokRealL1 && tiktokRealOptions(2, tiktokRealL1).length === 0 && (
+                                    <div className="px-2.5 py-2 text-[11px] text-slate-300">{t("无子类目", "No sub-categories")}</div>
+                                  )}
+                                </div>
+                                <div className="overflow-y-auto">
+                                  {tiktokRealOptions(3, tiktokRealL1, tiktokRealL2).map((c) => (
+                                    <button
+                                      key={c.id}
+                                      type="button"
+                                      onClick={() => pickCategoryFromCascade(tiktokRealL1, tiktokRealL2, c.id)}
+                                      className={`w-full text-left px-2.5 py-2 text-xs border-b border-slate-50 ${listingForm.tiktok_real_category_id === c.id ? "bg-indigo-50 text-indigo-600 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
+                                    >
+                                      {c.name}
+                                    </button>
+                                  ))}
+                                  {tiktokRealL2 && tiktokRealOptions(3, tiktokRealL1, tiktokRealL2).length === 0 && (
+                                    <div className="px-2.5 py-2 text-[11px] text-slate-300">{t("无子类目", "No sub-categories")}</div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-2">
+                        <select value={tiktokL1} onChange={(e) => { setTiktokL1(e.target.value); setTiktokL2(""); selectLeaf("tiktok_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
+                          <option value="">{t("第1级", "Level 1")}</option>
+                          {categoryOptions("TikTok Shop", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
+                        </select>
+                        <select value={tiktokL2} onChange={(e) => { setTiktokL2(e.target.value); selectLeaf("tiktok_category_leaf_id", ""); }} disabled={!tiktokL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                          <option value="">{t("第2级", "Level 2")}</option>
+                          {categoryOptions("TikTok Shop", "level2", tiktokL1).map((v) => <option key={v} value={v}>{v}</option>)}
+                        </select>
+                        <select value={listingForm.tiktok_category_leaf_id} onChange={(e) => selectLeaf("tiktok_category_leaf_id", e.target.value)} disabled={!tiktokL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
+                          <option value="">{t("第3级", "Level 3")}</option>
+                          {categoryOptions("TikTok Shop", "level3", tiktokL1, tiktokL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
+                        </select>
+                      </div>
+                    )}
+                    {tiktokApiStatus !== "ok" && (() => {
+                      const leaf = categoryTrees.find((c) => c.id === listingForm.tiktok_category_leaf_id);
+                      return leaf?.commission_rate != null ? (
+                        <div className="text-[11px] text-amber-600 mt-1">{t(`预计佣金 ${leaf.commission_rate}%`, `Est. commission ${leaf.commission_rate}%`)}</div>
+                      ) : null;
+                    })()}
+                    {tiktokRealAttrsLoading && <div className="text-[11px] text-slate-400 mt-1">{t("加载官方分类属性中…", "Loading official category attributes…")}</div>}
+                  </div>
+                )}
               </div>
               <div>
                 {/* 品牌 — 平台隔离 (2026-08-25) — TikTok's real Brand API
@@ -2060,194 +2229,6 @@ export function ProductListingCenter({ t, inventory, stores }) {
               </div>
             )}
 
-            {/* 类目树 — 平台隔离 (2026-08-25) — Shopee's page only ever
-                queries the internal Shopee category library; TikTok's page
-                only ever queries the real TikTok Category API (with the
-                internal-library/reauth fallback). Never both at once. */}
-            {listingForm.platform === "Shopee" && (
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <div className="text-xs font-medium text-slate-500">{t("🗂 Shopee 三级分类（内部类目库）", "🗂 Shopee Category (internal library)")}</div>
-                  <button onClick={() => setShowCategoryManager(true)} className="text-[11px] text-indigo-600 hover:text-indigo-800">{t("管理类目库", "Manage")}</button>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <select value={shopeeL1} onChange={(e) => { setShopeeL1(e.target.value); setShopeeL2(""); selectLeaf("shopee_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
-                    <option value="">{t("第1级", "Level 1")}</option>
-                    {categoryOptions("Shopee", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
-                  </select>
-                  <select value={shopeeL2} onChange={(e) => { setShopeeL2(e.target.value); selectLeaf("shopee_category_leaf_id", ""); }} disabled={!shopeeL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                    <option value="">{t("第2级", "Level 2")}</option>
-                    {categoryOptions("Shopee", "level2", shopeeL1).map((v) => <option key={v} value={v}>{v}</option>)}
-                  </select>
-                  <select value={listingForm.shopee_category_leaf_id} onChange={(e) => selectLeaf("shopee_category_leaf_id", e.target.value)} disabled={!shopeeL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                    <option value="">{t("第3级", "Level 3")}</option>
-                    {categoryOptions("Shopee", "level3", shopeeL1, shopeeL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
-                  </select>
-                </div>
-                {/* 佣金提示 (2026-08-25, new) — helps catch a wrong leaf pick
-                    before it causes an unexpected commission deduction;
-                    staff-maintained figure, not a live platform value. */}
-                {(() => {
-                  const leaf = categoryTrees.find((c) => c.id === listingForm.shopee_category_leaf_id);
-                  return leaf?.commission_rate != null ? (
-                    <div className="text-[11px] text-amber-600 mt-1">{t(`预计佣金 ${leaf.commission_rate}%`, `Est. commission ${leaf.commission_rate}%`)}</div>
-                  ) : null;
-                })()}
-              </div>
-            )}
-            {listingForm.platform === "TikTok Shop" && (
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <div className="text-xs font-medium text-slate-500">
-                    {tiktokApiStatus === "ok"
-                      ? t("🗂 TikTok 三级分类（官方真实类目）", "🗂 TikTok Category (real, official)")
-                      : t("🗂 TikTok 三级分类（内部类目库）", "🗂 TikTok Category (internal library)")}
-                  </div>
-                  {tiktokApiStatus === "loading" && <span className="text-[11px] text-slate-400">{t("加载官方类目中…", "Loading official categories…")}</span>}
-                </div>
-
-                {tiktokApiStatus === "error" && tiktokApiError?.needsReauth && (
-                  <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
-                    {t(
-                      "检测到商品权限，如提示 Access Denied 请在【店铺管理】中点击「重新授权」以更新权限。（对应「产品搬仓/搬店」页面店铺管理区域的「使用 TikTok Shop 登录连接」按钮——对已连接店铺重新走一次该流程即可刷新权限。）在权限刷新前，暂时使用下方内部类目库。",
-                      "Product permission detected, but if you see Access Denied, go to Store Management and click \"Re-authorize\" to refresh it. (That's the \"Connect with TikTok Shop Login\" button under Product Move / Store Management — running it again for an already-connected store refreshes its permissions.) Using the internal category library below until then.",
-                    )}
-                  </div>
-                )}
-                {tiktokApiStatus === "error" && !tiktokApiError?.needsReauth && (
-                  <div className="text-[11px] text-slate-400 mb-2">{tiktokApiError?.message}</div>
-                )}
-
-                {tiktokApiStatus === "ok" ? (
-                  <div className="relative" ref={categoryPickerRef}>
-                    {/* Trigger button (2026-08-26, new) — shows the full
-                        official path once picked, matching TikTok's own
-                        cascade selector's collapsed state. */}
-                    <button
-                      type="button"
-                      onClick={() => setShowCategoryPicker((v) => !v)}
-                      className="w-full flex items-center justify-between px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white hover:border-slate-300 text-left"
-                    >
-                      <span className={listingForm.tiktok_real_category_id ? "text-slate-700" : "text-slate-400"}>
-                        {tiktokRealSelectedPathLabel() || t("请选择类目 / Select category", "Select category")}
-                      </span>
-                      <ChevronDown size={13} className={`text-slate-400 shrink-0 ml-2 transition-transform ${showCategoryPicker ? "rotate-180" : ""}`} />
-                    </button>
-                    {showCategoryPicker && (
-                      <div className="absolute z-30 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg card-3d overflow-hidden">
-                        {/* Search bar (2026-08-26, new) — matches TikTok's
-                            own "type to search all categories" input at the
-                            top of its cascade panel. */}
-                        <div className="p-2 border-b border-slate-100">
-                          <input
-                            autoFocus
-                            value={categorySearchQuery}
-                            onChange={(e) => setCategorySearchQuery(e.target.value)}
-                            placeholder={t("搜索类目 / Search category", "Search category")}
-                            className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
-                          />
-                        </div>
-                        {categorySearchQuery.trim() ? (
-                          // Search results: flat list of matching leaf paths.
-                          <div className="max-h-72 overflow-y-auto">
-                            {searchTiktokRealLeaves(categorySearchQuery).map((r) => (
-                              <button
-                                key={r.leafId}
-                                type="button"
-                                onClick={() => pickCategoryFromCascade(r.l1id, r.l2id, r.leafId)}
-                                className="w-full text-left px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 border-b border-slate-50 last:border-b-0"
-                              >
-                                {r.label}
-                              </button>
-                            ))}
-                            {searchTiktokRealLeaves(categorySearchQuery).length === 0 && (
-                              <div className="px-3 py-3 text-xs text-slate-400 text-center">{t("没有匹配的类目", "No matching categories")}</div>
-                            )}
-                          </div>
-                        ) : (
-                          // "All categories" cascade: L1 | L2 | L3 columns,
-                          // each showing children of the item selected in
-                          // the column to its left — same layout TikTok's
-                          // own panel uses (primary categories on the left,
-                          // secondary/tertiary further right).
-                          <div className="grid grid-cols-3 h-72">
-                            <div className="overflow-y-auto border-r border-slate-100">
-                              {tiktokRealOptions(1).map((c) => (
-                                <button
-                                  key={c.id}
-                                  type="button"
-                                  onClick={() => { setTiktokRealL1(c.id); setTiktokRealL2(""); selectTiktokRealLeaf(""); }}
-                                  className={`w-full text-left px-2.5 py-2 text-xs border-b border-slate-50 ${tiktokRealL1 === c.id ? "bg-indigo-50 text-indigo-600 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
-                                >
-                                  {c.name}
-                                </button>
-                              ))}
-                            </div>
-                            <div className="overflow-y-auto border-r border-slate-100">
-                              {tiktokRealOptions(2, tiktokRealL1).map((c) => (
-                                <button
-                                  key={c.id}
-                                  type="button"
-                                  onClick={() => { setTiktokRealL2(c.id); selectTiktokRealLeaf(""); }}
-                                  className={`w-full text-left px-2.5 py-2 text-xs border-b border-slate-50 ${tiktokRealL2 === c.id ? "bg-indigo-50 text-indigo-600 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
-                                >
-                                  {c.name}
-                                </button>
-                              ))}
-                              {tiktokRealL1 && tiktokRealOptions(2, tiktokRealL1).length === 0 && (
-                                <div className="px-2.5 py-2 text-[11px] text-slate-300">{t("无子类目", "No sub-categories")}</div>
-                              )}
-                            </div>
-                            <div className="overflow-y-auto">
-                              {tiktokRealOptions(3, tiktokRealL1, tiktokRealL2).map((c) => (
-                                <button
-                                  key={c.id}
-                                  type="button"
-                                  onClick={() => pickCategoryFromCascade(tiktokRealL1, tiktokRealL2, c.id)}
-                                  className={`w-full text-left px-2.5 py-2 text-xs border-b border-slate-50 ${listingForm.tiktok_real_category_id === c.id ? "bg-indigo-50 text-indigo-600 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
-                                >
-                                  {c.name}
-                                </button>
-                              ))}
-                              {tiktokRealL2 && tiktokRealOptions(3, tiktokRealL1, tiktokRealL2).length === 0 && (
-                                <div className="px-2.5 py-2 text-[11px] text-slate-300">{t("无子类目", "No sub-categories")}</div>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-3 gap-2">
-                    <select value={tiktokL1} onChange={(e) => { setTiktokL1(e.target.value); setTiktokL2(""); selectLeaf("tiktok_category_leaf_id", ""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
-                      <option value="">{t("第1级", "Level 1")}</option>
-                      {categoryOptions("TikTok Shop", "level1").map((v) => <option key={v} value={v}>{v}</option>)}
-                    </select>
-                    <select value={tiktokL2} onChange={(e) => { setTiktokL2(e.target.value); selectLeaf("tiktok_category_leaf_id", ""); }} disabled={!tiktokL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                      <option value="">{t("第2级", "Level 2")}</option>
-                      {categoryOptions("TikTok Shop", "level2", tiktokL1).map((v) => <option key={v} value={v}>{v}</option>)}
-                    </select>
-                    <select value={listingForm.tiktok_category_leaf_id} onChange={(e) => selectLeaf("tiktok_category_leaf_id", e.target.value)} disabled={!tiktokL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                      <option value="">{t("第3级", "Level 3")}</option>
-                      {categoryOptions("TikTok Shop", "level3", tiktokL1, tiktokL2).map((c) => <option key={c.id} value={c.id}>{c.level3}</option>)}
-                    </select>
-                  </div>
-                )}
-                {/* 佣金提示 (2026-08-25, new) — only available for the
-                    internal-library pick (staff-maintained figure); the
-                    real TikTok API response shape has never been observed
-                    (blocked by 105005), so no commission field is invented
-                    for that branch. */}
-                {tiktokApiStatus !== "ok" && (() => {
-                  const leaf = categoryTrees.find((c) => c.id === listingForm.tiktok_category_leaf_id);
-                  return leaf?.commission_rate != null ? (
-                    <div className="text-[11px] text-amber-600 mt-1">{t(`预计佣金 ${leaf.commission_rate}%`, `Est. commission ${leaf.commission_rate}%`)}</div>
-                  ) : null;
-                })()}
-                {tiktokRealAttrsLoading && <div className="text-[11px] text-slate-400 mt-1">{t("加载官方分类属性中…", "Loading official category attributes…")}</div>}
-              </div>
-            )}
             {(listingForm.shopee_category_leaf_id || listingForm.tiktok_category_leaf_id || listingForm.tiktok_real_category_id) && (
               <div className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-2.5 py-1.5">
                 {t("已根据选中的叶子类目自动带入下方必填属性，请核对填写。", "Attributes below were auto-added from the selected leaf category — please review and fill them in.")}
