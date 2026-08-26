@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Plus, Store, Percent, Sparkles, CheckCircle2, Bot, Zap,
-  Image as ImageIcon, Upload, Layers, Trash2, Video, Truck, Camera, X, ArrowLeft,
+  Image as ImageIcon, Upload, Layers, Trash2, Video, Truck, Camera, X, ArrowLeft, ChevronDown,
 } from "lucide-react";
 import { PLATFORM_THEME, DB_TO_DEMO_PLATFORM, fmt, supabaseClient } from "./shared.jsx";
 import { KPICard as KPICardImpl } from "./pagesOverviewOrders.jsx";
@@ -320,6 +320,80 @@ export function ProductListingCenter({ t, inventory, stores }) {
       const added = templateNames.filter((a) => !existingNames.has(a.name)).map((a) => ({ name: a.name, value: "" }));
       return { ...prev, attributes: [...prev.attributes, ...added] };
     });
+  }
+
+  // ---- TikTok 原生级联类目选择器 (2026-08-26, new) — replaces the plain
+  // 3-dropdown UI with TikTok Shop's own "All categories" cascade panel
+  // style: a search bar, then side-by-side columns (L1 on the left, its
+  // children to the right, drilling further right as you go deeper), and
+  // a trigger button showing the full official path once a leaf is picked
+  // (e.g. "Automotive & Motorcycle > Motorcycle Parts > Shocks, Struts &
+  // Suspension"). Pure UI/UX refactor — reuses tiktokRealOptions/
+  // normalizeTikTokCategory/selectTiktokRealLeaf exactly as before, no
+  // change to the real category-tree depth assumption or attribute-load
+  // logic (see selectTiktokRealLeaf above for the real
+  // tiktokCategoryAttributes call this still triggers on leaf pick).
+  const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+  const [categorySearchQuery, setCategorySearchQuery] = useState("");
+  const categoryPickerRef = useRef(null);
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (categoryPickerRef.current && !categoryPickerRef.current.contains(e.target)) {
+        setShowCategoryPicker(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+  // Real official path label for whichever leaf is currently selected —
+  // shown on the trigger button, same normalizeTikTokCategory field names
+  // the rest of this picker already relies on.
+  function tiktokRealSelectedPathLabel() {
+    if (!listingForm.tiktok_real_category_id) return "";
+    const norm = tiktokRealCategories.map(normalizeTikTokCategory);
+    const byId = new Map(norm.map((c) => [c.id, c]));
+    const leaf = byId.get(listingForm.tiktok_real_category_id);
+    if (!leaf) return "";
+    const path = [leaf];
+    let cur = leaf;
+    while (cur.parentId && cur.parentId !== "0" && byId.has(cur.parentId)) {
+      cur = byId.get(cur.parentId);
+      path.unshift(cur);
+    }
+    return path.map((c) => c.name).join(" > ");
+  }
+  // Search-all-categories (2026-08-26, new) — TikTok's own picker lets you
+  // type instead of drilling through columns; searches every real leaf's
+  // full path text (not just the leaf's own name — matches TikTok's own
+  // "type any word in the path" search behavior), plain substring match
+  // since this is a manual search box, not the separate AI/smart-match
+  // suggestion feature built earlier.
+  function searchTiktokRealLeaves(query) {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const norm = tiktokRealCategories.map(normalizeTikTokCategory);
+    const byId = new Map(norm.map((c) => [c.id, c]));
+    function pathOf(c) {
+      const path = [c];
+      let cur = c;
+      while (cur.parentId && cur.parentId !== "0" && byId.has(cur.parentId)) {
+        cur = byId.get(cur.parentId);
+        path.unshift(cur);
+      }
+      return path;
+    }
+    return norm
+      .filter((c) => c.isLeaf)
+      .map((leaf) => ({ leaf, path: pathOf(leaf) }))
+      .filter(({ path }) => path.some((p) => p.name.toLowerCase().includes(q)))
+      .slice(0, 30)
+      .map(({ leaf, path }) => ({ l1id: path[0]?.id, l2id: path[1]?.id, leafId: leaf.id, label: path.map((p) => p.name).join(" > ") }));
+  }
+  function pickCategoryFromCascade(l1id, l2id, leafId) {
+    setTiktokRealL1(l1id || "");
+    setTiktokRealL2(l2id || "");
+    selectTiktokRealLeaf(leafId || "");
+    if (leafId) { setShowCategoryPicker(false); setCategorySearchQuery(""); }
   }
 
   // ---- TikTok 官方品牌库 (2026-08-24, new) — same real-API-first,
@@ -2045,19 +2119,104 @@ export function ProductListingCenter({ t, inventory, stores }) {
                 )}
 
                 {tiktokApiStatus === "ok" ? (
-                  <div className="grid grid-cols-3 gap-2">
-                    <select value={tiktokRealL1} onChange={(e) => { setTiktokRealL1(e.target.value); setTiktokRealL2(""); selectTiktokRealLeaf(""); }} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white">
-                      <option value="">{t("第1级", "Level 1")}</option>
-                      {tiktokRealOptions(1).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                    <select value={tiktokRealL2} onChange={(e) => { setTiktokRealL2(e.target.value); selectTiktokRealLeaf(""); }} disabled={!tiktokRealL1} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                      <option value="">{t("第2级", "Level 2")}</option>
-                      {tiktokRealOptions(2, tiktokRealL1).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                    <select value={listingForm.tiktok_real_category_id} onChange={(e) => selectTiktokRealLeaf(e.target.value)} disabled={!tiktokRealL2} className="w-full px-2 py-2 text-xs border border-slate-200 rounded-lg bg-white disabled:bg-slate-50">
-                      <option value="">{t("第3级", "Level 3")}</option>
-                      {tiktokRealOptions(3, tiktokRealL1, tiktokRealL2).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
+                  <div className="relative" ref={categoryPickerRef}>
+                    {/* Trigger button (2026-08-26, new) — shows the full
+                        official path once picked, matching TikTok's own
+                        cascade selector's collapsed state. */}
+                    <button
+                      type="button"
+                      onClick={() => setShowCategoryPicker((v) => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white hover:border-slate-300 text-left"
+                    >
+                      <span className={listingForm.tiktok_real_category_id ? "text-slate-700" : "text-slate-400"}>
+                        {tiktokRealSelectedPathLabel() || t("请选择类目 / Select category", "Select category")}
+                      </span>
+                      <ChevronDown size={13} className={`text-slate-400 shrink-0 ml-2 transition-transform ${showCategoryPicker ? "rotate-180" : ""}`} />
+                    </button>
+                    {showCategoryPicker && (
+                      <div className="absolute z-30 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg card-3d overflow-hidden">
+                        {/* Search bar (2026-08-26, new) — matches TikTok's
+                            own "type to search all categories" input at the
+                            top of its cascade panel. */}
+                        <div className="p-2 border-b border-slate-100">
+                          <input
+                            autoFocus
+                            value={categorySearchQuery}
+                            onChange={(e) => setCategorySearchQuery(e.target.value)}
+                            placeholder={t("搜索类目 / Search category", "Search category")}
+                            className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-slate-400"
+                          />
+                        </div>
+                        {categorySearchQuery.trim() ? (
+                          // Search results: flat list of matching leaf paths.
+                          <div className="max-h-72 overflow-y-auto">
+                            {searchTiktokRealLeaves(categorySearchQuery).map((r) => (
+                              <button
+                                key={r.leafId}
+                                type="button"
+                                onClick={() => pickCategoryFromCascade(r.l1id, r.l2id, r.leafId)}
+                                className="w-full text-left px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 border-b border-slate-50 last:border-b-0"
+                              >
+                                {r.label}
+                              </button>
+                            ))}
+                            {searchTiktokRealLeaves(categorySearchQuery).length === 0 && (
+                              <div className="px-3 py-3 text-xs text-slate-400 text-center">{t("没有匹配的类目", "No matching categories")}</div>
+                            )}
+                          </div>
+                        ) : (
+                          // "All categories" cascade: L1 | L2 | L3 columns,
+                          // each showing children of the item selected in
+                          // the column to its left — same layout TikTok's
+                          // own panel uses (primary categories on the left,
+                          // secondary/tertiary further right).
+                          <div className="grid grid-cols-3 h-72">
+                            <div className="overflow-y-auto border-r border-slate-100">
+                              {tiktokRealOptions(1).map((c) => (
+                                <button
+                                  key={c.id}
+                                  type="button"
+                                  onClick={() => { setTiktokRealL1(c.id); setTiktokRealL2(""); selectTiktokRealLeaf(""); }}
+                                  className={`w-full text-left px-2.5 py-2 text-xs border-b border-slate-50 ${tiktokRealL1 === c.id ? "bg-indigo-50 text-indigo-600 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
+                                >
+                                  {c.name}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="overflow-y-auto border-r border-slate-100">
+                              {tiktokRealOptions(2, tiktokRealL1).map((c) => (
+                                <button
+                                  key={c.id}
+                                  type="button"
+                                  onClick={() => { setTiktokRealL2(c.id); selectTiktokRealLeaf(""); }}
+                                  className={`w-full text-left px-2.5 py-2 text-xs border-b border-slate-50 ${tiktokRealL2 === c.id ? "bg-indigo-50 text-indigo-600 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
+                                >
+                                  {c.name}
+                                </button>
+                              ))}
+                              {tiktokRealL1 && tiktokRealOptions(2, tiktokRealL1).length === 0 && (
+                                <div className="px-2.5 py-2 text-[11px] text-slate-300">{t("无子类目", "No sub-categories")}</div>
+                              )}
+                            </div>
+                            <div className="overflow-y-auto">
+                              {tiktokRealOptions(3, tiktokRealL1, tiktokRealL2).map((c) => (
+                                <button
+                                  key={c.id}
+                                  type="button"
+                                  onClick={() => pickCategoryFromCascade(tiktokRealL1, tiktokRealL2, c.id)}
+                                  className={`w-full text-left px-2.5 py-2 text-xs border-b border-slate-50 ${listingForm.tiktok_real_category_id === c.id ? "bg-indigo-50 text-indigo-600 font-medium" : "text-slate-600 hover:bg-slate-50"}`}
+                                >
+                                  {c.name}
+                                </button>
+                              ))}
+                              {tiktokRealL2 && tiktokRealOptions(3, tiktokRealL1, tiktokRealL2).length === 0 && (
+                                <div className="px-2.5 py-2 text-[11px] text-slate-300">{t("无子类目", "No sub-categories")}</div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="grid grid-cols-3 gap-2">
