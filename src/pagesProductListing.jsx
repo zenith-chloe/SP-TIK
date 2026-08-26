@@ -41,7 +41,75 @@ const TIKTOK_CATEGORY_NAME_TRANSLATIONS = {
   "topi keledar": { zh: "头盔", en: "Helmet" },
   "palam pencucuh": { zh: "火花塞", en: "Spark Plug" },
   "penjagaan & aksesori kenderaan": { zh: "车辆护理与配件", en: "Vehicle Care & Accessories" },
+  "bahagian motosikal": { zh: "摩托车配件", en: "Motorcycle Parts" },
+  "elektronik kereta": { zh: "车载电子", en: "Car Electronics" },
+  "motosikal penghantaran manual": { zh: "手动传动摩托车", en: "Manual Transmission Motorcycle" },
 };
+
+// Word-level fallback glossary (2026-08-26) — used only when the full
+// phrase above has no exact match. TikTok's real category API returns
+// Malay-only names with no EN/CN fields, so full phrase-level coverage of
+// every real category is not guaranteed; this splits a phrase into words
+// and substitutes each recognised Malay word, which covers most
+// real sub-category names (L2/L3) not yet added to the phrase glossary
+// above. Unrecognised words are left in Malay rather than guessed.
+const TIKTOK_CATEGORY_WORD_TRANSLATIONS = {
+  "motosikal": { zh: "摩托车", en: "Motorcycle" },
+  "bahagian": { zh: "配件", en: "Parts" },
+  "elektronik": { zh: "电子", en: "Electronics" },
+  "kereta": { zh: "汽车", en: "Car" },
+  "penghantaran": { zh: "传动", en: "Transmission" },
+  "manual": { zh: "手动", en: "Manual" },
+  "automotif": { zh: "汽车", en: "Automotive" },
+  "aksesori": { zh: "配件", en: "Accessories" },
+  "kenderaan": { zh: "车辆", en: "Vehicle" },
+  "penjagaan": { zh: "护理", en: "Care" },
+  "topi": { zh: "帽", en: "Cap" },
+  "keledar": { zh: "头盔", en: "Helmet" },
+  "palam": { zh: "塞", en: "Plug" },
+  "pencucuh": { zh: "点火", en: "Ignition" },
+  "bekalan": { zh: "用品", en: "Supplies" },
+  "rumah": { zh: "家居", en: "Home" },
+  "peralatan": { zh: "用具", en: "Equipment" },
+  "dapur": { zh: "厨房", en: "Kitchen" },
+  "tekstil": { zh: "纺织品", en: "Textiles" },
+  "perabot": { zh: "家具", en: "Furniture" },
+  "lembut": { zh: "软", en: "Soft" },
+  "minyak": { zh: "机油", en: "Oil" },
+  "enjin": { zh: "引擎", en: "Engine" },
+  "brek": { zh: "刹车", en: "Brake" },
+  "tayar": { zh: "轮胎", en: "Tyre" },
+  "bateri": { zh: "电池", en: "Battery" },
+  "lampu": { zh: "灯", en: "Light" },
+  "cermin": { zh: "镜", en: "Mirror" },
+  "rantai": { zh: "链条", en: "Chain" },
+  "penyaman": { zh: "空调", en: "Air Conditioner" },
+  "udara": { zh: "空气", en: "Air" },
+  "penapis": { zh: "滤清器", en: "Filter" },
+  "gelang": { zh: "环", en: "Ring" },
+  "roda": { zh: "轮", en: "Wheel" },
+  "kelengkapan": { zh: "配件", en: "Fittings" },
+};
+
+// Splits a Malay category phrase and substitutes each recognised word via
+// TIKTOK_CATEGORY_WORD_TRANSLATIONS. Returns null (no match at all) so the
+// caller can fall back to the raw Malay text.
+function translateTikTokCategoryWords(raw) {
+  const parts = raw.split(/(\s+|&|-)/);
+  let matchedAny = false;
+  const zhParts = [];
+  const enParts = [];
+  for (const part of parts) {
+    if (/^\s+$/.test(part)) { zhParts.push(""); enParts.push(part); continue; }
+    if (part === "&") { zhParts.push("与"); enParts.push("&"); continue; }
+    if (part === "-") { zhParts.push("-"); enParts.push("-"); continue; }
+    const w = TIKTOK_CATEGORY_WORD_TRANSLATIONS[part.trim().toLowerCase()];
+    if (w) { matchedAny = true; zhParts.push(w.zh); enParts.push(w.en); }
+    else { zhParts.push(part); enParts.push(part); }
+  }
+  if (!matchedAny) return null;
+  return { zh: zhParts.join(""), en: enParts.join(" ").replace(/\s+/g, " ").trim() };
+}
 
 // 商品发布中心 (2026-08-24) — data-source note, same spirit as the Ads
 // Costs page's note: this is a real Supabase-backed feature
@@ -297,7 +365,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // the label shown to staff changes.
   function normalizeTikTokCategory(c) {
     const rawName = c.local_name || c.name || c.category_name || t("未命名分类", "Unnamed category");
-    const tr = TIKTOK_CATEGORY_NAME_TRANSLATIONS[rawName.trim().toLowerCase()];
+    const tr = TIKTOK_CATEGORY_NAME_TRANSLATIONS[rawName.trim().toLowerCase()] || translateTikTokCategoryWords(rawName);
     return {
       id: String(c.id ?? c.category_id ?? ""),
       parentId: c.parent_id != null ? String(c.parent_id) : (c.parentId != null ? String(c.parentId) : "0"),
