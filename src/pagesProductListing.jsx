@@ -312,6 +312,27 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setListingForm((prev) => ({ ...prev, image_urls: prev.image_urls.filter((_, i) => i !== idx) }));
   }
 
+  // 图片拖拽排序 (2026-08-26, new) — native HTML5 Drag & Drop API rather
+  // than a new dependency (@hello-pangea/dnd etc.) — same "don't pull in a
+  // library for one feature" convention this file already follows for
+  // routing (see the history.pushState comment above). image_urls[0] is
+  // already the real field saveListing() sends as the payload's main
+  // `image_url` (line ~533's own comment: "image_urls is the real ordered
+  // gallery"), so reordering this array is the entire fix — no separate
+  // "main image" field/state needed, dragging a thumbnail to slot 1
+  // IS what makes it the cover image on submit.
+  const [draggedImageIdx, setDraggedImageIdx] = useState(null);
+  const [dragOverImageIdx, setDragOverImageIdx] = useState(null);
+  function reorderImages(fromIdx, toIdx) {
+    if (fromIdx === toIdx) return;
+    setListingForm((prev) => {
+      const next = [...prev.image_urls];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return { ...prev, image_urls: next };
+    });
+  }
+
   // ---- 新建/编辑主商品发布清单 ----
   const [showListingForm, setShowListingForm] = useState(false);
   const [editingListingId, setEditingListingId] = useState(null);
@@ -1087,8 +1108,32 @@ export function ProductListingCenter({ t, inventory, stores }) {
             <div className="text-xs text-slate-400 mb-1 flex items-center gap-1"><ImageIcon size={12} /> {t("商品图片", "Product Images")}</div>
             <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
               {listingForm.image_urls.map((url, idx) => (
-                <div key={idx} className="relative aspect-square rounded-lg border border-slate-200 overflow-hidden bg-slate-50">
-                  <img src={url} alt="" className="w-full h-full object-cover" />
+                <div
+                  key={url}
+                  draggable
+                  onDragStart={() => setDraggedImageIdx(idx)}
+                  onDragOver={(e) => { e.preventDefault(); if (idx !== dragOverImageIdx) setDragOverImageIdx(idx); }}
+                  onDragLeave={() => setDragOverImageIdx((cur) => (cur === idx ? null : cur))}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (draggedImageIdx !== null) reorderImages(draggedImageIdx, idx);
+                    setDraggedImageIdx(null);
+                    setDragOverImageIdx(null);
+                  }}
+                  onDragEnd={() => { setDraggedImageIdx(null); setDragOverImageIdx(null); }}
+                  className={`relative aspect-square rounded-lg border overflow-hidden bg-slate-50 cursor-grab active:cursor-grabbing transition-shadow ${
+                    dragOverImageIdx === idx && draggedImageIdx !== idx ? "border-purple-400 ring-2 ring-purple-300" : "border-slate-200"
+                  } ${draggedImageIdx === idx ? "opacity-40" : ""}`}
+                >
+                  <img src={url} alt="" className="w-full h-full object-cover pointer-events-none" />
+                  {/* 主图 / Main Cover badge (2026-08-26, new) — always the
+                      first array element, matches what saveListing() sends
+                      as the payload's main image_url. */}
+                  {idx === 0 && (
+                    <div className="absolute top-0.5 left-0.5 px-1.5 py-0.5 rounded bg-purple-600 text-white text-[9px] font-medium leading-tight shadow-sm">
+                      {t("主图", "Main Cover")}
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => removeImageAt(idx)}
