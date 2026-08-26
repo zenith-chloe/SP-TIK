@@ -471,6 +471,72 @@ export function ProductListingCenter({ t, inventory, stores }) {
     if (file) insertDescriptionImage(file);
   }
 
+  // ---- AI 标题/描述生成 (2026-08-26, new) — real Anthropic Messages API
+  // call via the new ai-generate Edge Function, not a template/fake
+  // response (see that function's own comment). Both buttons share the
+  // same real category label + attributes context so the model has
+  // whatever the seller has actually filled in so far, real leaf category
+  // name preferred over the free-text 分类 field when a real one is
+  // selected (TikTok-real tree, then the internal category_trees library).
+  const [aiTitleLoading, setAiTitleLoading] = useState(false);
+  const [aiDescLoading, setAiDescLoading] = useState(false);
+  function currentCategoryLabel() {
+    if (listingForm.tiktok_real_category_id && tiktokRealCategories.length > 0) {
+      const norm = tiktokRealCategories.map(normalizeTikTokCategory);
+      const leaf = norm.find((c) => c.id === listingForm.tiktok_real_category_id);
+      if (leaf) return leaf.name;
+    }
+    const leafId = listingForm.tiktok_category_leaf_id || listingForm.shopee_category_leaf_id;
+    if (leafId) {
+      const leaf = categoryTrees.find((c) => c.id === leafId);
+      if (leaf) return `${leaf.level1} > ${leaf.level2} > ${leaf.level3}`;
+    }
+    return listingForm.category || "";
+  }
+  async function generateAiTitle() {
+    if (!listingForm.title.trim() && !currentCategoryLabel()) {
+      showToast(t("请先输入商品标题或选择分类", "Enter a title or select a category first"));
+      return;
+    }
+    setAiTitleLoading(true);
+    const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
+      body: { action: "title", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand },
+    });
+    setAiTitleLoading(false);
+    if (error || data?.error) {
+      let message = data?.error;
+      if (!message) {
+        try { message = (await error.context?.json())?.error; } catch { /* fall back below */ }
+      }
+      showToast(message || t("AI 标题生成失败", "AI title generation failed"));
+      console.error("generateAiTitle failed", error || data?.error);
+      return;
+    }
+    setListingForm((prev) => ({ ...prev, title: data.title }));
+  }
+  async function generateAiDescription() {
+    if (!listingForm.title.trim() && !currentCategoryLabel()) {
+      showToast(t("请先输入商品标题或选择分类", "Enter a title or select a category first"));
+      return;
+    }
+    setAiDescLoading(true);
+    const { data, error } = await supabaseClient.functions.invoke("ai-generate", {
+      body: { action: "description", title: listingForm.title, category: currentCategoryLabel(), brand: listingForm.brand, attributes: listingForm.attributes },
+    });
+    setAiDescLoading(false);
+    if (error || data?.error) {
+      let message = data?.error;
+      if (!message) {
+        try { message = (await error.context?.json())?.error; } catch { /* fall back below */ }
+      }
+      showToast(message || t("AI 描述生成失败", "AI description generation failed"));
+      console.error("generateAiDescription failed", error || data?.error);
+      return;
+    }
+    setListingForm((prev) => ({ ...prev, description: data.html }));
+    if (descriptionEditorRef.current) descriptionEditorRef.current.innerHTML = data.html;
+  }
+
   // ---- 独立全屏页面 + URL 同步 (2026-08-24, new) — 新增/编辑弹窗改为独立
   // 全屏页面（不再是 Modal）。本项目没有接入 react-router（整站都是
   // tab state 切换，见 erp-mvp-demo.jsx），为避免为此单一功能引入路由库、
@@ -1334,7 +1400,21 @@ export function ProductListingCenter({ t, inventory, stores }) {
                 <div className="text-xs text-slate-400">{t("商品标题", "Title")}</div>
                 <div className={`text-[11px] ${listingForm.title.length > TITLE_MAX_LEN ? "text-rose-500" : "text-slate-300"}`}>{listingForm.title.length}/{TITLE_MAX_LEN}</div>
               </div>
-              <input value={listingForm.title} onChange={(e) => setListingForm({ ...listingForm, title: e.target.value })} maxLength={TITLE_MAX_LEN} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+              <div className="flex gap-1.5">
+                <input value={listingForm.title} onChange={(e) => setListingForm({ ...listingForm, title: e.target.value })} maxLength={TITLE_MAX_LEN} className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg" />
+                {/* AI 标题生成 (2026-08-26, new) — real Anthropic call via
+                    ai-generate Edge Function; see generateAiTitle() above
+                    for the honest-error-on-missing-API-key behavior. */}
+                <button
+                  type="button"
+                  onClick={generateAiTitle}
+                  disabled={aiTitleLoading}
+                  className={`shrink-0 text-xs px-3 py-2 rounded-lg border flex items-center gap-1 whitespace-nowrap ${aiTitleLoading ? "border-slate-100 text-slate-300" : "border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100"}`}
+                >
+                  <Sparkles size={12} className={aiTitleLoading ? "animate-spin" : ""} />
+                  {aiTitleLoading ? t("生成中…", "Generating…") : t("AI 标题生成", "AI Title")}
+                </button>
+              </div>
               {/* 智能匹配分类 (2026-08-26, new) — real keyword-overlap
                   suggestions from whichever category source is loaded; see
                   suggestTiktokRealCategoryMatches/suggestInternalCategoryMatches
@@ -1415,11 +1495,20 @@ export function ProductListingCenter({ t, inventory, stores }) {
           <div className="bg-white border border-slate-200 rounded-xl p-5">
             <div className="flex items-center justify-between mb-1">
               <div className="text-xs text-slate-400">{t("详情描述", "Description")}</div>
-              {/* AI 描述生成 (2026-08-26) — intentionally not wired up yet:
-                  this project has no real LLM/AI integration anywhere (the
-                  existing "AI智能功能" page is a keyword-matching demo, not
-                  real AI), so a working button here needs an API key/vendor
-                  decision first — flagged separately, not faked. */}
+              {/* AI 描述生成 (2026-08-26, new) — real Anthropic call via
+                  ai-generate Edge Function; see generateAiDescription()
+                  above. Overwrites the editor's current content — staff
+                  clicking this button are asking for a fresh draft, not an
+                  append, same expectation as the title button next to it. */}
+              <button
+                type="button"
+                onClick={generateAiDescription}
+                disabled={aiDescLoading}
+                className={`text-xs px-3 py-1.5 rounded-lg border flex items-center gap-1 whitespace-nowrap ${aiDescLoading ? "border-slate-100 text-slate-300" : "border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100"}`}
+              >
+                <Sparkles size={12} className={aiDescLoading ? "animate-spin" : ""} />
+                {aiDescLoading ? t("生成中…", "Generating…") : t("AI 描述生成", "AI Description")}
+              </button>
             </div>
             <div className="flex items-center gap-2 mb-1.5">
               <label className={`text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer flex items-center gap-1 ${descImageUploading ? "border-slate-100 text-slate-300" : "border-slate-200 hover:bg-slate-50 text-slate-600"}`}>
