@@ -1299,6 +1299,30 @@ export function ProductListingCenter({ t, inventory, stores }) {
     loadListings();
   }
 
+  // 重置 TikTok 发布状态 (2026-08-27, new, explicit request) — clears the
+  // stored real platform_product_id/platform_sku_ids/publish_error/
+  // published_at and resets publish_status back to 'pending' (the column
+  // is NOT NULL with a check constraint, so 'pending' is this table's
+  // real "unpublished" value, not null), so 一键发布 treats this row as a
+  // brand-new item again instead of routing to Edit Product. Does not
+  // touch TikTok itself — this is local-only bookkeeping for a row whose
+  // real product is stuck/unusable (e.g. permanently rejected on TikTok's
+  // side) and needs to be re-created fresh.
+  async function resetTikTokPublishStatus(row) {
+    if (!confirm(t("确定要重置此商品的发布状态吗？这不会影响 TikTok 上已存在的商品，仅清除本地记录，下次点击将视为全新发布。", "Reset this item's publish status? This won't touch anything already on TikTok — it only clears the local record, so the next click is treated as a brand-new publish."))) return;
+    const { error } = await supabaseClient.from("product_listing_stores").update({
+      publish_status: "pending",
+      platform_product_id: null,
+      platform_sku_ids: null,
+      publish_error: null,
+      published_at: null,
+      updated_at: new Date().toISOString(),
+    }).eq("id", row.id);
+    if (error) { showToast(t("操作失败", "Action failed")); console.error("resetTikTokPublishStatus failed", error); return; }
+    showToast(t("已重置发布状态", "Publish status reset"));
+    loadListings();
+  }
+
   // 真实 TikTok 一键发布 (2026-08-27, new, single-SKU only per approved
   // scope) — calls tiktok-sync-orders' new tiktokPublishProduct action,
   // which does the real Create Product API call (image upload + category/
@@ -2932,6 +2956,9 @@ export function ProductListingCenter({ t, inventory, stores }) {
                     )}
                     {r.publish_status !== "marked_published" && r.publish_status !== "api_published" && (
                       <button onClick={() => markPublished(r.id)} className="text-xs text-emerald-600 hover:text-emerald-800">{t("标记已发布", "Mark Published")}</button>
+                    )}
+                    {r.platform === "TikTok Shop" && (r.publish_status === "api_published" || r.publish_status === "api_failed") && (
+                      <button onClick={() => resetTikTokPublishStatus(r)} className="text-xs text-slate-400 hover:text-rose-600">{t("重置", "Reset")}</button>
                     )}
                   </td>
                 </tr>
