@@ -267,6 +267,33 @@ async function tiktokCallMultipart(
   return data.data;
 }
 
+// Shared real image-upload helper (2026-08-27, new) — dedupes what was
+// three separate copies of the same fetch-blob/build-form/upload logic
+// (tiktokUploadImage, the main_images loop, and now description-image
+// rewriting below). use_case is a real, distinct TikTok parameter per
+// error 12052340 ("description <img> src must use the url returned by
+// Upload Product Image with use_case=DESCRIPTION_IMAGE") — MAIN_IMAGE
+// returns a `uri` reference for main_images[], DESCRIPTION_IMAGE returns
+// a real embeddable `url` for <img src>; read both defensively since
+// neither has been exercised against a live authorized shop yet.
+async function uploadTikTokImage(
+  sourceUrl: string,
+  useCase: "MAIN_IMAGE" | "DESCRIPTION_IMAGE",
+  creds: TikTokCredentials,
+  account: TikTokAccount,
+): Promise<{ uri?: string; url?: string } | null> {
+  const imgResp = await fetch(sourceUrl);
+  if (!imgResp.ok) return null;
+  const blob = await imgResp.blob();
+  const form = new FormData();
+  form.append("data", blob, "image.jpg");
+  const data = await tiktokCallMultipart("/product/202309/images/upload", creds, account, { use_case: useCase }, form);
+  const uri = data?.uri ?? data?.img_id ?? data?.id;
+  const url = data?.url ?? data?.image_url;
+  if (!uri && !url) return null;
+  return { uri, url };
+}
+
 // Deducts stock for one order_item, exactly once, via the stock_movements
 // UNIQUE(order_id, sku) constraint: the insert only succeeds the first time
 // this (order, sku) pair is seen, so re-syncing the same order (which
@@ -960,26 +987,11 @@ Deno.serve(async (req: Request) => {
       });
     }
     try {
-      const imgResp = await fetch(imageUrl);
-      if (!imgResp.ok) throw new Error(`failed to fetch source image: ${imgResp.status}`);
-      const blob = await imgResp.blob();
-      const form = new FormData();
-      // Real TikTok error 36009004 ("body.data is invalid...expected type:
-      // binary", 2026-08-27) confirmed the multipart field TikTok actually
-      // reads the binary file from is "data" — the earlier code had it
-      // backwards (JSON-stringified metadata under "data", the real binary
-      // blob under an unused "image" field). Fixed: "data" now carries the
-      // raw binary blob directly, nothing else.
-      form.append("data", blob, "image.jpg");
-      // shop_cipher removed (2026-08-27) — real TikTok error 36009004
-      // confirmed Image Upload does NOT accept it (only app_key/timestamp/
-      // sign/access_token, per official docs); ensureShopCipher above is
-      // still called only to warm the cached cipher for the later Create
-      // Product call, which does require it.
-      const data = await tiktokCallMultipart("/product/202309/images/upload", creds, accounts[0], {}, form);
-      const uri = data?.uri ?? data?.img_id ?? data?.id;
-      if (!uri) throw new Error("TikTok image upload returned no usable id — raw response: " + JSON.stringify(data).slice(0, 300));
-      return new Response(JSON.stringify({ uri }), {
+      // shop_cipher deliberately not used here (2026-08-27, real error
+      // 36009004) — Image Upload doesn't accept it.
+      const result = await uploadTikTokImage(imageUrl, "MAIN_IMAGE", creds, accounts[0]);
+      if (!result) throw new Error("TikTok image upload returned no usable id/url");
+      return new Response(JSON.stringify(result), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     } catch (e) {
@@ -1056,22 +1068,36 @@ Deno.serve(async (req: Request) => {
       if (imageUrls.length === 0) throw new Error("At least one product image is required");
       const mainImages: { uri: string }[] = [];
       for (const url of imageUrls.slice(0, 9)) {
-        const imgResp = await fetch(url);
-        if (!imgResp.ok) continue;
-        const blob = await imgResp.blob();
-        const form = new FormData();
-        // Real binary field fix (2026-08-27) — see tiktokUploadImage above
-        // for the full 36009004 explanation; same swap here.
-        form.append("data", blob, "image.jpg");
-        // shop_cipher deliberately omitted here too (2026-08-27) — same
-        // real 36009004 fix as tiktokUploadImage above; shopCipher stays
-        // in scope for the Create Product call further down, which does
-        // require it.
-        const imgData = await tiktokCallMultipart("/product/202309/images/upload", creds, accounts[0], {}, form);
-        const uri = imgData?.uri ?? imgData?.img_id ?? imgData?.id;
-        if (uri) mainImages.push({ uri });
+        const result = await uploadTikTokImage(url, "MAIN_IMAGE", creds, accounts[0]);
+        if (result?.uri) mainImages.push({ uri: result.uri });
       }
       if (mainImages.length === 0) throw new Error("Image upload to TikTok failed for every image in this listing");
+
+      // Description image rewrite (2026-08-27, fix for real error 12052340:
+      // "description <img> src must use the url returned by Upload Product
+      // Image with use_case=DESCRIPTION_IMAGE") — every <img src="..."> in
+      // the listing's HTML description is re-uploaded under that use_case
+      // and its src replaced with TikTok's own returned url; a src that's
+      // already on TikTok's own domain is left alone (already valid), and
+      // an image that fails to upload is dropped from the description
+      // entirely rather than left pointing at a URL TikTok will reject.
+      let publishDescription = listing.description || listing.title;
+      const imgSrcs = [...publishDescription.matchAll(/<img[^>]+src="([^"]+)"/g)].map((m) => m[1]);
+      for (const src of imgSrcs) {
+        if (/tiktokcdn|ibyteimg|byteimg/i.test(src)) continue; // already TikTok-hosted
+        const result = await uploadTikTokImage(src, "DESCRIPTION_IMAGE", creds, accounts[0]);
+        if (result?.url) {
+          publishDescription = publishDescription.split(src).join(result.url);
+        } else {
+          // Can't safely embed this image — strip just this <img> tag
+          // (and its non-editable delete-button wrapper span, if present)
+          // rather than send a src TikTok will reject the whole product for.
+          publishDescription = publishDescription.replace(
+            new RegExp(`<span class="desc-img-wrap"[^>]*>\\s*<img[^>]*src="${src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^>]*>.*?</span>|<img[^>]*src="${src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^>]*>`, "s"),
+            "",
+          );
+        }
+      }
 
       // Attributes — only rows with a real attribute_id captured at
       // selection time (see pagesProductListing.jsx's selectTiktokRealLeaf)
@@ -1089,7 +1115,7 @@ Deno.serve(async (req: Request) => {
       const payload = {
         save_mode: "LISTING",
         title: listing.title,
-        description: listing.description || listing.title,
+        description: publishDescription,
         // Real error 12052217 (2026-08-27) — this shop is "all-region" and
         // Create Product rejects V1 category ids/payloads outright;
         // category_id above must also come from the V2-fetched categories
