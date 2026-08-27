@@ -1331,32 +1331,69 @@ export function ProductListingCenter({ t, inventory, stores }) {
   // store row. Distinct from markPublished (staff self-report) above —
   // never conflated, see that migration's own comment.
   const [publishingRowId, setPublishingRowId] = useState(null);
-  async function publishToTikTokReal(row) {
+  async function publishToTikTokReal(row, forceCreate = false) {
     setPublishingRowId(row.id);
     const { data, error } = await supabaseClient.functions.invoke("tiktok-sync-orders", {
-      body: { action: "tiktokPublishProduct", listingId: row.listing_id, platformAccountId: row.platform_account_id },
+      body: { action: "tiktokPublishProduct", listingId: row.listing_id, platformAccountId: row.platform_account_id, forceCreate },
     });
-    setPublishingRowId(null);
     const errMessage = await extractInvokeError(error, data);
+
+    // 自动重试：Edit 失败（TikTok 商品被删除），清空 platform_product_id 后改用 Create (2026-08-27, new)
+    // Auto-retry: if Edit failed (product deleted on TikTok), clear platform_product_id and retry with Create
+    if (!forceCreate && errMessage && row.platform_product_id) {
+      console.log(`[publishToTikTok] Edit failed for ${row.id}, clearing platform_product_id and retrying with Create API`);
+      // Clear the cached product_id so the backend treats this as Create, not Edit
+      const { error: clearErr } = await supabaseClient
+        .from("product_listing_stores")
+        .update({ platform_product_id: null, platform_sku_ids: null, publish_error: null, updated_at: new Date().toISOString() })
+        .eq("id", row.id);
+      if (!clearErr) {
+        // Retry with forceCreate=true
+        const { data: retryData, error: retryError } = await supabaseClient.functions.invoke("tiktok-sync-orders", {
+          body: { action: "tiktokPublishProduct", listingId: row.listing_id, platformAccountId: row.platform_account_id, forceCreate: true },
+        });
+        setPublishingRowId(null);
+        const retryErrMessage = await extractInvokeError(retryError, retryData);
+        if (retryErrMessage) {
+          showToast(t(`发布失败（已重试）：${retryErrMessage}`, `Publish failed (retried): ${retryErrMessage}`));
+          console.error("publishToTikTokReal retry failed", retryErrMessage);
+        } else {
+          showToast(retryData?.productId
+            ? t(`已成功创建新商品（原商品已删除），product_id: ${retryData.productId}`, `Created new listing (original was deleted) — product_id: ${retryData.productId}`)
+            : t("已创建新商品，请验证后台确认", "Created new listing — please verify in Seller Center"));
+        }
+        loadListings();
+        return;
+      }
+    }
+
+    setPublishingRowId(null);
     if (errMessage) {
       showToast(row.publish_status === "api_published"
         ? t(`同步更新失败：${errMessage}`, `Sync update failed: ${errMessage}`)
         : t(`发布失败：${errMessage}`, `Publish failed: ${errMessage}`));
       console.error("publishToTikTokReal failed", errMessage);
     } else if (data?.isEdit) {
-      // Edit/re-sync path (2026-08-27, new) — distinct toast per explicit
-      // request, since this is updating an already-live TikTok listing via
-      // the real Edit Product API, not creating a new one.
       showToast(t("已成功同步更新至 TikTok 店铺！", "Successfully synced updates to TikTok Shop!"));
     } else {
-      // Shows the real returned product_id (2026-08-27, explicit request)
-      // so a success toast is independently verifiable against TikTok
-      // Seller Center, not just a generic "it worked" message.
       showToast(data?.productId
         ? t(`已成功发布到 TikTok Shop，product_id: ${data.productId}`, `Published to TikTok Shop — product_id: ${data.productId}`)
         : t("TikTok 返回成功但未附带 product_id，请检查后台确认", "TikTok returned success but no product_id — please verify in Seller Center"));
     }
     loadListings();
+  }
+
+  // 重新发布 (2026-08-27, new, explicit request) — for a listing whose
+  // TikTok product was deleted directly in Seller Center, so Edit Product
+  // always fails against the now-nonexistent platform_product_id. Single
+  // click: forceCreate=true tells the edge function to skip the isEdit
+  // check and its cached sku ids entirely and call Create fresh; the DB
+  // row is overwritten with whatever new id TikTok returns (or api_failed
+  // again if this shop genuinely can't publish right now) — no separate
+  // local reset step needed first.
+  async function republishToTikTok(row) {
+    if (!confirm(t("确定要重新发布吗？（适用于该商品已在 TikTok 后台被删除的情况）这会调用 Create API 创建一个全新商品。", "Republish as a new item? (For when the TikTok-side product was deleted.) This calls the Create API to make a brand-new listing."))) return;
+    await publishToTikTokReal(row, true);
   }
 
   // ---- 店铺定价清单 (flattened product_listing_stores rows) ----
@@ -2956,6 +2993,9 @@ export function ProductListingCenter({ t, inventory, stores }) {
                     )}
                     {r.publish_status !== "marked_published" && r.publish_status !== "api_published" && (
                       <button onClick={() => markPublished(r.id)} className="text-xs text-emerald-600 hover:text-emerald-800">{t("标记已发布", "Mark Published")}</button>
+                    )}
+                    {r.platform === "TikTok Shop" && r.publish_status === "api_published" && (
+                      <button onClick={() => republishToTikTok(r)} disabled={publishingRowId === r.id} className="text-xs text-amber-600 hover:text-amber-800 disabled:text-slate-300">{t("重新发布", "Republish")}</button>
                     )}
                     {r.platform === "TikTok Shop" && (r.publish_status === "api_published" || r.publish_status === "api_failed") && (
                       <button onClick={() => resetTikTokPublishStatus(r)} className="text-xs text-slate-400 hover:text-rose-600">{t("重置", "Reset")}</button>

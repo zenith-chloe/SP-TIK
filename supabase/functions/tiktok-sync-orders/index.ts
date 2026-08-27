@@ -820,6 +820,7 @@ Deno.serve(async (req: Request) => {
   let categoryId: string | undefined;
   let listingId: string | undefined;
   let imageUrl: string | undefined;
+  let forceCreate = false;
   try {
     const body = await req.json();
     platformAccountId = body?.platformAccountId; // preferred — platform_accounts.id, unambiguous per store
@@ -829,6 +830,12 @@ Deno.serve(async (req: Request) => {
     categoryId = body?.categoryId;
     listingId = body?.listingId;
     imageUrl = body?.imageUrl;
+    // forceCreate (2026-08-27, explicit request) — for a listing whose
+    // TikTok product was deleted directly in Seller Center, editing via
+    // the stored platform_product_id will always fail (the id no longer
+    // exists on TikTok's side). This flag skips the isEdit check entirely
+    // and always calls Create, regardless of what's cached locally.
+    forceCreate = body?.forceCreate === true;
   } catch {
     // no body - sync all shops
   }
@@ -1111,7 +1118,10 @@ Deno.serve(async (req: Request) => {
       const price = Number(listing.base_price) || 0;
       const stock = Math.round(Number(listing.base_stock)) || 0;
       const sellerSku = listing.sku || `ERP-${listing.id.slice(0, 8)}`;
-      const existingSkuIds = (storeRow?.platform_sku_ids ?? {}) as Record<string, string>;
+      // forceCreate wipes any cached sku id too — a deleted TikTok product
+      // took its sku ids with it, so reusing one here would just fail the
+      // same way the product_id itself would have.
+      const existingSkuIds = (!forceCreate && storeRow?.platform_sku_ids) ? storeRow.platform_sku_ids as Record<string, string> : {};
       const existingSkuId = existingSkuIds[sellerSku];
 
       const payload = {
@@ -1158,7 +1168,7 @@ Deno.serve(async (req: Request) => {
       // implemented per TikTok's documented v202309 Edit Product schema
       // but — same honesty note as every other step in this integration —
       // not yet exercised against a live shop.
-      const isEdit = !!storeRow?.platform_product_id;
+      const isEdit = !forceCreate && !!storeRow?.platform_product_id;
       const editPayload = isEdit ? { ...payload } : payload;
       if (isEdit) delete (editPayload as Record<string, unknown>).save_mode;
       const method = isEdit ? "PUT" : "POST";
