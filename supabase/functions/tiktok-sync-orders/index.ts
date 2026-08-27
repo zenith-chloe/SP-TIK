@@ -1006,22 +1006,20 @@ Deno.serve(async (req: Request) => {
       ]);
       if (listingErr || !listing) throw new Error(listingErr?.message ?? "listing not found");
       if (varErr) throw new Error(varErr.message);
-      // Auto-clean stale variation rows (2026-08-27, explicit request) —
-      // has_variations is the real persisted 多规格 toggle state as of the
-      // listing's last save (see pagesProductListing.jsx's saveListing);
-      // when it's false but leftover rows still exist (e.g. staff turned
-      // 多规格 off without re-saving, or an older listing predates this
-      // column defaulting to false), wipe them here rather than making
-      // staff re-open and re-save the form just to unblock a real publish.
-      // A listing that's genuinely multi-variant (has_variations = true)
-      // still gets rejected exactly as before — real multi-SKU publish is
-      // out of this phase's scope.
-      if (!listing.has_variations && (variations ?? []).length > 0) {
+      // Variation block removed entirely (2026-08-27, explicit request) —
+      // real publish is unconditionally single-SKU now: any leftover
+      // product_listing_variations rows for this listing are wiped
+      // up-front (no has_variations branching, no rejection path) and the
+      // payload always builds from product_listings.base_price/base_stock
+      // below. Real multi-SKU publish is simply out of scope, not a state
+      // to detect/reject anymore.
+      if ((variations ?? []).length > 0) {
         const { error: cleanupErr } = await supabase.from("product_listing_variations").delete().eq("listing_id", listingId);
-        if (cleanupErr) throw new Error(`Failed to auto-clean stale variation rows: ${cleanupErr.message}`);
-        console.log(`[tiktokPublishProduct] listing=${listingId} auto-cleaned ${variations.length} stale variation row(s) (has_variations=false)`);
-      } else if (listing.has_variations && (variations ?? []).length > 0) {
-        throw new Error(`Blocked before calling TikTok: this listing has 多规格 (variations) turned on with ${variations.length} row(s) — real publish currently only supports single-SKU listings.`);
+        if (cleanupErr) throw new Error(`Failed to clean variation rows: ${cleanupErr.message}`);
+        console.log(`[tiktokPublishProduct] listing=${listingId} removed ${variations.length} variation row(s) before publish`);
+      }
+      if (listing.has_variations) {
+        await supabase.from("product_listings").update({ has_variations: false }).eq("id", listingId);
       }
       if (!listing.tiktok_real_category_id) throw new Error("Select a real TikTok category before publishing");
 
