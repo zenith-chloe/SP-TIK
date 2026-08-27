@@ -1216,6 +1216,12 @@ export function ProductListingCenter({ t, inventory, stores }) {
       shopee_category_path: isShopee && shopeeLeaf ? [shopeeLeaf.level1, shopeeLeaf.level2, shopeeLeaf.level3] : null,
       tiktok_category_path: isTiktok ? (tiktokRealPathNames?.length ? tiktokRealPathNames : (tiktokLeaf ? [tiktokLeaf.level1, tiktokLeaf.level2, tiktokLeaf.level3] : null)) : null,
       attributes: listingForm.attributes.filter((a) => a.name.trim()),
+      // Real persisted single-SKU/多规格 intent (2026-08-27, new) — lets
+      // publish-time code distinguish "meant to be single-SKU, just has
+      // stale leftover variation rows" from "genuinely multi-variant",
+      // instead of only inferring it from whichever rows happen to still
+      // exist in product_listing_variations.
+      has_variations: multiVariantsOn,
       updated_at: new Date().toISOString(),
     };
     // 变体随主表单一起保存 (2026-08-25) — a brand-new listing has no id
