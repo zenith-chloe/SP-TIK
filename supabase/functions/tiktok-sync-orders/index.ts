@@ -915,6 +915,12 @@ Deno.serve(async (req: Request) => {
       let path: string;
       if (action === "tiktokCategories") {
         path = "/product/202309/categories";
+        // Real error 12052217 (2026-08-27) confirmed this shop is
+        // "all-region" and must use V2 categories — requesting V1 here
+        // (the default) would return ids that then fail at Create Product
+        // regardless of what the payload's own category_version says, so
+        // the categories list itself has to be fetched as V2 too.
+        query.category_version = "V2";
       } else if (action === "tiktokCategoryAttributes") {
         path = `/product/202309/categories/${categoryId}/attributes`;
       } else {
@@ -1084,6 +1090,12 @@ Deno.serve(async (req: Request) => {
         save_mode: "LISTING",
         title: listing.title,
         description: listing.description || listing.title,
+        // Real error 12052217 (2026-08-27) — this shop is "all-region" and
+        // Create Product rejects V1 category ids/payloads outright;
+        // category_id above must also come from the V2-fetched categories
+        // list (see tiktokCategories action's category_version=V2 fix) or
+        // this flag alone won't help.
+        category_version: "V2",
         category_id: listing.tiktok_real_category_id,
         ...(listing.tiktok_brand_id ? { brand_id: listing.tiktok_brand_id } : {}),
         main_images: mainImages,
