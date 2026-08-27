@@ -954,14 +954,18 @@ Deno.serve(async (req: Request) => {
       });
     }
     try {
-      const { shopCipher } = await ensureShopCipher(creds, accounts[0]);
       const imgResp = await fetch(imageUrl);
       if (!imgResp.ok) throw new Error(`failed to fetch source image: ${imgResp.status}`);
       const blob = await imgResp.blob();
       const form = new FormData();
       form.append("data", JSON.stringify({ use_case: "MAIN_IMAGE" }));
       form.append("image", blob, "image.jpg");
-      const data = await tiktokCallMultipart("/product/202309/images/upload", creds, accounts[0], { shop_cipher: shopCipher }, form);
+      // shop_cipher removed (2026-08-27) — real TikTok error 36009004
+      // confirmed Image Upload does NOT accept it (only app_key/timestamp/
+      // sign/access_token, per official docs); ensureShopCipher above is
+      // still called only to warm the cached cipher for the later Create
+      // Product call, which does require it.
+      const data = await tiktokCallMultipart("/product/202309/images/upload", creds, accounts[0], {}, form);
       const uri = data?.uri ?? data?.img_id ?? data?.id;
       if (!uri) throw new Error("TikTok image upload returned no usable id — raw response: " + JSON.stringify(data).slice(0, 300));
       return new Response(JSON.stringify({ uri }), {
@@ -1047,7 +1051,11 @@ Deno.serve(async (req: Request) => {
         const form = new FormData();
         form.append("data", JSON.stringify({ use_case: "MAIN_IMAGE" }));
         form.append("image", blob, "image.jpg");
-        const imgData = await tiktokCallMultipart("/product/202309/images/upload", creds, accounts[0], { shop_cipher: shopCipher }, form);
+        // shop_cipher deliberately omitted here too (2026-08-27) — same
+        // real 36009004 fix as tiktokUploadImage above; shopCipher stays
+        // in scope for the Create Product call further down, which does
+        // require it.
+        const imgData = await tiktokCallMultipart("/product/202309/images/upload", creds, accounts[0], {}, form);
         const uri = imgData?.uri ?? imgData?.img_id ?? imgData?.id;
         if (uri) mainImages.push({ uri });
       }
