@@ -1007,7 +1007,7 @@ Deno.serve(async (req: Request) => {
       if (listingErr || !listing) throw new Error(listingErr?.message ?? "listing not found");
       if (varErr) throw new Error(varErr.message);
       if ((variations ?? []).length > 0) {
-        throw new Error("This listing has multiple variations — real publish currently only supports single-SKU listings. Remove variations or keep this listing ERP-internal-only.");
+        throw new Error(`Blocked before calling TikTok: this listing still has ${variations.length} variation row(s) in product_listing_variations — real publish currently only supports single-SKU listings. If this listing is meant to be single-SKU, turn off "多规格" and save the listing again to actually clear the old rows, then retry.`);
       }
       if (!listing.tiktok_real_category_id) throw new Error("Select a real TikTok category before publishing");
 
@@ -1079,7 +1079,13 @@ Deno.serve(async (req: Request) => {
         ],
       };
 
+      // Diagnostics (2026-08-27, explicit request) — logs the exact
+      // request payload and TikTok's raw response so a real publish
+      // attempt's outcome is directly inspectable in Supabase function
+      // logs instead of only "it worked or it didn't".
+      console.log(`[tiktokPublishProduct] listing=${listingId} account=${platformAccountId} payload:`, JSON.stringify(payload));
       const data = await tiktokCall("POST", "/product/202309/products", creds, accounts[0], { shop_cipher: shopCipher }, payload);
+      console.log(`[tiktokPublishProduct] listing=${listingId} TikTok raw response:`, JSON.stringify(data));
       const productId = data?.product_id ?? data?.id;
       const skuIds: Record<string, string> = {};
       for (const sku of data?.skus ?? []) {

@@ -1281,7 +1281,13 @@ export function ProductListingCenter({ t, inventory, stores }) {
   }
 
   async function markPublished(storeRowId) {
-    const { error } = await supabaseClient.from("product_listing_stores").update({ publish_status: "marked_published", updated_at: new Date().toISOString() }).eq("id", storeRowId);
+    // Clears any stale publish_error/platform_product_id from a prior real
+    // API attempt (2026-08-27, bugfix) — without this, a failed real
+    // publish_status='api_failed' row could be manually overwritten to
+    // 'marked_published' while its old error text stayed behind, making a
+    // never-actually-published listing look like a confirmed success with
+    // a hidden contradictory error message underneath.
+    const { error } = await supabaseClient.from("product_listing_stores").update({ publish_status: "marked_published", publish_error: null, platform_product_id: null, updated_at: new Date().toISOString() }).eq("id", storeRowId);
     if (error) { showToast(t("操作失败", "Action failed")); console.error("markPublished failed", error); return; }
     showToast(t("已标记为已发布", "Marked as published"));
     loadListings();
@@ -1306,7 +1312,12 @@ export function ProductListingCenter({ t, inventory, stores }) {
       showToast(t(`发布失败：${errMessage}`, `Publish failed: ${errMessage}`));
       console.error("publishToTikTokReal failed", errMessage);
     } else {
-      showToast(t("已成功发布到 TikTok Shop", "Published to TikTok Shop successfully"));
+      // Shows the real returned product_id (2026-08-27, explicit request)
+      // so a success toast is independently verifiable against TikTok
+      // Seller Center, not just a generic "it worked" message.
+      showToast(data?.productId
+        ? t(`已成功发布到 TikTok Shop，product_id: ${data.productId}`, `Published to TikTok Shop — product_id: ${data.productId}`)
+        : t("TikTok 返回成功但未附带 product_id，请检查后台确认", "TikTok returned success but no product_id — please verify in Seller Center"));
     }
     loadListings();
   }
