@@ -60,10 +60,14 @@ const corsHeaders = {
 };
 
 const ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929";
-const GEMINI_MODEL = "gemini-2.5-flash";
+// 2026-08-27: "gemini-2.5-flash" started returning a real 404/deprecation
+// error from Google ("no longer available to new users"). Switched to the
+// documented auto-updating alias so this doesn't need touching again the
+// next time Google retires a dated model id.
+const GEMINI_MODEL = "gemini-flash-latest";
 
 async function callClaude(apiKey: string, system: string, user: string, maxTokens: number): Promise<string> {
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+  const resp = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -76,7 +80,7 @@ async function callClaude(apiKey: string, system: string, user: string, maxToken
       system,
       messages: [{ role: "user", content: user }],
     }),
-  });
+  }, AI_FETCH_TIMEOUT_MS);
   const data = await resp.json();
   if (!resp.ok) {
     throw new Error(`Anthropic API error: ${data?.error?.message ?? resp.status}`);
@@ -86,8 +90,29 @@ async function callClaude(apiKey: string, system: string, user: string, maxToken
   return text.trim();
 }
 
+// 2026-08-27: a prior deploy hit the edge runtime's own wall-clock kill
+// (WORKER_RESOURCE_LIMIT, no error ever surfaced from this function's own
+// try/catch) — the fetch to Gemini simply hung with no timeout of its
+// own. Added an explicit AbortController timeout so a stuck request fails
+// fast with a real, loggable error instead of silently starving until the
+// platform kills the whole invocation.
+const AI_FETCH_TIMEOUT_MS = 20000;
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") throw new Error(`request timed out after ${timeoutMs}ms`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function callGemini(apiKey: string, system: string, user: string, maxTokens: number): Promise<string> {
-  const resp = await fetch(
+  const resp = await fetchWithTimeout(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
     {
       method: "POST",
@@ -95,9 +120,18 @@ async function callGemini(apiKey: string, system: string, user: string, maxToken
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: "user", parts: [{ text: user }] }],
-        generationConfig: { maxOutputTokens: maxTokens },
+        // thinkingBudget: 0 (2026-08-27, fix) — gemini-2.5-based models
+        // "think" before answering by default, and those internal
+        // reasoning tokens are deducted from maxOutputTokens, which was
+        // silently truncating/emptying the final JSON answer (root cause
+        // of "AI returned an unparseable response" once the Gemini call
+        // itself started succeeding). Disabling it dedicates the full
+        // token budget to the actual output for these short, structured
+        // JSON/text tasks.
+        generationConfig: { maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } },
       }),
     },
+    AI_FETCH_TIMEOUT_MS,
   );
   const data = await resp.json();
   if (!resp.ok) {
@@ -116,18 +150,40 @@ async function callGemini(apiKey: string, system: string, user: string, maxToken
 async function callAi(geminiKey: string | undefined, anthropicKey: string | undefined, system: string, user: string, maxTokens: number): Promise<string> {
   if (geminiKey) {
     try {
-      return await callGemini(geminiKey, system, user, maxTokens);
+      const result = await callGemini(geminiKey, system, user, maxTokens);
+      console.log(`[ai-generate] provider=gemini model=${GEMINI_MODEL} ok`);
+      return result;
     } catch (e) {
+      // Logged unconditionally now (2026-08-27) — previously only logged
+      // when a Claude fallback existed to catch it, so a Gemini-only setup
+      // (no ANTHROPIC_API_KEY) silently threw with no diagnostic trail.
+      console.error(`[ai-generate] provider=gemini model=${GEMINI_MODEL} FAILED:`, (e as Error).message);
       if (!anthropicKey) throw e;
-      console.error("Gemini call failed, falling back to Anthropic:", (e as Error).message);
     }
   }
-  if (anthropicKey) return await callClaude(anthropicKey, system, user, maxTokens);
+  if (anthropicKey) {
+    const result = await callClaude(anthropicKey, system, user, maxTokens);
+    console.log(`[ai-generate] provider=anthropic model=${ANTHROPIC_MODEL} ok (gemini unavailable or not configured)`);
+    return result;
+  }
   throw new Error("no provider available");
 }
 
+// Also extracts the first {...} block as a fallback (2026-08-27) — some
+// responses prepend a stray sentence before the JSON despite instructions
+// not to; logs the raw text on failure so a future parse issue is
+// diagnosable straight from function logs instead of guessing blind.
 function stripJsonFences(raw: string): string {
-  return raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+  const fenceStripped = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+  try {
+    JSON.parse(fenceStripped);
+    return fenceStripped;
+  } catch {
+    const match = fenceStripped.match(/\{[\s\S]*\}/);
+    if (match) return match[0];
+    console.error("[ai-generate] unparseable AI response, raw text:", raw.slice(0, 500));
+    return fenceStripped;
+  }
 }
 
 Deno.serve(async (req: Request) => {
@@ -211,9 +267,13 @@ Deno.serve(async (req: Request) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      const system = `You are an e-commerce SEO copywriter for TikTok Shop sellers in Malaysia. Output ONLY strict JSON, no markdown fences, no explanation, in exactly this shape: {"titles":["...","...","..."]} — exactly 3 alternative full product titles, each under 255 characters, front-loading the most-searched keywords for this product/category. No numbering, no quotes inside the strings, no duplicates. ${langConfig.instruction}`;
-      const user = `Current draft title: ${title || "(empty)"}\nCategory: ${category || "(not selected)"}\nBrand: ${brand || "No Brand"}`;
-      const raw = await ai(system, user, 400);
+      // Advanced title formula (2026-08-27, explicit request) — replaces
+      // naive keyword-repetition with a real high-converting MY-market
+      // structure, plus mandatory spelling auto-correction (a common real
+      // seller mistake, e.g. "viosr" -> "Visor").
+      const system = `You are an e-commerce SEO copywriter for TikTok Shop sellers in Malaysia. First, silently auto-correct any spelling mistakes in the seller's draft title (e.g. "viosr" -> "Visor", "helment" -> "Helmet") before using it. Then generate exactly 3 DISTINCT high-converting titles — never just repeat the corrected keyword with minor word-order changes; each of the 3 must use a genuinely different selling angle (e.g. one leads with a feature/condition like "Original"/"Ready Stock", one leads with certification/compatibility, one leads with a visual/quality descriptor). Follow this architecture for each title: [Brand if known] + [Core keyword/product name, in BM & EN mixed where natural] + [Key selling point or feature, e.g. Original/Anti Scratch/Crystal Clear/SIRIM Approved] + [Compatibility or usage context, e.g. Motorcycle Accessories/Topi Keledar/MY]. Example — input "bogo viosr" should produce titles shaped like "Bogo Helmet Visor Original BG-05 Smoke Clear Tinted Anti Scratch Topi Keledar", "[READY STOCK] Visor Bogo Helmet Original SIRIM Approved Motorcycle Accessories", "Visor Bogo Original Crystal Clear Mirror Tinted High Quality Visor Topi Keledar MY". Output ONLY strict JSON, no markdown fences, no explanation, in exactly this shape: {"titles":["...","...","..."]} — each title under 255 characters, no numbering, no quotes inside the strings, no duplicates. ${langConfig.instruction}`;
+      const user = `Current draft title (may contain typos — correct them first): ${title || "(empty)"}\nCategory: ${category || "(not selected)"}\nBrand: ${brand || "No Brand"}`;
+      const raw = await ai(system, user, 600);
       let parsed: { titles?: string[] };
       try {
         parsed = JSON.parse(stripJsonFences(raw));
