@@ -234,6 +234,39 @@ async function tiktokCall(
   }
 }
 
+// Multipart variant of tiktokCall (2026-08-27, new) — TikTok's Upload
+// Image endpoint takes multipart/form-data (a real file), not a JSON
+// body, so it can't reuse tiktokCall's JSON.stringify(body) path. Per
+// TikTok's v2 signing rule, a non-JSON body is excluded from the
+// signature entirely (rawBody="" — same as any GET call), only the query
+// params are signed; the actual file goes in the FormData sent alongside.
+async function tiktokCallMultipart(
+  path: string,
+  creds: TikTokCredentials,
+  account: TikTokAccount,
+  extraQuery: Record<string, string>,
+  form: FormData,
+) {
+  const timestamp = String(nowTs());
+  const queryParams: Record<string, string> = { app_key: creds.appKey, timestamp, ...extraQuery };
+  const sign = await signApiRequest(path, creds, queryParams, "");
+
+  const url = new URL(`${API_HOST}${path}`);
+  for (const [k, v] of Object.entries(queryParams)) url.searchParams.set(k, v);
+  url.searchParams.set("sign", sign);
+
+  const resp = await fetch(url.toString(), {
+    method: "POST",
+    headers: { "x-tts-access-token": account.access_token },
+    body: form,
+  });
+  const data = await resp.json();
+  if (!resp.ok || data.code !== 0) {
+    throw new Error(`${path} failed: ${data.code ?? resp.status} ${data.message ?? ""}`);
+  }
+  return data.data;
+}
+
 // Deducts stock for one order_item, exactly once, via the stock_movements
 // UNIQUE(order_id, sku) constraint: the insert only succeeds the first time
 // this (order, sku) pair is seen, so re-syncing the same order (which
@@ -758,13 +791,17 @@ Deno.serve(async (req: Request) => {
   let fullSync = false;
   let action: string | undefined;
   let categoryId: string | undefined;
+  let listingId: string | undefined;
+  let imageUrl: string | undefined;
   try {
     const body = await req.json();
     platformAccountId = body?.platformAccountId; // preferred — platform_accounts.id, unambiguous per store
     shopId = body?.shopId; // kept for backward compat
     fullSync = body?.fullSync === true;
-    action = body?.action; // "tiktokCategories" | "tiktokCategoryAttributes" | "tiktokBrands" | "verifyConnection"
+    action = body?.action; // "tiktokCategories" | "tiktokCategoryAttributes" | "tiktokBrands" | "verifyConnection" | "tiktokUploadImage" | "tiktokPublishProduct"
     categoryId = body?.categoryId;
+    listingId = body?.listingId;
+    imageUrl = body?.imageUrl;
   } catch {
     // no body - sync all shops
   }
@@ -892,6 +929,193 @@ Deno.serve(async (req: Request) => {
       });
     } catch (e) {
       const message = (e as Error).message;
+      const needsReauth = message.includes("105005");
+      return new Response(JSON.stringify({ error: message, needsReauth }), {
+        status: needsReauth ? 403 : 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+  }
+
+  // Real Upload Image (2026-08-27, new) — TikTok's Create Product API needs
+  // an already-hosted-on-TikTok image reference, not our own Supabase
+  // Storage URL. Downloads the real image bytes from our own public
+  // product-images bucket URL and re-uploads them to TikTok's Product
+  // Image Upload endpoint. Response field name is UNVERIFIED against a
+  // live shop as of this commit (no authorized shop has completed a real
+  // publish yet) — TikTok's own docs describe the returned field as `uri`,
+  // read defensively (uri | img_id | id) the same way this file already
+  // handles every other under-verified TikTok response shape.
+  if (action === "tiktokUploadImage") {
+    if (!imageUrl) {
+      return new Response(JSON.stringify({ error: "imageUrl required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    try {
+      const { shopCipher } = await ensureShopCipher(creds, accounts[0]);
+      const imgResp = await fetch(imageUrl);
+      if (!imgResp.ok) throw new Error(`failed to fetch source image: ${imgResp.status}`);
+      const blob = await imgResp.blob();
+      const form = new FormData();
+      form.append("data", JSON.stringify({ use_case: "MAIN_IMAGE" }));
+      form.append("image", blob, "image.jpg");
+      const data = await tiktokCallMultipart("/product/202309/images/upload", creds, accounts[0], { shop_cipher: shopCipher }, form);
+      const uri = data?.uri ?? data?.img_id ?? data?.id;
+      if (!uri) throw new Error("TikTok image upload returned no usable id — raw response: " + JSON.stringify(data).slice(0, 300));
+      return new Response(JSON.stringify({ uri }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    } catch (e) {
+      const message = (e as Error).message;
+      const needsReauth = message.includes("105005");
+      return new Response(JSON.stringify({ error: message, needsReauth }), {
+        status: needsReauth ? 403 : 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+  }
+
+  // Real Create Product (2026-08-27, new, single-SKU scope only per
+  // explicit approved phase) — publishes one product_listings row to one
+  // connected TikTok shop via TikTok's real Create Product API. Payload
+  // shape follows TikTok's documented v202309 Create Product schema, but
+  // — same honesty note as the image-upload action above — has not yet
+  // been exercised against a real authorized shop, since no shop with
+  // full Product-write scope has completed a real end-to-end test as of
+  // this commit. Any field-name mismatch TikTok's response surfaces
+  // should be fixed here, not worked around client-side.
+  //
+  // Deliberately rejects any listing with product_listing_variations rows
+  // — multi-SKU real publish is out of scope for this phase (approved
+  // scope: "single-SKU only"); staff should keep using multi-variant
+  // listings as ERP-internal-only until that's built.
+  if (action === "tiktokPublishProduct") {
+    if (!listingId || !platformAccountId) {
+      return new Response(JSON.stringify({ error: "listingId and platformAccountId required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    try {
+      const [{ data: listing, error: listingErr }, { data: variations, error: varErr }, { data: storeRow, error: storeErr }] = await Promise.all([
+        supabase.from("product_listings").select("*").eq("id", listingId).maybeSingle(),
+        supabase.from("product_listing_variations").select("id").eq("listing_id", listingId),
+        supabase.from("product_listing_stores").select("id").eq("listing_id", listingId).eq("platform_account_id", platformAccountId).maybeSingle(),
+      ]);
+      if (listingErr || !listing) throw new Error(listingErr?.message ?? "listing not found");
+      if (varErr) throw new Error(varErr.message);
+      if ((variations ?? []).length > 0) {
+        throw new Error("This listing has multiple variations — real publish currently only supports single-SKU listings. Remove variations or keep this listing ERP-internal-only.");
+      }
+      if (!listing.tiktok_real_category_id) throw new Error("Select a real TikTok category before publishing");
+
+      const { shopCipher } = await ensureShopCipher(creds, accounts[0]);
+
+      // Real warehouse id (2026-08-27) — fetched live rather than assumed,
+      // since a shop's actual warehouse id is unknowable in advance; the
+      // first entry is used as the default target (matches how a
+      // single-warehouse MY seller's account is normally configured).
+      const warehouseData = await tiktokCall("GET", "/logistics/202309/warehouses", creds, accounts[0], { shop_cipher: shopCipher });
+      const warehouseId = (warehouseData?.warehouses ?? [])[0]?.id;
+      if (!warehouseId) throw new Error("No TikTok warehouse found for this shop");
+
+      // Real image upload — every image in the gallery, first one first
+      // (TikTok uses main_images[0] as the primary listing photo).
+      const imageUrls: string[] = Array.isArray(listing.image_urls) && listing.image_urls.length > 0
+        ? listing.image_urls
+        : (listing.image_url ? [listing.image_url] : []);
+      if (imageUrls.length === 0) throw new Error("At least one product image is required");
+      const mainImages: { uri: string }[] = [];
+      for (const url of imageUrls.slice(0, 9)) {
+        const imgResp = await fetch(url);
+        if (!imgResp.ok) continue;
+        const blob = await imgResp.blob();
+        const form = new FormData();
+        form.append("data", JSON.stringify({ use_case: "MAIN_IMAGE" }));
+        form.append("image", blob, "image.jpg");
+        const imgData = await tiktokCallMultipart("/product/202309/images/upload", creds, accounts[0], { shop_cipher: shopCipher }, form);
+        const uri = imgData?.uri ?? imgData?.img_id ?? imgData?.id;
+        if (uri) mainImages.push({ uri });
+      }
+      if (mainImages.length === 0) throw new Error("Image upload to TikTok failed for every image in this listing");
+
+      // Attributes — only rows with a real attribute_id captured at
+      // selection time (see pagesProductListing.jsx's selectTiktokRealLeaf)
+      // can be sent; a manually-typed attribute row with no id is skipped
+      // rather than sent with a fabricated one.
+      const attributes = Array.isArray(listing.attributes) ? listing.attributes as { name: string; value: string; attributeId?: string }[] : [];
+      const productAttributes = attributes
+        .filter((a) => a.attributeId && a.value?.trim())
+        .map((a) => ({ id: a.attributeId, values: [{ name: a.value }] }));
+
+      const price = Number(listing.base_price) || 0;
+      const stock = Math.round(Number(listing.base_stock)) || 0;
+      const sellerSku = listing.sku || `ERP-${listing.id.slice(0, 8)}`;
+
+      const payload = {
+        save_mode: "LISTING",
+        title: listing.title,
+        description: listing.description || listing.title,
+        category_id: listing.tiktok_real_category_id,
+        ...(listing.tiktok_brand_id ? { brand_id: listing.tiktok_brand_id } : {}),
+        main_images: mainImages,
+        package_dimensions: {
+          length: String(listing.length_cm || 1),
+          width: String(listing.width_cm || 1),
+          height: String(listing.height_cm || 1),
+          unit: "CENTIMETER",
+        },
+        package_weight: { value: String(listing.weight_kg || 0.1), unit: "KILOGRAM" },
+        is_cod_open: !!listing.is_cod,
+        ...(productAttributes.length > 0 ? { product_attributes: productAttributes } : {}),
+        skus: [
+          {
+            seller_sku: sellerSku,
+            price: { amount: String(price), currency: "MYR" },
+            inventory: [{ warehouse_id: warehouseId, quantity: stock }],
+          },
+        ],
+      };
+
+      const data = await tiktokCall("POST", "/product/202309/products", creds, accounts[0], { shop_cipher: shopCipher }, payload);
+      const productId = data?.product_id ?? data?.id;
+      const skuIds: Record<string, string> = {};
+      for (const sku of data?.skus ?? []) {
+        if (sku?.seller_sku && sku?.id) skuIds[sku.seller_sku] = sku.id;
+      }
+
+      const updatePayload = storeRow
+        ? { publish_status: "api_published", platform_product_id: String(productId ?? ""), platform_sku_ids: skuIds, publish_error: null, published_at: new Date().toISOString() }
+        : null;
+      if (storeRow && updatePayload) {
+        await supabase.from("product_listing_stores").update(updatePayload).eq("id", storeRow.id);
+      } else {
+        await supabase.from("product_listing_stores").insert({
+          listing_id: listingId,
+          platform_account_id: platformAccountId,
+          store_price: price,
+          publish_status: "api_published",
+          platform_product_id: String(productId ?? ""),
+          platform_sku_ids: skuIds,
+          published_at: new Date().toISOString(),
+        });
+      }
+
+      return new Response(JSON.stringify({ ok: true, productId, skuIds }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    } catch (e) {
+      const message = (e as Error).message;
+      if (platformAccountId) {
+        const { data: storeRow } = await supabase.from("product_listing_stores").select("id").eq("listing_id", listingId).eq("platform_account_id", platformAccountId).maybeSingle();
+        if (storeRow) {
+          await supabase.from("product_listing_stores").update({ publish_status: "api_failed", publish_error: message }).eq("id", storeRow.id);
+        } else {
+          await supabase.from("product_listing_stores").insert({ listing_id: listingId, platform_account_id: platformAccountId, publish_status: "api_failed", publish_error: message });
+        }
+      }
       const needsReauth = message.includes("105005");
       return new Response(JSON.stringify({ error: message, needsReauth }), {
         status: needsReauth ? 403 : 500,

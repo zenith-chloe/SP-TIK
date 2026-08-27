@@ -365,12 +365,19 @@ export function ProductListingCenter({ t, inventory, stores }) {
     // list. Attributes with no such list keep the plain text input.
     const templateNames = attrs.map((a) => ({
       name: a.name || a.attribute_name || "",
+      // Real numeric attribute_id (2026-08-27, new) — required by TikTok's
+      // real Create Product API (product_attributes: [{id, values}]), which
+      // this attribute-name-only shape couldn't satisfy before. Kept
+      // alongside the human-readable name/value pair already used for
+      // display; publish-time code reads this back to build the real
+      // payload, never re-deriving/guessing an id from the name.
+      attributeId: String(a.id ?? a.attribute_id ?? ""),
       required: a.is_requried ?? a.required ?? false,
       options: Array.isArray(a.values) ? a.values.map((v) => v.name || v.value || String(v)).filter(Boolean) : [],
     })).filter((a) => a.name);
     setListingForm((prev) => {
       const existingNames = new Set(prev.attributes.map((a) => a.name));
-      const added = templateNames.filter((a) => !existingNames.has(a.name)).map((a) => ({ name: a.name, value: "", options: a.options }));
+      const added = templateNames.filter((a) => !existingNames.has(a.name)).map((a) => ({ name: a.name, value: "", options: a.options, attributeId: a.attributeId }));
       return { ...prev, attributes: [...prev.attributes, ...added] };
     });
   }
@@ -1277,6 +1284,30 @@ export function ProductListingCenter({ t, inventory, stores }) {
     const { error } = await supabaseClient.from("product_listing_stores").update({ publish_status: "marked_published", updated_at: new Date().toISOString() }).eq("id", storeRowId);
     if (error) { showToast(t("操作失败", "Action failed")); console.error("markPublished failed", error); return; }
     showToast(t("已标记为已发布", "Marked as published"));
+    loadListings();
+  }
+
+  // 真实 TikTok 一键发布 (2026-08-27, new, single-SKU only per approved
+  // scope) — calls tiktok-sync-orders' new tiktokPublishProduct action,
+  // which does the real Create Product API call (image upload + category/
+  // brand/attribute mapping) and writes the real result (api_published/
+  // api_failed + platform_product_id/publish_error) back onto this exact
+  // store row. Distinct from markPublished (staff self-report) above —
+  // never conflated, see that migration's own comment.
+  const [publishingRowId, setPublishingRowId] = useState(null);
+  async function publishToTikTokReal(row) {
+    setPublishingRowId(row.id);
+    const { data, error } = await supabaseClient.functions.invoke("tiktok-sync-orders", {
+      body: { action: "tiktokPublishProduct", listingId: row.listing_id, platformAccountId: row.platform_account_id },
+    });
+    setPublishingRowId(null);
+    const errMessage = await extractInvokeError(error, data);
+    if (errMessage) {
+      showToast(t(`发布失败：${errMessage}`, `Publish failed: ${errMessage}`));
+      console.error("publishToTikTokReal failed", errMessage);
+    } else {
+      showToast(t("已成功发布到 TikTok Shop", "Published to TikTok Shop successfully"));
+    }
     loadListings();
   }
 
@@ -2697,8 +2728,8 @@ export function ProductListingCenter({ t, inventory, stores }) {
       <div className="flex items-start gap-2 text-xs bg-amber-50 border border-amber-200 text-amber-700 rounded-lg px-3 py-2">
         <Bot size={14} className="shrink-0 mt-0.5" />
         {t(
-          "🤖 尚未接通 Shopee/TikTok 官方商品 API，「发布」「批量调价」目前仅写入 ERP 内部清单供预览与管理，请在操作后自行到各平台后台完成真正的上架/改价。",
-          "🤖 Not yet connected to Shopee/TikTok's official Product API — \"Publish\" and \"Batch Price\" only write to this ERP's internal list for preview/management; please complete the real listing/price update yourself in each platform's seller console.",
+          "🤖 TikTok 单规格商品「🚀 一键发布」已接通官方 Create Product API（真实调用，见每行状态）；多规格商品与 Shopee 商品发布、以及「批量调价」仍仅写入 ERP 内部清单，请自行到对应后台完成。",
+          "🤖 TikTok single-SKU listings' \"🚀 Publish via API\" now calls the real official Create Product API (see each row's status); multi-variant listings, Shopee publishing, and \"Batch Price\" still only write to this ERP's internal list — please complete those yourself in the relevant seller console.",
         )}
       </div>
 
@@ -2849,14 +2880,27 @@ export function ProductListingCenter({ t, inventory, stores }) {
                   <td className="py-2.5 pr-3 text-right tabular-nums font-medium">{fmt(r.store_price)}</td>
                   <td className="py-2.5 pr-3 text-xs text-slate-400 max-w-[160px] truncate">{r.last_price_adjustment_note || "—"}</td>
                   <td className="py-2.5 pr-3 text-center">
-                    {r.publish_status === "marked_published" ? (
+                    {r.publish_status === "api_published" ? (
+                      <span title={r.platform_product_id ? `TikTok product_id: ${r.platform_product_id}` : ""} className="text-xs px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-200">🔗 {t("API 已发布", "API Published")}</span>
+                    ) : r.publish_status === "api_failed" ? (
+                      <span title={r.publish_error || ""} className="text-xs px-2 py-0.5 rounded-full border bg-rose-100 text-rose-700 border-rose-200">{t("API 发布失败", "API Publish Failed")}</span>
+                    ) : r.publish_status === "marked_published" ? (
                       <span className="text-xs px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-200">{t("已发布", "Published")}</span>
                     ) : (
                       <span className="text-xs px-2 py-0.5 rounded-full border bg-amber-100 text-amber-700 border-amber-200">{t("待发布", "Pending")}</span>
                     )}
                   </td>
-                  <td className="py-2.5 pr-3 pr-5 text-right">
-                    {r.publish_status !== "marked_published" && (
+                  <td className="py-2.5 pr-3 pr-5 text-right space-x-2">
+                    {/* Real TikTok publish (2026-08-27, new) — only for
+                        TikTok rows; single-SKU enforcement happens
+                        server-side (a multi-variant listing gets a clear
+                        error toast, not a silent no-op). */}
+                    {r.platform === "TikTok Shop" && r.publish_status !== "api_published" && (
+                      <button onClick={() => publishToTikTokReal(r)} disabled={publishingRowId === r.id} className="text-xs text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 px-2 py-1 rounded-lg">
+                        {publishingRowId === r.id ? t("发布中…", "Publishing…") : t("🚀 一键发布", "Publish via API")}
+                      </button>
+                    )}
+                    {r.publish_status !== "marked_published" && r.publish_status !== "api_published" && (
                       <button onClick={() => markPublished(r.id)} className="text-xs text-emerald-600 hover:text-emerald-800">{t("标记已发布", "Mark Published")}</button>
                     )}
                   </td>
