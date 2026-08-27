@@ -184,7 +184,7 @@ async function refreshTikTokToken(creds: TikTokCredentials, account: TikTokAccou
 // account is mutated in place on refresh, so every subsequent tiktokCall for
 // this same account (within this invocation) picks up the new token too.
 async function tiktokCall(
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT",
   path: string,
   creds: TikTokCredentials,
   account: TikTokAccount,
@@ -204,7 +204,7 @@ async function tiktokCall(
     const resp = await fetch(url.toString(), {
       method,
       headers: { "Content-Type": "application/json", "x-tts-access-token": account.access_token },
-      body: method === "POST" ? rawBody : undefined,
+      body: method === "POST" || method === "PUT" ? rawBody : undefined,
     });
     const data = await resp.json();
     if (!resp.ok || data.code !== 0) {
@@ -1029,7 +1029,7 @@ Deno.serve(async (req: Request) => {
       const [{ data: listing, error: listingErr }, { data: variations, error: varErr }, { data: storeRow, error: storeErr }] = await Promise.all([
         supabase.from("product_listings").select("*").eq("id", listingId).maybeSingle(),
         supabase.from("product_listing_variations").select("id").eq("listing_id", listingId),
-        supabase.from("product_listing_stores").select("id").eq("listing_id", listingId).eq("platform_account_id", platformAccountId).maybeSingle(),
+        supabase.from("product_listing_stores").select("id, platform_product_id, platform_sku_ids").eq("listing_id", listingId).eq("platform_account_id", platformAccountId).maybeSingle(),
       ]);
       if (listingErr || !listing) throw new Error(listingErr?.message ?? "listing not found");
       if (varErr) throw new Error(varErr.message);
@@ -1111,6 +1111,8 @@ Deno.serve(async (req: Request) => {
       const price = Number(listing.base_price) || 0;
       const stock = Math.round(Number(listing.base_stock)) || 0;
       const sellerSku = listing.sku || `ERP-${listing.id.slice(0, 8)}`;
+      const existingSkuIds = (storeRow?.platform_sku_ids ?? {}) as Record<string, string>;
+      const existingSkuId = existingSkuIds[sellerSku];
 
       const payload = {
         save_mode: "LISTING",
@@ -1136,6 +1138,11 @@ Deno.serve(async (req: Request) => {
         ...(productAttributes.length > 0 ? { product_attributes: productAttributes } : {}),
         skus: [
           {
+            // Real sku id (2026-08-27, new) — included on an edit/re-sync
+            // call so TikTok updates the existing SKU in place instead of
+            // creating a duplicate; omitted on a first-time create, where
+            // no such id exists yet.
+            ...(existingSkuId ? { id: existingSkuId } : {}),
             seller_sku: sellerSku,
             price: { amount: String(price), currency: "MYR" },
             inventory: [{ warehouse_id: warehouseId, quantity: stock }],
@@ -1143,15 +1150,34 @@ Deno.serve(async (req: Request) => {
         ],
       };
 
+      // Update vs. Create (2026-08-27, explicit request) — a listing
+      // already carrying a real platform_product_id from a prior
+      // successful publish goes through TikTok's real Edit Product PUT
+      // endpoint instead of Create; save_mode is Create-only per TikTok's
+      // docs, dropped for the edit call. Path/method/response-shape are
+      // implemented per TikTok's documented v202309 Edit Product schema
+      // but — same honesty note as every other step in this integration —
+      // not yet exercised against a live shop.
+      const isEdit = !!storeRow?.platform_product_id;
+      const editPayload = isEdit ? { ...payload } : payload;
+      if (isEdit) delete (editPayload as Record<string, unknown>).save_mode;
+      const method = isEdit ? "PUT" : "POST";
+      const path = isEdit ? `/product/202309/products/${storeRow!.platform_product_id}` : "/product/202309/products";
+
       // Diagnostics (2026-08-27, explicit request) — logs the exact
       // request payload and TikTok's raw response so a real publish
       // attempt's outcome is directly inspectable in Supabase function
       // logs instead of only "it worked or it didn't".
-      console.log(`[tiktokPublishProduct] listing=${listingId} account=${platformAccountId} payload:`, JSON.stringify(payload));
-      const data = await tiktokCall("POST", "/product/202309/products", creds, accounts[0], { shop_cipher: shopCipher }, payload);
+      console.log(`[tiktokPublishProduct] listing=${listingId} account=${platformAccountId} ${isEdit ? "EDIT" : "CREATE"} payload:`, JSON.stringify(editPayload));
+      const data = await tiktokCall(method, path, creds, accounts[0], { shop_cipher: shopCipher }, editPayload);
       console.log(`[tiktokPublishProduct] listing=${listingId} TikTok raw response:`, JSON.stringify(data));
-      const productId = data?.product_id ?? data?.id;
-      const skuIds: Record<string, string> = {};
+      const productId = isEdit ? storeRow!.platform_product_id : (data?.product_id ?? data?.id);
+      // Preserves the previously-known sku ids on edit (2026-08-27) —
+      // TikTok's Edit Product response may or may not echo the full skus
+      // array back; falling back to what we already had avoids losing a
+      // real sku id we'd need for the next sync just because this
+      // particular response happened not to include it.
+      const skuIds: Record<string, string> = { ...existingSkuIds };
       for (const sku of data?.skus ?? []) {
         if (sku?.seller_sku && sku?.id) skuIds[sku.seller_sku] = sku.id;
       }
@@ -1173,7 +1199,7 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      return new Response(JSON.stringify({ ok: true, productId, skuIds }), {
+      return new Response(JSON.stringify({ ok: true, productId, skuIds, isEdit }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     } catch (e) {

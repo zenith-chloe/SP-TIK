@@ -1315,8 +1315,15 @@ export function ProductListingCenter({ t, inventory, stores }) {
     setPublishingRowId(null);
     const errMessage = await extractInvokeError(error, data);
     if (errMessage) {
-      showToast(t(`发布失败：${errMessage}`, `Publish failed: ${errMessage}`));
+      showToast(row.publish_status === "api_published"
+        ? t(`同步更新失败：${errMessage}`, `Sync update failed: ${errMessage}`)
+        : t(`发布失败：${errMessage}`, `Publish failed: ${errMessage}`));
       console.error("publishToTikTokReal failed", errMessage);
+    } else if (data?.isEdit) {
+      // Edit/re-sync path (2026-08-27, new) — distinct toast per explicit
+      // request, since this is updating an already-live TikTok listing via
+      // the real Edit Product API, not creating a new one.
+      showToast(t("已成功同步更新至 TikTok 店铺！", "Successfully synced updates to TikTok Shop!"));
     } else {
       // Shows the real returned product_id (2026-08-27, explicit request)
       // so a success toast is independently verifiable against TikTok
@@ -2908,13 +2915,19 @@ export function ProductListingCenter({ t, inventory, stores }) {
                     )}
                   </td>
                   <td className="py-2.5 pr-3 pr-5 text-right space-x-2">
-                    {/* Real TikTok publish (2026-08-27, new) — only for
-                        TikTok rows; single-SKU enforcement happens
-                        server-side (a multi-variant listing gets a clear
-                        error toast, not a silent no-op). */}
-                    {r.platform === "TikTok Shop" && r.publish_status !== "api_published" && (
-                      <button onClick={() => publishToTikTokReal(r)} disabled={publishingRowId === r.id} className="text-xs text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 px-2 py-1 rounded-lg">
-                        {publishingRowId === r.id ? t("发布中…", "Publishing…") : t("🚀 一键发布", "Publish via API")}
+                    {/* Real TikTok publish/re-sync (2026-08-27) — only for
+                        TikTok rows. Once a row is api_published, the same
+                        button calls the same action but the edge function
+                        detects the stored platform_product_id and routes
+                        to TikTok's real Edit Product API instead of
+                        Create — label/toast change to match, per explicit
+                        request, so re-syncing an already-live listing
+                        can't be mistaken for creating a duplicate one. */}
+                    {r.platform === "TikTok Shop" && (
+                      <button onClick={() => publishToTikTokReal(r)} disabled={publishingRowId === r.id} className={`text-xs text-white px-2 py-1 rounded-lg disabled:bg-slate-300 ${r.publish_status === "api_published" ? "bg-sky-600 hover:bg-sky-700" : "bg-indigo-600 hover:bg-indigo-700"}`}>
+                        {publishingRowId === r.id
+                          ? (r.publish_status === "api_published" ? t("同步中…", "Syncing…") : t("发布中…", "Publishing…"))
+                          : (r.publish_status === "api_published" ? t("🔄 同步更新", "Sync Updates") : t("🚀 一键发布", "Publish via API"))}
                       </button>
                     )}
                     {r.publish_status !== "marked_published" && r.publish_status !== "api_published" && (
