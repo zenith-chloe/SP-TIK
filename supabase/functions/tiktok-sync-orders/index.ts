@@ -1203,16 +1203,35 @@ Deno.serve(async (req: Request) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     } catch (e) {
-      const message = (e as Error).message;
+      const rawMessage = (e as Error).message;
+      // Friendly message for real error 12052901 (2026-08-27) — TikTok
+      // refuses Edit Product while the listing is still under review or
+      // not currently live; this is a real, expected transient state, not
+      // a broken integration, so it gets a plain-language explanation
+      // instead of TikTok's raw error text.
+      const isPendingReviewError = rawMessage.includes("12052901");
+      const message = isPendingReviewError
+        ? "TikTok 店铺商品目前处于审核中（Pending Review）或未在售状态，暂无法通过 API 修改。请等待 TikTok 后台审核通过（Live）后再试。 / This TikTok listing is currently under review or not live, so it can't be edited via API yet — please retry once it shows as Live in TikTok Seller Center."
+        : rawMessage;
       if (platformAccountId) {
-        const { data: storeRow } = await supabase.from("product_listing_stores").select("id").eq("listing_id", listingId).eq("platform_account_id", platformAccountId).maybeSingle();
+        const { data: storeRow } = await supabase.from("product_listing_stores").select("id, platform_product_id").eq("listing_id", listingId).eq("platform_account_id", platformAccountId).maybeSingle();
         if (storeRow) {
-          await supabase.from("product_listing_stores").update({ publish_status: "api_failed", publish_error: message }).eq("id", storeRow.id);
+          // Don't downgrade an already-published row's status on an edit
+          // failure (2026-08-27, explicit request) — the listing is still
+          // genuinely live on TikTok; only the update attempt failed, so
+          // publish_status stays 'api_published' and only publish_error is
+          // recorded. A first-time publish attempt (no platform_product_id
+          // yet) still correctly becomes 'api_failed' — nothing was ever
+          // created.
+          const updatePayload = storeRow.platform_product_id
+            ? { publish_error: message }
+            : { publish_status: "api_failed", publish_error: message };
+          await supabase.from("product_listing_stores").update(updatePayload).eq("id", storeRow.id);
         } else {
           await supabase.from("product_listing_stores").insert({ listing_id: listingId, platform_account_id: platformAccountId, publish_status: "api_failed", publish_error: message });
         }
       }
-      const needsReauth = message.includes("105005");
+      const needsReauth = rawMessage.includes("105005");
       return new Response(JSON.stringify({ error: message, needsReauth }), {
         status: needsReauth ? 403 : 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
