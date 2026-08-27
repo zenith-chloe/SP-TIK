@@ -920,7 +920,7 @@ Deno.serve(async (req: Request) => {
         // (the default) would return ids that then fail at Create Product
         // regardless of what the payload's own category_version says, so
         // the categories list itself has to be fetched as V2 too.
-        query.category_version = "V2";
+        query.category_version = "v2";
       } else if (action === "tiktokCategoryAttributes") {
         path = `/product/202309/categories/${categoryId}/attributes`;
       } else {
@@ -1095,7 +1095,7 @@ Deno.serve(async (req: Request) => {
         // category_id above must also come from the V2-fetched categories
         // list (see tiktokCategories action's category_version=V2 fix) or
         // this flag alone won't help.
-        category_version: "V2",
+        category_version: "v2",
         category_id: listing.tiktok_real_category_id,
         ...(listing.tiktok_brand_id ? { brand_id: listing.tiktok_brand_id } : {}),
         main_images: mainImages,
