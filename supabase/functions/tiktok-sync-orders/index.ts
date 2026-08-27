@@ -958,8 +958,13 @@ Deno.serve(async (req: Request) => {
       if (!imgResp.ok) throw new Error(`failed to fetch source image: ${imgResp.status}`);
       const blob = await imgResp.blob();
       const form = new FormData();
-      form.append("data", JSON.stringify({ use_case: "MAIN_IMAGE" }));
-      form.append("image", blob, "image.jpg");
+      // Real TikTok error 36009004 ("body.data is invalid...expected type:
+      // binary", 2026-08-27) confirmed the multipart field TikTok actually
+      // reads the binary file from is "data" — the earlier code had it
+      // backwards (JSON-stringified metadata under "data", the real binary
+      // blob under an unused "image" field). Fixed: "data" now carries the
+      // raw binary blob directly, nothing else.
+      form.append("data", blob, "image.jpg");
       // shop_cipher removed (2026-08-27) — real TikTok error 36009004
       // confirmed Image Upload does NOT accept it (only app_key/timestamp/
       // sign/access_token, per official docs); ensureShopCipher above is
@@ -1049,8 +1054,9 @@ Deno.serve(async (req: Request) => {
         if (!imgResp.ok) continue;
         const blob = await imgResp.blob();
         const form = new FormData();
-        form.append("data", JSON.stringify({ use_case: "MAIN_IMAGE" }));
-        form.append("image", blob, "image.jpg");
+        // Real binary field fix (2026-08-27) — see tiktokUploadImage above
+        // for the full 36009004 explanation; same swap here.
+        form.append("data", blob, "image.jpg");
         // shop_cipher deliberately omitted here too (2026-08-27) — same
         // real 36009004 fix as tiktokUploadImage above; shopCipher stays
         // in scope for the Create Product call further down, which does
