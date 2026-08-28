@@ -490,8 +490,4 @@ export const NAV = [
   { key: "ai", zh: "AI智能功能", en: "AI Features", icon: Bot },
   { key: "labels", zh: "标签打印", en: "Label Printing", icon: Printer },
   { key: "roles", zh: "权限管理", en: "Roles & Permissions", icon: ShieldCheck },
-  // Internal test tool for the TikTok Ship Package API — owner-only (see
-  // OWNER_ONLY_TAB_KEYS in erp-mvp-demo.jsx), deliberately not surfaced to
-  // regular staff since it makes real, irreversible platform writes.
-  { key: "shiptest", zh: "发货测试(TikTok)", en: "Ship Test (TikTok)", icon: Send },
 ];

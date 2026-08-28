@@ -13,12 +13,11 @@ import { ProductListingCenter } from "./pagesProductListing.jsx";
 import { SupplierMaster } from "./pagesSuppliers.jsx";
 import { PurchaseOrderList } from "./pagesPurchaseOrders.jsx";
 import { InventoryAdjustment, AutoImportHub } from "./pagesInventoryAdjustment.jsx";
-import { ShipPackageTest } from "./pagesShipTest.jsx";
 
 // Supplier Management / Purchase Order (incl. Receiving) are not part of the
 // current warehouse/staff workflow — owner-only until AutoCount purchasing
 // sync is built. Code/schema stays intact, just hidden + access-gated.
-const OWNER_ONLY_TAB_KEYS = ["suppliers", "purchaseorders", "shiptest", "roles"];
+const OWNER_ONLY_TAB_KEYS = ["suppliers", "purchaseorders", "roles"];
 
 /* ============================== Login ============================== */
 
@@ -1704,7 +1703,6 @@ export default function App() {
             />
           )}
           {tab === "roles" && myRole === "owner" && <Roles t={t} />}
-          {tab === "shiptest" && myRole === "owner" && <ShipPackageTest t={t} />}
         </div>
       </main>
 
