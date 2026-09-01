@@ -2615,86 +2615,70 @@ export function ProductListingCenter({ t, inventory, stores }) {
                   </div>
                 )}
 
-                {/* SKU 卡片列表 */}
+                {/* SKU 矩阵表格 (2026-08-28, matrix layout) */}
                 {variationRows.length > 0 && (
                   <div className="space-y-2">
                     <label className="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer">
                       <input type="checkbox" checked={variationRows.length > 0 && selectedVariantIdx.size === variationRows.length} onChange={toggleSelectAllVariants} className="h-3.5 w-3.5 rounded border-slate-300" />
                       {t("全选", "Select all")}
                     </label>
-                    {variationRows.map((r, idx) => (
-                      <div key={idx} className={`border rounded-lg p-3 ${selectedVariantIdx.has(idx) ? "border-indigo-300 bg-indigo-50/40" : "border-slate-200"}`}>
-                        <div className="flex items-start gap-2">
-                          <input type="checkbox" checked={selectedVariantIdx.has(idx)} onChange={() => toggleVariantSelect(idx)} className="h-3.5 w-3.5 rounded border-slate-300 mt-2" />
-                          {/* Left-side thumbnail box removed (2026-08-26,
-                              explicit request) — it was display-only (no
-                              upload control of its own, just mirrored
-                              spec1OptionImages/spec2OptionImages from the
-                              chip editor above), so removing it loses no
-                              real functionality; the 规格名称 input is now
-                              the first element in this row. */}
-                          <div className="flex-1 min-w-0 grid grid-cols-2 sm:grid-cols-5 gap-2">
-                            <div className="col-span-2 sm:col-span-1">
-                              <div className="text-[11px] text-slate-400 mb-0.5">{t("规格名称", "Variant Name")}</div>
-                              <input value={r.spec1_value || ""} onChange={(e) => updateVariationField(idx, "spec1_value", e.target.value)} placeholder={t("如 BLACK SPRING", "e.g. BLACK SPRING")} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
-                            </div>
-                            <div>
-                              <div className="text-[11px] text-slate-400 mb-0.5">{t("Retail Price (RM)", "Retail Price (RM)")}</div>
-                              <input type="number" value={r.price} onChange={(e) => updateVariationField(idx, "price", e.target.value)} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
-                            </div>
-                            <div>
-                              <div className="text-[11px] text-slate-400 mb-0.5">{t("Stock", "Stock")}</div>
-                              <input type="number" value={r.stock} onChange={(e) => updateVariationField(idx, "stock", e.target.value)} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
-                            </div>
-                            <div>
-                              <div className="text-[11px] text-slate-400 mb-0.5">{t("折扣 (%)", "Discount (%)")}</div>
-                              <input type="number" min="0" max="100" value={r.discount_percent ?? 0} onChange={(e) => updateVariationField(idx, "discount_percent", e.target.value)} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
-                            </div>
-                            <div>
-                              <div className="text-[11px] text-slate-400 mb-0.5">{t("折后价 (RM)", "Sale Price (RM)")}</div>
-                              {/* Client-side computed display only (2026-08-27,
-                                  new) — Retail Price × (1 − Discount%), rounded
-                                  to cents; not a separate persisted column, so
-                                  it always exactly reflects the two real saved
-                                  fields it's derived from. */}
-                              <div className="w-full px-2 py-1.5 text-xs border border-slate-100 bg-slate-50 rounded-lg text-slate-500">
-                                RM {(Number(r.price || 0) * (1 - Math.min(100, Math.max(0, Number(r.discount_percent) || 0)) / 100)).toFixed(2)}
-                              </div>
-                            </div>
-                          </div>
-                          <button onClick={() => removeVariationRow(idx)} className="text-rose-400 hover:text-rose-600 mt-2 shrink-0"><Trash2 size={14} /></button>
-                        </div>
-                        <div className="flex items-center gap-2 mt-2 pl-8">
-                          <input value={r.sku || ""} onChange={(e) => updateVariationField(idx, "sku", e.target.value)} placeholder={t("商家 SKU", "Seller SKU")} className="w-28 px-1.5 py-1 text-[11px] border border-slate-200 rounded" />
-                          <div className="flex items-center border border-slate-200 rounded overflow-hidden">
-                            <input
-                              type="number"
-                              value={r.weight_kg ?? ""}
-                              onChange={(e) => updateVariationField(idx, "weight_kg", e.target.value)}
-                              placeholder={t(`重量(${r.weight_unit === "g" ? "g" : "kg"})`, `Weight(${r.weight_unit === "g" ? "g" : "kg"})`)}
-                              className="w-16 px-1.5 py-1 text-[11px] border-0 outline-none"
-                            />
-                            {/* kg/g 单位切换 (2026-08-26, new) — same
-                                toggle-button convention as the top-level
-                                weight field below; converts the typed
-                                number on switch (setVariantWeightUnit),
-                                real kg saved to the DB either way. */}
-                            <div className="flex text-[10px] border-l border-slate-200 shrink-0">
-                              {["kg", "g"].map((u) => (
-                                <button
-                                  key={u}
-                                  type="button"
-                                  onClick={() => setVariantWeightUnit(idx, u)}
-                                  className={`px-1.5 py-1 ${(r.weight_unit || "kg") === u ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}
-                                >
-                                  {u}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
+                    <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-200 bg-slate-50">
+                            <th className="px-2 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("选择", "Select")}</th>
+                            {spec1Name && <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{spec1Name}</th>}
+                            {spec2Name && <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{spec2Name}</th>}
+                            <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("库存", "Stock")}</th>
+                            <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("价格 (RM)", "Price (RM)")}</th>
+                            <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("折扣 (%)", "Discount (%)")}</th>
+                            <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("重量", "Weight")}</th>
+                            <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("商家SKU", "Seller SKU")}</th>
+                            <th className="px-3 py-2 text-left font-medium text-slate-600">{t("操作", "Action")}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {variationRows.map((r, idx) => {
+                            const isSpec1Merged = idx > 0 && variationRows[idx - 1].spec1_value === r.spec1_value;
+                            return (
+                              <tr key={idx} className={`border-b border-slate-200 ${selectedVariantIdx.has(idx) ? "bg-indigo-50" : ""}`}>
+                                <td className="px-2 py-2 border-r border-slate-200">
+                                  <input type="checkbox" checked={selectedVariantIdx.has(idx)} onChange={() => toggleVariantSelect(idx)} className="h-3.5 w-3.5 rounded border-slate-300" />
+                                </td>
+                                {!isSpec1Merged && (
+                                  <td rowSpan={variationRows.filter((v, i) => i <= idx && v.spec1_value === r.spec1_value && (i === 0 || variationRows[i - 1].spec1_value !== v.spec1_value || i > idx)).length} className="px-3 py-2 border-r border-slate-200 font-medium text-slate-700 align-middle">{r.spec1_value}</td>
+                                )}
+                                {spec2Name && <td className="px-3 py-2 border-r border-slate-200">{r.spec2_value}</td>}
+                                <td className="px-3 py-2 border-r border-slate-200">
+                                  <input type="number" value={r.stock} onChange={(e) => updateVariationField(idx, "stock", e.target.value)} className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded" />
+                                </td>
+                                <td className="px-3 py-2 border-r border-slate-200">
+                                  <input type="number" value={r.price} onChange={(e) => updateVariationField(idx, "price", e.target.value)} className="w-16 px-1.5 py-1 text-xs border border-slate-200 rounded" />
+                                </td>
+                                <td className="px-3 py-2 border-r border-slate-200">
+                                  <input type="number" min="0" max="100" value={r.discount_percent ?? 0} onChange={(e) => updateVariationField(idx, "discount_percent", e.target.value)} className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded" />
+                                </td>
+                                <td className="px-3 py-2 border-r border-slate-200">
+                                  <div className="flex gap-0.5">
+                                    <input type="number" value={r.weight_kg ?? ""} onChange={(e) => updateVariationField(idx, "weight_kg", e.target.value)} className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded" />
+                                    <select value={r.weight_unit || "kg"} onChange={(e) => setVariantWeightUnit(idx, e.target.value)} className="text-xs px-1 border border-slate-200 rounded bg-white">
+                                      <option value="kg">KG</option>
+                                      <option value="g">g</option>
+                                    </select>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2 border-r border-slate-200">
+                                  <input type="text" value={r.sku || ""} onChange={(e) => updateVariationField(idx, "sku", e.target.value)} className="w-20 px-1.5 py-1 text-xs border border-slate-200 rounded" />
+                                </td>
+                                <td className="px-3 py-2">
+                                  <button onClick={() => removeVariationRow(idx)} className="text-rose-400 hover:text-rose-600"><Trash2 size={14} /></button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </>
