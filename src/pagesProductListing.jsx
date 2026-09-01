@@ -2615,7 +2615,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                   </div>
                 )}
 
-                {/* SKU 矩阵表格 (2026-08-28, matrix layout) */}
+                {/* SKU 矩阵表格 (2026-08-28, corrected rowSpan logic) */}
                 {variationRows.length > 0 && (
                   <div className="space-y-2">
                     <label className="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer">
@@ -2627,36 +2627,36 @@ export function ProductListingCenter({ t, inventory, stores }) {
                         <thead>
                           <tr className="border-b border-slate-200 bg-slate-50">
                             <th className="px-2 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("选择", "Select")}</th>
-                            {spec1Name && <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{spec1Name}</th>}
-                            {spec2Name && <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{spec2Name}</th>}
+                            {spec1Name && <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200 min-w-max">{spec1Name}</th>}
+                            {spec2Name && <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200 min-w-max">{spec2Name}</th>}
                             <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("库存", "Stock")}</th>
                             <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("价格 (RM)", "Price (RM)")}</th>
-                            <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("折扣 (%)", "Discount (%)")}</th>
                             <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("重量", "Weight")}</th>
                             <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("商家SKU", "Seller SKU")}</th>
+                            <th className="px-3 py-2 text-left font-medium text-slate-600 border-r border-slate-200">{t("折扣 (%)", "Discount (%)")}</th>
                             <th className="px-3 py-2 text-left font-medium text-slate-600">{t("操作", "Action")}</th>
                           </tr>
                         </thead>
                         <tbody>
                           {variationRows.map((r, idx) => {
-                            const isSpec1Merged = idx > 0 && variationRows[idx - 1].spec1_value === r.spec1_value;
+                            // Calculate rowSpan: count consecutive rows with same spec1_value
+                            const spec1RowSpan = variationRows.filter((v, i) => i >= idx && v.spec1_value === r.spec1_value).findIndex((v, i) => i > 0 && v.spec1_value !== r.spec1_value) || variationRows.filter((v, i) => i >= idx && v.spec1_value === r.spec1_value).length;
+                            const showSpec1Cell = idx === 0 || variationRows[idx - 1].spec1_value !== r.spec1_value;
+
                             return (
                               <tr key={idx} className={`border-b border-slate-200 ${selectedVariantIdx.has(idx) ? "bg-indigo-50" : ""}`}>
-                                <td className="px-2 py-2 border-r border-slate-200">
+                                <td className="px-2 py-2 border-r border-slate-200 text-center">
                                   <input type="checkbox" checked={selectedVariantIdx.has(idx)} onChange={() => toggleVariantSelect(idx)} className="h-3.5 w-3.5 rounded border-slate-300" />
                                 </td>
-                                {!isSpec1Merged && (
-                                  <td rowSpan={variationRows.filter((v, i) => i <= idx && v.spec1_value === r.spec1_value && (i === 0 || variationRows[i - 1].spec1_value !== v.spec1_value || i > idx)).length} className="px-3 py-2 border-r border-slate-200 font-medium text-slate-700 align-middle">{r.spec1_value}</td>
+                                {spec1Name && showSpec1Cell && (
+                                  <td rowSpan={spec1RowSpan} className="px-3 py-2 border-r border-slate-200 font-medium text-slate-700 align-middle bg-slate-50">{r.spec1_value}</td>
                                 )}
-                                {spec2Name && <td className="px-3 py-2 border-r border-slate-200">{r.spec2_value}</td>}
+                                {spec2Name && <td className="px-3 py-2 border-r border-slate-200 text-slate-600">{r.spec2_value}</td>}
                                 <td className="px-3 py-2 border-r border-slate-200">
                                   <input type="number" value={r.stock} onChange={(e) => updateVariationField(idx, "stock", e.target.value)} className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded" />
                                 </td>
                                 <td className="px-3 py-2 border-r border-slate-200">
                                   <input type="number" value={r.price} onChange={(e) => updateVariationField(idx, "price", e.target.value)} className="w-16 px-1.5 py-1 text-xs border border-slate-200 rounded" />
-                                </td>
-                                <td className="px-3 py-2 border-r border-slate-200">
-                                  <input type="number" min="0" max="100" value={r.discount_percent ?? 0} onChange={(e) => updateVariationField(idx, "discount_percent", e.target.value)} className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded" />
                                 </td>
                                 <td className="px-3 py-2 border-r border-slate-200">
                                   <div className="flex gap-0.5">
@@ -2669,6 +2669,9 @@ export function ProductListingCenter({ t, inventory, stores }) {
                                 </td>
                                 <td className="px-3 py-2 border-r border-slate-200">
                                   <input type="text" value={r.sku || ""} onChange={(e) => updateVariationField(idx, "sku", e.target.value)} className="w-20 px-1.5 py-1 text-xs border border-slate-200 rounded" />
+                                </td>
+                                <td className="px-3 py-2 border-r border-slate-200">
+                                  <input type="number" min="0" max="100" value={r.discount_percent ?? 0} onChange={(e) => updateVariationField(idx, "discount_percent", e.target.value)} className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded" />
                                 </td>
                                 <td className="px-3 py-2">
                                   <button onClick={() => removeVariationRow(idx)} className="text-rose-400 hover:text-rose-600"><Trash2 size={14} /></button>
