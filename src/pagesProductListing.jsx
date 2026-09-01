@@ -1561,6 +1561,11 @@ export function ProductListingCenter({ t, inventory, stores }) {
   const [showBatchVariantEdit, setShowBatchVariantEdit] = useState(false);
   const [batchVariantPrice, setBatchVariantPrice] = useState("");
   const [batchVariantStock, setBatchVariantStock] = useState("");
+  const [batchVariantWeight, setBatchVariantWeight] = useState("");
+  const [batchVariantDiscount, setBatchVariantDiscount] = useState("");
+  const [batchVariantSku, setBatchVariantSku] = useState("");
+  const [batchVariantSpecName, setBatchVariantSpecName] = useState("");
+  const [batchEditMode, setBatchEditMode] = useState("fixed");
   // 多规格开关 + 规格选项图片 (2026-08-25, new) — TikTok Seller Center
   // style: a toggle for whether this listing even has variants at all
   // (off = single price/stock, set on the main listing page), plus a
@@ -1759,17 +1764,37 @@ export function ProductListingCenter({ t, inventory, stores }) {
   function toggleSelectAllVariants() {
     setSelectedVariantIdx((prev) => (prev.size === variationRows.length ? new Set() : new Set(variationRows.map((_, i) => i))));
   }
-  // 批量修改 (2026-08-24, new) — sets price and/or stock on the checked
-  // rows (or every row, if none are checked); blank field = leave that
-  // field untouched on those rows.
+  // 批量修改 (2026-08-24, expanded 2026-08-28) — sets price/stock/weight/discount/sku/spec on
+  // checked rows (or every row if none checked); supports fixed values or percentage adjustment.
   function applyBatchVariantEdit() {
     const targets = selectedVariantIdx.size > 0 ? selectedVariantIdx : new Set(variationRows.map((_, i) => i));
-    setVariationRows((prev) => prev.map((r, i) => (targets.has(i) ? {
-      ...r,
-      price: batchVariantPrice !== "" ? Number(batchVariantPrice) : r.price,
-      stock: batchVariantStock !== "" ? Number(batchVariantStock) : r.stock,
-    } : r)));
-    setBatchVariantPrice(""); setBatchVariantStock(""); setShowBatchVariantEdit(false);
+    setVariationRows((prev) => prev.map((r, i) => {
+      if (!targets.has(i)) return r;
+      const updated = { ...r };
+      if (batchVariantPrice !== "") {
+        updated.price = batchEditMode === "percent" ? r.price * (1 + Number(batchVariantPrice) / 100) : Number(batchVariantPrice);
+      }
+      if (batchVariantStock !== "") {
+        updated.stock = batchEditMode === "percent" ? Math.round(r.stock * (1 + Number(batchVariantStock) / 100)) : Math.round(Number(batchVariantStock));
+      }
+      if (batchVariantWeight !== "") {
+        updated.weight_kg = Number(batchVariantWeight);
+      }
+      if (batchVariantDiscount !== "") {
+        updated.discount_percent = Math.min(100, Math.max(0, Number(batchVariantDiscount)));
+      }
+      if (batchVariantSku !== "") {
+        updated.sku = batchVariantSku;
+      }
+      if (batchVariantSpecName !== "") {
+        if (!updated.spec2_value) updated.spec1_value = batchVariantSpecName;
+        else updated.spec2_value = batchVariantSpecName;
+      }
+      return updated;
+    }));
+    setBatchVariantPrice(""); setBatchVariantStock(""); setBatchVariantWeight("");
+    setBatchVariantDiscount(""); setBatchVariantSku(""); setBatchVariantSpecName("");
+    setShowBatchVariantEdit(false);
   }
 
   // 保存变体 (2026-08-25) — called from saveListing() right after the
@@ -2544,19 +2569,44 @@ export function ProductListingCenter({ t, inventory, stores }) {
                   )}
                 </div>
                 {showBatchVariantEdit && (
-                  <div className="flex items-end gap-2 bg-indigo-50 border border-indigo-100 rounded-lg p-2.5">
-                    <div>
-                      <div className="text-[11px] text-slate-400 mb-1">{t("统一价格 (RM)", "Set price (RM)")}</div>
-                      <input type="number" value={batchVariantPrice} onChange={(e) => setBatchVariantPrice(e.target.value)} placeholder={t("留空不改", "blank = no change")} className="w-28 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                  <div className="bg-indigo-50 border border-indigo-100 rounded-lg p-3 space-y-2">
+                    <div className="flex items-center gap-2 mb-2">
+                      <label className="text-[11px] text-slate-500">{t("模式", "Mode")}</label>
+                      <select value={batchEditMode} onChange={(e) => setBatchEditMode(e.target.value)} className="text-xs px-2 py-1 border border-slate-200 rounded-lg">
+                        <option value="fixed">{t("固定值", "Fixed")}</option>
+                        <option value="percent">{t("百分比", "Percentage (%)")}</option>
+                      </select>
                     </div>
-                    <div>
-                      <div className="text-[11px] text-slate-400 mb-1">{t("统一库存", "Set stock")}</div>
-                      <input type="number" value={batchVariantStock} onChange={(e) => setBatchVariantStock(e.target.value)} placeholder={t("留空不改", "blank = no change")} className="w-24 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <div className="text-[11px] text-slate-400 mb-1">{t("价格 (RM)", "Price (RM)")}</div>
+                        <input type="number" value={batchVariantPrice} onChange={(e) => setBatchVariantPrice(e.target.value)} placeholder={t("留空不改", "blank = skip")} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-slate-400 mb-1">{t("库存", "Stock")}</div>
+                        <input type="number" value={batchVariantStock} onChange={(e) => setBatchVariantStock(e.target.value)} placeholder={t("留空不改", "blank = skip")} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-slate-400 mb-1">{t("重量 (KG)", "Weight (KG)")}</div>
+                        <input type="number" value={batchVariantWeight} onChange={(e) => setBatchVariantWeight(e.target.value)} placeholder={t("留空不改", "blank = skip")} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-slate-400 mb-1">{t("折扣 %", "Discount %")}</div>
+                        <input type="number" value={batchVariantDiscount} onChange={(e) => setBatchVariantDiscount(e.target.value)} placeholder={t("留空不改", "blank = skip")} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-slate-400 mb-1">{t("商家SKU", "Seller SKU")}</div>
+                        <input type="text" value={batchVariantSku} onChange={(e) => setBatchVariantSku(e.target.value)} placeholder={t("留空不改", "blank = skip")} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-slate-400 mb-1">{t("规格值", "Spec Value")}</div>
+                        <input type="text" value={batchVariantSpecName} onChange={(e) => setBatchVariantSpecName(e.target.value)} placeholder={t("留空不改", "blank = skip")} className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                      </div>
                     </div>
                     <button
                       onClick={applyBatchVariantEdit}
-                      disabled={batchVariantPrice === "" && batchVariantStock === ""}
-                      className={`text-xs px-3 py-1.5 rounded-lg text-white ${batchVariantPrice !== "" || batchVariantStock !== "" ? "bg-indigo-600 hover:bg-indigo-700" : "bg-slate-300 cursor-not-allowed"}`}
+                      disabled={[batchVariantPrice, batchVariantStock, batchVariantWeight, batchVariantDiscount, batchVariantSku, batchVariantSpecName].every(v => v === "")}
+                      className={`text-xs px-3 py-1.5 rounded-lg text-white w-full ${[batchVariantPrice, batchVariantStock, batchVariantWeight, batchVariantDiscount, batchVariantSku, batchVariantSpecName].some(v => v !== "") ? "bg-indigo-600 hover:bg-indigo-700" : "bg-slate-300 cursor-not-allowed"}`}
                     >
                       {t(selectedVariantIdx.size > 0 ? "应用到已选" : "应用到全部", selectedVariantIdx.size > 0 ? "Apply to selected" : "Apply to all")}
                     </button>
