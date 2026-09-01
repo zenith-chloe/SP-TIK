@@ -2488,11 +2488,11 @@ export function ProductListingCenter({ t, inventory, stores }) {
                   </button>
                 </label>
                 <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
-                {t("多规格 (Multiple Variations)", "Multiple Variations")}
+                {t("支持多规格", "Enable variations")}
                 <button
                   type="button"
                   onClick={toggleMultiVariants}
-                  className={`relative w-9 h-5 rounded-full transition-colors ${multiVariantsOn ? "bg-purple-600" : "bg-slate-200"}`}
+                  className={`relative w-9 h-5 rounded-full transition-colors ${multiVariantsOn ? "bg-teal-600" : "bg-slate-200"}`}
                 >
                   <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${multiVariantsOn ? "translate-x-4" : "translate-x-0.5"}`} />
                 </button>
@@ -2525,10 +2525,11 @@ export function ProductListingCenter({ t, inventory, stores }) {
                     return (
                       <div key={specNum}>
                         <div className="text-xs text-slate-400 mb-1">
-                          {specNum === 1 ? t("规格1 名称（如 颜色 / Color）", "Spec 1 name (e.g. Color)") : t("规格2 名称（可选，如 尺寸）", "Spec 2 name (optional, e.g. Size)")}
+                          {specNum === 1 ? t("规格名称", "Variation name") : t("规格名称（可选）", "Variation name (optional)")}
                         </div>
-                        <input value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg mb-1.5" />
+                        <input value={name} onChange={(e) => setName(e.target.value)} placeholder={specNum === 1 ? t("如 COLOUR、SIZE", "e.g. COLOUR, SIZE") : ""} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg mb-1.5" />
                         <div className="space-y-1.5 mb-1.5">
+                          <div className="text-[11px] text-slate-400 mb-1">{t("规格值", "Options")}</div>
                           {values.map((v, i) => {
                             const uploading = specImageUploading === `${specNum}:${v}`;
                             return (
@@ -2550,7 +2551,7 @@ export function ProductListingCenter({ t, inventory, stores }) {
                             value={newOption}
                             onChange={(e) => setNewOption(e.target.value)}
                             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addSpecValue(specNum, newOption); setNewOption(""); } }}
-                            placeholder={specNum === 1 ? t("如 BLACK SPRING，回车添加", "e.g. BLACK SPRING, Enter to add") : t("如 S / M / L，回车添加", "e.g. S / M / L, Enter to add")}
+                            placeholder={t("+ 添加规格值", "+ Add option")}
                             className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg"
                           />
                           <button onClick={() => { addSpecValue(specNum, newOption); setNewOption(""); }} className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">+</button>
