@@ -1,0 +1,20 @@
+name: Daily Cleanup - Delete Orders Older Than 60 Days
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run cleanup-old-orders function
+        run: |
+          RESPONSE=$(curl -X POST https://dttdgdkhayzchmfptj.supabase.co/functions/v1/cleanup-old-orders -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" -H "Content-Type: application/json" -d '{"dryRun": false, "retentionDays": 60}')
+          if echo "$RESPONSE" | grep -q '"success":true'; then
+            echo "✅ Cleanup completed successfully"
+          else
+            echo "❌ Cleanup failed"
+            exit 1
+          fi
