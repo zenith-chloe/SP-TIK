@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Plus, Pencil, Trash2, X, Search, AlertTriangle, Package, Ban, CheckCircle2 } from "lucide-react";
+import { Plus, Pencil, Trash2, X, Search, AlertTriangle, Package, Ban, CheckCircle2, Download } from "lucide-react";
+import { supabaseClient } from "./shared.jsx";
 
 // Product Master — internal SKU catalog (name/price/weight/unit/image), kept
 // deliberately separate from Inventory (warehouse stock levels/locations)
@@ -165,7 +166,7 @@ function ProductForm({ t, mode, initial, existingSkus, onCancel, onSave }) {
   );
 }
 
-export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete }) {
+export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete, stores }) {
   const [query, setQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [brandFilter, setBrandFilter] = useState("all");
@@ -174,6 +175,82 @@ export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete }) {
   const [actionError, setActionError] = useState("");
   const [selectedSkus, setSelectedSkus] = useState([]);
   const [bulkBusy, setBulkBusy] = useState(false);
+
+  // 同步店铺商品 (2026-09-07, new)
+  const [showSyncModal, setShowSyncModal] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [selectedSyncStore, setSelectedSyncStore] = useState(null);
+
+  async function syncStoreProducts() {
+    if (!selectedSyncStore) return;
+    setSyncLoading(true);
+    setActionError("");
+    try {
+      const { data: platformAccount, error: acctErr } = await supabaseClient
+        .from("platform_accounts").select("*").eq("id", selectedSyncStore).single();
+      if (acctErr || !platformAccount) throw new Error("Store not found");
+
+      // Check access token
+      if (!platformAccount.access_token && !platformAccount.refresh_token) {
+        throw new Error(`❌ ${platformAccount.account_name || "Store"}: 缺少访问令牌 / Missing access token. 请在【店铺管理】重新授权 / Please re-authorize in Store Management.`);
+      }
+
+      let products = [];
+      if (platformAccount.platform === "tiktok") {
+        console.log("Fetching TikTok products for shop:", platformAccount.shop_id);
+
+        try {
+          const response = await supabaseClient.functions.invoke("tiktok-sync-products", {
+            body: { platformAccountId: selectedSyncStore, limit: 50 }
+          });
+
+          const { data: syncData, error: syncErr } = response;
+
+          if (syncErr) throw new Error(`API error: ${syncErr.message}`);
+          if (!syncData) throw new Error("No data returned");
+
+          products = syncData?.products || [];
+          if (products.length === 0) throw new Error("Empty product list");
+        } catch (invokeErr) {
+          // Real API failure - report exact error, do not use fallback
+          console.error("TikTok API sync failed:", invokeErr.message);
+          throw new Error(`TikTok API error: ${invokeErr.message}`);
+        }
+      } else {
+        throw new Error("Only TikTok Shop supported");
+      }
+
+      let importCount = 0;
+      for (const p of products) {
+        if (!p.sku || !p.title) continue;
+        await supabaseClient.from("products").upsert({
+          name: p.title || p.item_name, sku: p.sku, price: p.price || 0,
+          platform_sync_id: `${platformAccount.platform}_${p.id}`, platform: platformAccount.platform,
+        }, { onConflict: "platform_sync_id" });
+        importCount++;
+      }
+
+      if (importCount === 0) throw new Error("No valid products imported / 没有有效的商品导入");
+
+      setActionError(`✅ 已导入 ${importCount} 件商品 / Imported ${importCount} products`);
+
+      // 重新加载整个库存列表以显示新导入的商品
+      console.log("Reloading inventory after sync...");
+      const { data: allProducts, error: loadErr } = await supabaseClient
+        .from("products").select("*").order("created_at", { ascending: false });
+      if (!loadErr && allProducts) {
+        console.log("Loaded products from DB:", allProducts.length);
+        onCreate?.(); // 触发刷新
+      }
+
+      setTimeout(() => setShowSyncModal(false), 1500);
+    } catch (err) {
+      console.error("syncStoreProducts error:", err);
+      setActionError(`❌ ${err.message}`);
+    } finally {
+      setSyncLoading(false);
+    }
+  }
 
   const categories = Array.from(new Set(inventory.map((p) => p.category).filter(Boolean))).sort();
   const brands = Array.from(new Set(inventory.map((p) => p.brand).filter(Boolean))).sort();
@@ -186,6 +263,13 @@ export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete }) {
     const matchesStatus = statusFilter === "all" || (p.status || "active") === statusFilter;
     return matchesQuery && matchesCategory && matchesBrand && matchesStatus;
   });
+
+  // 调试日志
+  if (inventory.length > 0) {
+    console.log("Inventory total:", inventory.length, "Filtered:", filtered.length, "Filters:", {
+      statusFilter, categoryFilter, brandFilter, query
+    });
+  }
 
   const allFilteredSelected = filtered.length > 0 && filtered.every((p) => selectedSkus.includes(p.sku));
 
@@ -272,8 +356,15 @@ export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete }) {
           <option value="inactive">{t("停用", "Inactive")}</option>
         </select>
         <button
+          onClick={() => setShowSyncModal(true)}
+          className="ml-auto flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+          className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+        >
+          <Download size={14} /> {t("同步店铺商品", "Sync Products")}
+        </button>
+        <button
           onClick={() => setFormState({ mode: "create" })}
-          className="ml-auto flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
+          className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
         >
           <Plus size={14} /> {t("新增商品", "New Product")}
         </button>
@@ -406,6 +497,26 @@ export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete }) {
           onCancel={() => setFormState(null)}
           onSave={handleSave}
         />
+      )}
+
+      {showSyncModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowSyncModal(false)}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 text-sm font-medium"><Download size={16} className="text-emerald-600" /> {t("同步店铺商品", "Sync Products")}</div>
+            <select value={selectedSyncStore || ""} onChange={(e) => setSelectedSyncStore(e.target.value)} className="w-full text-sm px-3 py-2 border border-slate-200 rounded-lg">
+              <option value="">{t("选择店铺", "Select Store")}</option>
+              {(stores || []).map(s => (
+                <option key={s.id} value={s.id}>{s.account_name || s.name}</option>
+              ))}
+            </select>
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={() => setShowSyncModal(false)} className="text-sm px-4 py-2 rounded-lg border border-slate-200">{t("取消", "Cancel")}</button>
+              <button onClick={syncStoreProducts} disabled={!selectedSyncStore || syncLoading} className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white disabled:opacity-50">
+                {syncLoading ? "⏳" : <Download size={14} />} {t("开始同步", "Sync Now")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,2 +1,8 @@
 [functions.shopee-sync-orders]
 verify_jwt = true
+
+[functions.tiktok-sync-products]
+verify_jwt = false
+
+[functions.tiktok-sync-orders]
+verify_jwt = false
