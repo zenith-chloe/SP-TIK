@@ -13,6 +13,13 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Content-Type": "application/json",
+};
+
 async function tiktokCall(
   method: "GET" | "POST",
   path: string,
@@ -48,6 +55,11 @@ async function tiktokCall(
 }
 
 Deno.serve(async (req: Request) => {
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   try {
     const body = await req.json() || {};
     const { platformAccountId, limit = 50 } = body;
@@ -55,7 +67,7 @@ Deno.serve(async (req: Request) => {
     if (!platformAccountId) {
       return new Response(
         JSON.stringify({ error: "platformAccountId required" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -69,7 +81,7 @@ Deno.serve(async (req: Request) => {
     if (acctErr || !account) {
       return new Response(
         JSON.stringify({ error: `Account not found: ${acctErr?.message || ""}` }),
-        { status: 404, headers: { "Content-Type": "application/json" } }
+        { status: 404, headers: corsHeaders }
       );
     }
 
@@ -91,7 +103,7 @@ Deno.serve(async (req: Request) => {
       console.warn("TikTok API returned no products", result);
       return new Response(
         JSON.stringify({ products: [], count: 0 }),
-        { headers: { "Content-Type": "application/json" } }
+        { headers: corsHeaders }
       );
     }
 
@@ -113,7 +125,7 @@ Deno.serve(async (req: Request) => {
     console.error("tiktok-sync-products error:", err);
     return new Response(
       JSON.stringify({ error: (err as Error).message }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      { status: 500, headers: corsHeaders }
     );
   }
 });

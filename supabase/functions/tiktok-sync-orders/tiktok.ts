@@ -60,8 +60,17 @@ export async function signApiRequest(
 }
 
 // Maps TikTok Shop order_status values to our orders.order_status check
-// constraint: pending | processing | shipped | returned | cancelled
-export function mapTikTokOrderStatus(status: string): string {
+// constraint: pending | processing | shipped | returned | cancelled | delivery_failed
+export function mapTikTokOrderStatus(status: string, order?: any): string {
+  // Check delivery_failed first (CANCELLED + delivery reason)
+  if (status === "CANCELLED" && order?.cancel_reason) {
+    const reason = String(order.cancel_reason).toUpperCase();
+    if (reason.includes("DELIVERY_FAILED") || reason.includes("UNDELIVERABLE") ||
+        reason.includes("LOGISTICS_FAIL") || reason.includes("PACKAGE_RETURNED")) {
+      return "delivery_failed";
+    }
+  }
+
   switch (status) {
     case "UNPAID":
     case "AWAITING_SHIPMENT":

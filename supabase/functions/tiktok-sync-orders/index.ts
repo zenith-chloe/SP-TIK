@@ -406,9 +406,9 @@ async function upsertOrderPage(
           buyer_phone: o.recipient_address?.phone_number ?? "—",
           shipping_address: o.recipient_address?.full_address ?? "—",
           courier: o.shipping_provider ?? null,
-          tracking_no: o.tracking_number ?? null,
+          tracking_no: o.tracking_number ?? o.logistics?.tracking_number ?? null, // 优先级：tracking_number > logistics.tracking_number
           order_status: mapTikTokOrderStatus(o.status),
-          platform_status: o.status ?? null,
+          platform_status: o.status ?? null, // 保存原始 TikTok 状态用于调试
           is_cod: o.is_cod ?? false,
           total_amount: Number(o.payment?.total_amount ?? 0),
           shipping_fee: Number(o.payment?.shipping_fee ?? 0),

@@ -48,9 +48,16 @@ Deno.serve(async (req: Request) => {
   const initiatingUser = url0.searchParams.get("u");
   const state = initiatingUser ? `motoparts-erp:${encodeURIComponent(initiatingUser)}` : "motoparts-erp";
 
+  // redirect_uri (2026-09-07, fix) — TikTok OAuth requires an explicit
+  // redirect_uri parameter pointing back to tiktok-auth-callback. Extract
+  // Supabase project URL from the current request to construct it.
+  const supabaseUrl = `${url0.protocol}//${url0.host}`;
+  const redirectUri = `${supabaseUrl}/functions/v1/tiktok-auth-callback`;
+
   const url = new URL(`${authHost()}/api/v2/authorization`);
   url.searchParams.set("app_key", creds.appKey);
   url.searchParams.set("state", state);
+  url.searchParams.set("redirect_uri", redirectUri);
 
   return Response.redirect(url.toString(), 302);
 });

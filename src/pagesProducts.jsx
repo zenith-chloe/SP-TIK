@@ -196,7 +196,35 @@ export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete, stor
       }
 
       let products = [];
-      if (platformAccount.platform === "tiktok") {
+
+      if (platformAccount.platform === "shopee") {
+        console.log("Fetching Shopee products for shop:", platformAccount.shop_id);
+
+        try {
+          const response = await supabaseClient.functions.invoke("shopee-sync-products", {
+            body: { platformAccountId: selectedSyncStore, limit: 50 }
+          });
+
+          console.log("Edge Function response:", response);
+          console.log("Shopee sync full data:", JSON.stringify(response.data, null, 2));
+
+          const syncData = response.data;
+          const syncErr = response.error;
+
+          if (syncErr) throw new Error(`API error: ${syncErr.message}`);
+          if (!syncData) throw new Error("No data returned");
+
+          products = syncData?.products || [];
+          if (products.length === 0) {
+            console.log("No products found in Shopee store");
+          }
+        } catch (invokeErr) {
+          console.error("Shopee API sync failed:", invokeErr);
+          console.error("Full error object:", JSON.stringify(invokeErr, null, 2));
+          const errorMsg = invokeErr?.message || invokeErr?.toString?.() || String(invokeErr);
+          throw new Error(`Shopee sync error: ${errorMsg}`);
+        }
+      } else if (platformAccount.platform === "tiktok") {
         console.log("Fetching TikTok products for shop:", platformAccount.shop_id);
 
         try {
@@ -204,20 +232,33 @@ export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete, stor
             body: { platformAccountId: selectedSyncStore, limit: 50 }
           });
 
-          const { data: syncData, error: syncErr } = response;
+          console.log("Edge Function response:", response);
 
-          if (syncErr) throw new Error(`API error: ${syncErr.message}`);
+          const syncData = response.data;
+          const syncErr = response.error;
+
+          // Always HTTP 200, check success flag
+          if (!syncData.success) {
+            const errorMsg = syncData.message || "Unknown error";
+            console.error("TikTok sync failed:", errorMsg);
+            window.alert(`❌ Sync failed:\n\n${errorMsg}`);
+            throw new Error(errorMsg);
+          }
+
           if (!syncData) throw new Error("No data returned");
 
           products = syncData?.products || [];
-          if (products.length === 0) throw new Error("Empty product list");
+          if (products.length === 0) {
+            console.log("No products found in TikTok store");
+          }
         } catch (invokeErr) {
-          // Real API failure - report exact error, do not use fallback
-          console.error("TikTok API sync failed:", invokeErr.message);
-          throw new Error(`TikTok API error: ${invokeErr.message}`);
+          console.error("TikTok API sync failed:", invokeErr);
+          console.error("Full error object:", JSON.stringify(invokeErr, null, 2));
+          const errorMsg = invokeErr?.message || invokeErr?.toString?.() || String(invokeErr);
+          throw new Error(`TikTok sync error: ${errorMsg}`);
         }
       } else {
-        throw new Error("Only TikTok Shop supported");
+        throw new Error("Platform not supported");
       }
 
       let importCount = 0;
@@ -230,7 +271,11 @@ export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete, stor
         importCount++;
       }
 
-      if (importCount === 0) throw new Error("No valid products imported / 没有有效的商品导入");
+      if (importCount === 0) {
+        setActionError(`ℹ️ 该店铺暂无可同步的商品 / No products to import`);
+        setTimeout(() => setShowSyncModal(false), 1500);
+        return;
+      }
 
       setActionError(`✅ 已导入 ${importCount} 件商品 / Imported ${importCount} products`);
 

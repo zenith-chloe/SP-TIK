@@ -466,6 +466,25 @@ export default function App() {
     return results.flat();
   }
 
+  // 删除所有产品 (2026-09-07, temp - remove after data cleared)
+  async function clearAllProducts() {
+    if (!window.confirm("⚠️ 确认删除所有商品？此操作无法撤销。\n\n⚠️ Confirm DELETE ALL products? This cannot be undone.")) return;
+    try {
+      console.log("Clearing all products...");
+      const { error, data } = await supabaseClient.from("products").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      if (error) {
+        console.error("Delete error:", error);
+        throw error;
+      }
+      console.log("Delete result:", data);
+      alert("✅ 已删除所有商品 / All products deleted successfully");
+      setInventory([]);
+    } catch (err) {
+      console.error("Clear failed:", err);
+      alert(`❌ 删除失败 / Delete failed: ${err.message}`);
+    }
+  }
+
   async function loadRealData(silent = false) {
     if (!silent) setDataLoading(true);
 
@@ -498,7 +517,7 @@ export default function App() {
       : ordersQuery.order("order_date", { ascending: false }).limit(5000);
     if (!isOwner) ordersQuery = ordersQuery.in("platform_account_id", scopedStoreIds);
 
-    let accountsQuery = supabaseClient.from("platform_accounts").select("id, platform, account_name, shop_id, created_at, token_expires_at, status, auth_time, updated_by, seller_name, seller_address, seller_phone, logo_url, font_color, font_style, badge_color, shop_note").eq("hidden", false);
+    let accountsQuery = supabaseClient.from("platform_accounts").select("id, platform, account_name, shop_id, created_at, token_expires_at, status, auth_time, updated_by, seller_name, seller_address, seller_phone, logo_url, font_color, font_style, badge_color, shop_note").eq("hidden", false).eq("status", "connected");
     if (!isOwner) accountsQuery = accountsQuery.in("id", scopedStoreIds);
 
     // Products deliberately NOT store-filtered (2026-08-20) — checked live:
@@ -1644,7 +1663,7 @@ export default function App() {
               currentUserEmail={session?.user?.email || null}
             />
           )}
-          {tab === "products" && <ProductMaster t={t} inventory={inventory} onCreate={createProduct} onUpdate={updateProductMaster} onDelete={deleteProduct} />}
+          {tab === "products" && <ProductMaster t={t} inventory={inventory} stores={stores} onCreate={createProduct} onUpdate={updateProductMaster} onDelete={deleteProduct} />}
           {tab === "productlisting" && <ProductListingCenter t={t} inventory={inventory} stores={stores} />}
           {tab === "suppliers" && myRole === "owner" && <SupplierMaster t={t} suppliers={suppliers} onCreate={createSupplier} onUpdate={updateSupplier} onDelete={deleteSupplier} />}
           {tab === "purchaseorders" && myRole === "owner" && (
