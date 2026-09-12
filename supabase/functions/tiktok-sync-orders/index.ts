@@ -122,6 +122,7 @@ import {
   API_HOST,
   authHost,
   mapTikTokOrderStatus,
+  mapTikTokFulfillmentStatus,
   nowTs,
   requireTikTokCredentials,
   signApiRequest,
@@ -408,6 +409,7 @@ async function upsertOrderPage(
           courier: o.shipping_provider ?? null,
           tracking_no: o.tracking_number ?? o.logistics?.tracking_number ?? null, // 优先级：tracking_number > logistics.tracking_number
           order_status: mapTikTokOrderStatus(o.status),
+          fulfillment_status: mapTikTokFulfillmentStatus(o.status, o),
           platform_status: o.status ?? null, // 保存原始 TikTok 状态用于调试
           is_cod: o.is_cod ?? false,
           total_amount: Number(o.payment?.total_amount ?? 0),

@@ -298,6 +298,7 @@ export function mapDbOrder(order, items) {
     // "Standard shipping"), when the sync has captured it — null for rows
     // not yet re-synced since this field was added, or Shopee orders.
     deliveryOption: order.delivery_option || null,
+    fulfillmentStatus: order.fulfillment_status || null,
     printCount: order.print_count || 0,
     lastPrintedAt: order.last_printed_at || null,
     lastPrintedBy: order.last_printed_by || null,

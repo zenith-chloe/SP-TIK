@@ -2144,6 +2144,9 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
               />
               <div className="flex flex-col items-stretch gap-1 w-20 shrink-0">
                 <span className={`text-[10px] px-2 py-0.5 rounded-full border text-center ${statusColor(o.status)}`}>{statusLabel(o.status, lang)}</span>
+                {(statusFilter === "__delivered__" || statusFilter === "__completed__" || statusFilter === "__failed_delivery__") && o.fulfillmentStatus && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full border text-center bg-slate-100 text-slate-600 border-slate-300">{o.fulfillmentStatus}</span>
+                )}
                 {ACTIONABLE_STATUS.includes(o.status) && (
                   <>
                     <button

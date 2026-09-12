@@ -88,3 +88,22 @@ export function mapTikTokOrderStatus(status: string, order?: any): string {
       return "processing";
   }
 }
+
+// Maps TikTok Shop order_status to fulfillment_status for Delivered/Completed/Delivery Failed
+export function mapTikTokFulfillmentStatus(status: string, order?: any): string | null {
+  switch (status) {
+    case "DELIVERED":
+      return "delivered";
+    case "COMPLETED":
+      return "completed";
+    case "CANCELLED":
+      const reason = String(order?.cancel_reason || "").toUpperCase();
+      if (reason.includes("DELIVERY_FAILED") || reason.includes("UNDELIVERABLE") ||
+          reason.includes("LOGISTICS_FAIL") || reason.includes("PACKAGE_RETURNED")) {
+        return "delivery_failed";
+      }
+      return "cancelled";
+    default:
+      return null;
+  }
+}
