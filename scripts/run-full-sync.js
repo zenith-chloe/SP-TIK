@@ -6,9 +6,6 @@
  *   SUPABASE_URL=https://... SUPABASE_SERVICE_ROLE_KEY=... node scripts/run-full-sync.js
  */
 
-const https = require('https');
-const url = require('url');
-
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -28,29 +25,26 @@ console.log('  • Populate fulfillment_status for DELIVERED/COMPLETED/delivery_
 console.log('  • Resume from checkpoint if interrupted\n');
 console.log(`📍 Supabase URL: ${SUPABASE_URL}\n`);
 
-const urlObj = new url.URL(`${SUPABASE_URL}/functions/v1/tiktok-sync-orders`);
+const functionUrl = `${SUPABASE_URL}/functions/v1/tiktok-sync-orders`;
 
-const options = {
-  hostname: urlObj.hostname,
-  port: urlObj.port,
-  path: urlObj.pathname + urlObj.search,
+console.log(`Invoking: ${functionUrl}`);
+console.log('Method: POST');
+console.log('Body: {"fullSync": true}\n');
+
+fetch(functionUrl, {
   method: 'POST',
   headers: {
     'Authorization': `Bearer ${SERVICE_KEY}`,
     'Content-Type': 'application/json',
-    'Content-Length': 19,
   },
-};
-
-const req = https.request(options, (res) => {
-  let data = '';
-
-  res.on('data', (chunk) => {
-    data += chunk;
-  });
-
-  res.on('end', () => {
-    console.log('Response:\n');
+  body: JSON.stringify({ fullSync: true }),
+})
+  .then((res) => {
+    console.log(`Response Status: ${res.status} ${res.statusText}\n`);
+    return res.text();
+  })
+  .then((data) => {
+    console.log('Response Body:\n');
     try {
       const parsed = JSON.parse(data);
       console.log(JSON.stringify(parsed, null, 2));
@@ -65,13 +59,8 @@ const req = https.request(options, (res) => {
     console.log('  - Or check resumable state:');
     console.log('    SELECT * FROM platform_sync_progress');
     console.log('');
+  })
+  .catch((err) => {
+    console.error('❌ Error:', err.message);
+    process.exit(1);
   });
-});
-
-req.on('error', (e) => {
-  console.error(`❌ Error: ${e.message}`);
-  process.exit(1);
-});
-
-req.write('{"fullSync":true}');
-req.end();

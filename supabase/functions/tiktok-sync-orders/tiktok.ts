@@ -102,7 +102,7 @@ export function mapTikTokFulfillmentStatus(status: string, order?: any): string 
           reason.includes("LOGISTICS_FAIL") || reason.includes("PACKAGE_RETURNED")) {
         return "delivery_failed";
       }
-      return "cancelled";
+      return null;
     default:
       return null;
   }
