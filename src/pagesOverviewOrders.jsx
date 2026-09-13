@@ -1148,16 +1148,17 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
     Promise.all([
       base(),
       base().eq("platform_status", "UNPAID"),
-      // TikTok's AWAITING_SHIPMENT unchanged; READY_TO_SHIP added additively
-      // for Shopee (2026-08-11) — never appears on real TikTok rows, so this
-      // is a no-op for TikTok's actual count. Instant orders excluded for
-      // Shopee (2026-08-17) — they have their own card now.
-      excludeInstant(base().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"])),
-      // TikTok's AWAITING_COLLECTION unchanged; PROCESSED added additively
-      // for Shopee (2026-08-17) — real post-ship_order status, never
-      // appears on real TikTok rows, so this is a no-op for TikTok's count.
-      // Instant orders excluded for Shopee — same reasoning as toShip above.
-      excludeInstant(base().in("platform_status", ["AWAITING_COLLECTION", "PROCESSED"])),
+      // TikTok's AWAITING_SHIPMENT unchanged (includes instant orders — they're
+      // real AWAITING_SHIPMENT orders on TikTok, not a separate status);
+      // READY_TO_SHIP added for Shopee (2026-08-11). Instant orders excluded
+      // for Shopee ONLY (2026-08-17) — they have their own card. TikTok count
+      // must match API total, which includes instant orders.
+      isShopee ? excludeInstant(base().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"])) : base().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"]),
+      // TikTok's AWAITING_COLLECTION unchanged; PROCESSED added for Shopee
+      // (2026-08-17). Instant orders excluded for Shopee only — TikTok's
+      // instant orders (if any) would be delivery_option instant, not
+      // AWAITING_COLLECTION (that's pickup status, different flow).
+      isShopee ? excludeInstant(base().in("platform_status", ["AWAITING_COLLECTION", "PROCESSED"])) : base().in("platform_status", ["AWAITING_COLLECTION", "PROCESSED"]),
       // TikTok's IN_TRANSIT unchanged; SHIPPED added additively for Shopee
       // (2026-08-17) — Shopee's real post-ship_order-and-picked-up status
       // (confirmed live: 42 real SHIPPED rows on the visible store, 0 rows
