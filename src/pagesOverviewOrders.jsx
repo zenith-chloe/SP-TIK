@@ -157,7 +157,7 @@ function isInstantOrder(o) {
 const TIKTOK_FAILED_DELIVERY_STATUSES = new Set(["FAILED_DELIVERY", "DELIVERY_FAILED", "UNDELIVERED", "RETURN_TO_SENDER"]);
 const SHOPEE_FAILED_DELIVERY_STATUSES = new Set(["TO_RETURN"]);
 function isFailedDeliveryOrder(o) {
-  return TIKTOK_FAILED_DELIVERY_STATUSES.has(o.platformStatus) || SHOPEE_FAILED_DELIVERY_STATUSES.has(o.platformStatus);
+  return TIKTOK_FAILED_DELIVERY_STATUSES.has(o.platformStatus) || SHOPEE_FAILED_DELIVERY_STATUSES.has(o.platformStatus) || o.fulfillmentStatus === 'delivery_failed';
 }
 
 // Local calendar-day string (2026-08-26, new) — o.shipDeadline is a raw
