@@ -546,6 +546,11 @@ const MAX_PAGES_PER_INVOCATION = 500; // sanity cap, time budget hits first in p
 // update_time-DESC compensation walk) starting from `pageToken`, checkpointing
 // into platform_sync_progress after every page. Shared by both phases below
 // so their pagination/budget/error handling can't drift apart.
+//
+// CRITICAL: onPage callback receives the current page's actual sync result
+// so the caller can immediately accumulate counters and checkpoint them
+// correctly — this avoids the BUG where counters were written to the DB
+// before being updated by this page's result.
 async function walkPages(
   creds: TikTokCredentials,
   account: TikTokAccount,
@@ -553,7 +558,7 @@ async function walkPages(
   body: Record<string, unknown>,
   pageToken: string | undefined,
   deadline: number,
-  onPage: (pageToken: string | null) => Promise<void>,
+  onPage: (pageToken: string | null, pageResult: { syncedOrders: number; syncedItems: number }) => Promise<void>,
 ) {
   let pageCount = 0;
   let syncedOrders = 0;
@@ -571,7 +576,10 @@ async function walkPages(
     const pageResult = await upsertOrderPage(pageOrders, account);
     syncedOrders += pageResult.syncedOrders;
     syncedItems += pageResult.syncedItems;
-    await onPage(pageToken ?? null);
+
+    // Checkpoint after page is fully upserted, passing the page's actual result
+    // so caller can immediately update cumulative counters before writing to DB.
+    await onPage(pageToken ?? null, pageResult);
 
     if (!pageToken) {
       reachedLastPage = true;
@@ -632,7 +640,12 @@ async function syncOneShop(
     // silently miss it even though it just changed.
     const sinceTs = Math.floor(new Date(account.last_synced_at!).getTime() / 1000);
     const baseQuery = { shop_cipher: shopCipher, page_size: "50", sort_field: "update_time", sort_order: "DESC" };
-    const result = await walkPages(creds, account, baseQuery, { update_time_ge: sinceTs }, undefined, deadline, async () => {});
+    // Incremental sync: no checkpoint needed, just consume all pages within budget.
+    const result = await walkPages(creds, account, baseQuery, { update_time_ge: sinceTs }, undefined, deadline, async (nextToken, pageResult) => {
+      // Incremental sync doesn't checkpoint progress — it just tries to
+      // consume all available pages in one run, and only updates last_synced_at
+      // if it succeeds without truncation.
+    });
 
     if (!result.truncated) {
       // Only advance last_synced_at if the walk wasn't cut short, so the
@@ -692,16 +705,22 @@ async function syncOneShop(
   try {
     if (progress.sync_type !== "compensation") {
       // ---- Phase 1: full walk ----
+      // FIXED 2026-09-13: orders_synced must be updated AFTER each page's
+      // upsert confirms success, not before. The fix: onPage callback now
+      // receives pageResult, so we accumulate counters immediately within
+      // the callback before writing to DB, guaranteeing DB always has the
+      // correct cumulative count for this point in time.
       let cumulativePages = progress.pages_fetched;
       let cumulativeOrders = progress.orders_synced;
       const baseQuery = { shop_cipher: shopCipher, page_size: "50", sort_field: "create_time", sort_order: "DESC" };
-      const result = await walkPages(creds, account, baseQuery, {}, progress.next_page_token ?? undefined, deadline, async (nextToken) => {
+      const result = await walkPages(creds, account, baseQuery, {}, progress.next_page_token ?? undefined, deadline, async (nextToken, pageResult) => {
         cumulativePages++;
+        // FIX: Add this page's synced orders BEFORE writing to DB, not after.
+        cumulativeOrders += pageResult.syncedOrders;
         await supabase.from("platform_sync_progress").update({
           next_page_token: nextToken, pages_fetched: cumulativePages, orders_synced: cumulativeOrders, updated_at: new Date().toISOString(),
         }).eq("account_id", account.id);
       });
-      cumulativeOrders += result.syncedOrders;
       totalSyncedOrders += result.syncedOrders;
       totalSyncedItems += result.syncedItems;
       totalPages += result.pageCount;
@@ -730,9 +749,16 @@ async function syncOneShop(
     }
 
     // ---- Phase 2: compensation walk (update_time >= Phase 1's start) ----
+    // FIXED 2026-09-13: Ensure Phase 2 does not mark completed until truly
+    // the last page. Only advance last_synced_at once the compensation walk
+    // itself reaches the end with no more pages.
     const sinceTs = Math.floor(new Date(syncStartedAt).getTime() / 1000);
     const baseQuery = { shop_cipher: shopCipher, page_size: "50", sort_field: "update_time", sort_order: "DESC" };
     const result = await walkPages(creds, account, baseQuery, { update_time_ge: sinceTs }, progress.next_page_token ?? undefined, deadline, async (nextToken) => {
+      // Phase 2: only checkpoint next_page_token, DO NOT update orders_synced
+      // (it stays at its Phase 1 final value). Note: orders_synced from
+      // Phase 1 is already committed; Phase 2 is purely finding any orders
+      // created/changed during Phase 1's own runtime.
       await supabase.from("platform_sync_progress").update({ next_page_token: nextToken, updated_at: new Date().toISOString() }).eq("account_id", account.id);
     });
     totalSyncedOrders += result.syncedOrders;
@@ -740,6 +766,10 @@ async function syncOneShop(
     totalPages += result.pageCount;
 
     if (result.reachedLastPage) {
+      // CRITICAL: Only mark completed when Phase 2 itself (not just Phase 1)
+      // reaches the last page. This ensures full continuity guarantee: until
+      // both phases are truly done, next invocation can safely resume from
+      // where this one stopped.
       await supabase.from("platform_sync_progress").update({ status: "completed", updated_at: new Date().toISOString() }).eq("account_id", account.id);
       await supabase.from("platform_accounts").update({ last_synced_at: new Date().toISOString() }).eq("id", account.id);
       await supabase.from("sync_logs").insert({
