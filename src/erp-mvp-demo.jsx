@@ -597,6 +597,8 @@ export default function App() {
 
   useEffect(() => {
     if (!session) return;
+    // Auto-poll orders every 20s in incremental mode (updates since last_synced_at)
+    // This pulls new orders synced from backend cron jobs without manual clicks
     const interval = setInterval(() => loadRealData(true), 20000);
     return () => clearInterval(interval);
   }, [session]);
