@@ -177,9 +177,19 @@ async function shopeeGet(
   for (const [k, v] of Object.entries(extraParams)) url.searchParams.set(k, v);
 
   const resp = await fetch(url.toString());
-  const data = await resp.json();
-  if (!resp.ok || data.error) {
-    throw new Error(`${path} failed: ${data.error ?? resp.status} ${data.message ?? ""}`);
+  let data;
+  const raw = await resp.text();
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch (parseErr) {
+    throw new Error(`${path} failed: non-JSON response (status ${resp.status}): ${raw.slice(0, 200)}`);
+  }
+  if (!resp.ok) {
+    const errMsg = data?.error || data?.message || resp.status;
+    throw new Error(`${path} failed: ${errMsg}`);
+  }
+  if (data.error) {
+    throw new Error(`${path} failed: ${data.error} ${data.message ?? ""}`);
   }
   return data;
 }
@@ -210,7 +220,26 @@ async function upsertShopeeOrderBatch(
     response_optional_fields: "item_list,recipient_address,total_amount,shipping_carrier,order_status,cod,buyer_user_id,buyer_username",
   });
 
-  for (const o of detailResp.response?.order_list ?? []) {
+  const orderList = detailResp.response?.order_list ?? [];
+  if (orderList.length === 0 && batch.length > 0) {
+    // API returned no orders for the batch we requested — log this anomaly
+    await supabase.from("sync_logs").insert({
+      action: "shopee_sync_order_batch",
+      status: "failed",
+      message: `batch of ${batch.length} order_sns returned 0 results from get_order_detail: possibly invalid order_sn format or orders already deleted. order_sns: ${batch.slice(0, 3).join(",")}${batch.length > 3 ? "..." : ""}`,
+    });
+  }
+
+  for (const o of orderList) {
+    if (!o.order_sn) {
+      await supabase.from("sync_logs").insert({
+        action: "shopee_sync_order",
+        status: "failed",
+        message: `order detail missing order_sn: ${JSON.stringify(o).slice(0, 200)}`,
+      });
+      continue;
+    }
+
     const { data: orderRow, error: orderErr } = await supabase
       .from("orders")
       .upsert(

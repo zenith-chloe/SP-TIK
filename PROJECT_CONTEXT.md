@@ -35,6 +35,8 @@ Page/component files:
 
 Sync functions run via cron **(currently paused — do not resume without explicit instruction)**; when active they pull orders from TikTok/Shopee, upsert into `orders`/`order_items`, and independently deduct stock via their own `deductStockForItem`-style logic protected by the same `stock_movements` `UNIQUE(order_id, sku)` idempotency constraint the frontend uses.
 
+**Shopee sync hardening (2026-09-22)**: improved error diagnostics in `shopee-sync-orders` when batch processing fails. Added checks for: (1) empty batch results from API (log detailed message with order_sns sample), (2) missing order_sn in order details (logs with order data snapshot), (3) better JSON parsing error context. These strengthen logging so if batch operations return "synced 0/N orders", the actual root cause (API error, malformed response, invalid data) is captured in sync_logs instead of silently failing. No schema or logic changes — diagnostics only.
+
 **Deployment** — Vercel, connected to this repo's `main` branch.
 
 ---
