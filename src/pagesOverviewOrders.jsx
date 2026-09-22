@@ -447,12 +447,12 @@ function StatusDistributionCard({ t, statusBreakdown, orders, statusLabel, lang 
   };
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-xs flex flex-col relative" ref={chartRef} onMouseMove={handleMouseMove}>
+    <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex flex-col relative" ref={chartRef} onMouseMove={handleMouseMove}>
       <div className="flex items-center gap-2 mb-3">
         <div className="h-7 w-7 rounded-lg bg-purple-100/60 flex items-center justify-center shrink-0">
           <PieChartIcon size={16} className="text-purple-600" />
         </div>
-        <div className="text-sm font-semibold text-slate-800">{t("订单状态分布", "Order Status")}</div>
+        <div className="text-sm font-semibold text-slate-900">{t("订单状态分布", "Order Status")}</div>
       </div>
       <div className="flex flex-col items-center">
         <div className="relative h-44 w-44 mb-3">
@@ -543,12 +543,12 @@ function PlatformDistributionCard({ t, platformBreakdownData, orders }) {
   };
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-xs flex flex-col relative" ref={chartRef} onMouseMove={handleMouseMove}>
+    <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex flex-col relative" ref={chartRef} onMouseMove={handleMouseMove}>
       <div className="flex items-center gap-2 mb-3">
         <div className="h-7 w-7 rounded-lg bg-purple-100/60 flex items-center justify-center shrink-0">
           <BarChart3 size={16} className="text-purple-600" />
         </div>
-        <div className="text-sm font-semibold text-slate-800">{t("订单按平台分布", "By Platform")}</div>
+        <div className="text-sm font-semibold text-slate-900">{t("订单按平台分布", "By Platform")}</div>
       </div>
       <div className="flex flex-col items-center">
         <div className="relative h-44 w-44 mb-3">
@@ -738,7 +738,7 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
 
       {/* ROW 1: 5 KPI Cards - Horizontal Rectangle with Gradient */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
-        <button type="button" onClick={() => setShowOrderOverview(true)} className="relative overflow-hidden bg-gradient-to-br from-purple-600 via-purple-500 to-pink-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
+        <button type="button" onClick={() => setShowOrderOverview(true)} className="relative overflow-hidden bg-gradient-to-br from-indigo-600 via-indigo-500 to-indigo-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
           <div className="flex items-center gap-2">
             <div className="h-10 w-10 rounded-lg bg-white/30 flex items-center justify-center shrink-0">
               <ShoppingCart size={20} className="text-white" />
@@ -750,7 +750,7 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
         </button>
 
-        <div className="relative overflow-hidden bg-gradient-to-br from-cyan-500 via-cyan-400 to-teal-300 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
+        <div className="relative overflow-hidden bg-gradient-to-br from-teal-600 via-teal-500 to-teal-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
           <div className="flex items-center gap-2">
             <div className="h-10 w-10 rounded-lg bg-white/30 flex items-center justify-center shrink-0">
               <CreditCard size={20} className="text-white" />
@@ -762,7 +762,7 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
         </div>
 
-        <div className="relative overflow-hidden bg-gradient-to-br from-blue-600 via-blue-500 to-blue-300 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
+        <div className="relative overflow-hidden bg-gradient-to-br from-blue-600 via-blue-500 to-blue-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
           <div className="flex items-center gap-2">
             <div className="h-10 w-10 rounded-lg bg-white/30 flex items-center justify-center shrink-0">
               <Truck size={20} className="text-white" />
@@ -774,7 +774,7 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
         </div>
 
-        <div className="relative overflow-hidden bg-gradient-to-br from-violet-600 via-violet-500 to-purple-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
+        <div className="relative overflow-hidden bg-gradient-to-br from-purple-600 via-purple-500 to-purple-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
           <div className="flex items-center gap-2">
             <div className="h-10 w-10 rounded-lg bg-white/30 flex items-center justify-center shrink-0">
               <ShoppingBag size={20} className="text-white" />
@@ -786,7 +786,7 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
         </div>
 
-        <div className="relative overflow-hidden bg-gradient-to-br from-rose-500 via-pink-400 to-pink-300 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
+        <div className="relative overflow-hidden bg-gradient-to-br from-rose-600 via-rose-500 to-rose-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
           <div className="flex items-center gap-2">
             <div className="h-10 w-10 rounded-lg bg-white/30 flex items-center justify-center shrink-0">
               <Music2 size={20} className="text-white" />
@@ -801,12 +801,12 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
 
       {/* ROW 2: Sales Trend + Revenue */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
-        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
+        <div className="lg:col-span-2 bg-white border border-gray-200 rounded-2xl p-3 shadow-sm">
           <div className="flex items-center gap-2 mb-2">
             <div className="flex items-center justify-center w-6 h-6 rounded bg-purple-100/60">
               <BarChart3 size={16} className="text-purple-600" />
             </div>
-            <div className="text-sm font-semibold text-slate-800">{t("近14天销售趋势", "Sales Trend")}</div>
+            <div className="text-sm font-semibold text-slate-900">{t("近14天销售趋势", "Sales Trend")}</div>
           </div>
           <div className="h-48 bg-white">
             <ResponsiveContainer width="100%" height="100%">
@@ -833,8 +833,8 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           </div>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
-          <div className="text-sm font-semibold text-slate-800 mb-2">{t("收入总览", "Revenue Overview")}</div>
+        <div className="bg-white border border-gray-200 rounded-2xl p-3 shadow-sm">
+          <div className="text-sm font-semibold text-slate-900 mb-2">{t("收入总览", "Revenue Overview")}</div>
           <div className="h-48 bg-white">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={revenueByDateChartData || [{day:"Mon",revenue:0}]} margin={{ top: 5, right: 8, left: -15, bottom: 0 }}>
@@ -854,8 +854,8 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
         <StatusDistributionCard t={t} statusBreakdown={statusBreakdown} orders={orders} statusLabel={statusLabel} lang={lang} />
         <PlatformDistributionCard t={t} platformBreakdownData={platformBreakdownData} orders={orders} />
 
-        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
-          <div className="text-sm font-semibold text-slate-800 mb-2">{t("热销商品", "Top Products")}</div>
+        <div className="bg-white border border-gray-200 rounded-2xl p-3 shadow-sm">
+          <div className="text-sm font-semibold text-slate-900 mb-2">{t("热销商品", "Top Products")}</div>
           <div className="space-y-1.5 max-h-40 overflow-y-auto text-xs">
             {topProductsData.slice(0, 4).map((product, idx) => (
               <div key={idx} className="flex items-start gap-2 pb-1.5 border-b border-slate-100 last:border-0">
@@ -872,9 +872,9 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
 
       {/* ROW 4: Latest Orders + Stock Alerts + Recent Activity */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
+        <div className="bg-white border border-gray-200 rounded-2xl p-3 shadow-sm">
           <div className="flex items-center justify-between mb-2">
-            <div className="text-sm font-semibold text-slate-800">{t("最新订单", "Latest Orders")}</div>
+            <div className="text-sm font-semibold text-slate-900">{t("最新订单", "Latest Orders")}</div>
             <button onClick={() => goTo("orders")} className="text-xs text-blue-600 hover:underline font-medium">{t("查看全部", "View All")}</button>
           </div>
           <div className="space-y-1.5 max-h-40 overflow-y-auto text-xs">
@@ -890,9 +890,9 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           </div>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
+        <div className="bg-white border border-gray-200 rounded-2xl p-3 shadow-sm">
           <div className="flex items-center justify-between mb-2">
-            <div className="text-sm font-semibold text-slate-800">{t("库存预警", "Low Stock")}</div>
+            <div className="text-sm font-semibold text-slate-900">{t("库存预警", "Low Stock")}</div>
             <button onClick={() => goTo("inventory")} className="text-xs text-blue-600 hover:underline font-medium">{t("查看全部", "View All")}</button>
           </div>
           <div className="space-y-1.5 max-h-40 overflow-y-auto text-xs">
@@ -908,8 +908,8 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           </div>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
-          <div className="text-sm font-semibold text-slate-800 mb-2">{t("最近活动", "Recent Activity")}</div>
+        <div className="bg-white border border-gray-200 rounded-2xl p-3 shadow-sm">
+          <div className="text-sm font-semibold text-slate-900 mb-2">{t("最近活动", "Recent Activity")}</div>
           <div className="space-y-2 max-h-40 overflow-y-auto text-xs">
             <div className="flex items-start gap-2 pb-2 border-b border-slate-100">
               <div className="h-1.5 w-1.5 rounded-full bg-green-500 shrink-0 mt-1 mt-1" />
