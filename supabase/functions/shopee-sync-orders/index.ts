@@ -268,10 +268,13 @@ async function upsertShopeeOrderBatch(
       continue;
     }
 
+    // For existing orders: update status + other changing fields
+    // Explicit conflict strategy ensures old orders get status updates
     const { data: orderRow, error: orderErr } = await supabase
       .from("orders")
       .upsert(
         {
+          id: undefined, // Let DB handle ID for new rows
           platform: "shopee",
           platform_account_id: account.id,
           order_no: o.order_sn,
@@ -289,7 +292,7 @@ async function upsertShopeeOrderBatch(
           order_date: o.create_time ? new Date(o.create_time * 1000).toISOString() : new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
-        { onConflict: "platform,order_no" },
+        { onConflict: "order_no,platform", ignoreDuplicates: false },
       )
       .select("id")
       .single();

@@ -1012,8 +1012,10 @@ const ORDER_STATUS_LABELS = {
 // isFailedDeliveryOrder() above.
 const ORDER_CENTER_CARDS = [
   { key: "all", ...ORDER_STATUS_LABELS.all, filterValue: "全部", iconBg: "bg-gradient-to-br from-amber-400 to-amber-600", iconColor: "text-white", numberColor: "text-amber-600", icon: Package, match: () => true },
-  { key: "toShip", ...ORDER_STATUS_LABELS.toShip, filterValue: "__to_ship__", iconBg: "bg-gradient-to-br from-red-400 to-red-600", iconColor: "text-white", numberColor: "text-red-600", icon: PackagePlus, match: (o) => o.platformStatus === "AWAITING_SHIPMENT" },
-  { key: "toPickup", ...ORDER_STATUS_LABELS.toPickup, filterValue: "__to_pickup__", iconBg: "bg-gradient-to-br from-blue-400 to-blue-600", iconColor: "text-white", numberColor: "text-blue-600", icon: ShoppingCart, match: (o) => o.platformStatus === "AWAITING_COLLECTION" || o.platformStatus === "PROCESSED" },
+  // Shopee: READY_TO_SHIP/UNPROCESSED (待发货), TikTok: AWAITING_SHIPMENT
+  { key: "toShip", ...ORDER_STATUS_LABELS.toShip, filterValue: "__to_ship__", iconBg: "bg-gradient-to-br from-red-400 to-red-600", iconColor: "text-white", numberColor: "text-red-600", icon: PackagePlus, match: (o) => o.platform === "Shopee" ? (o.platformStatus === "READY_TO_SHIP" || o.platformStatus === "UNPROCESSED") : o.platformStatus === "AWAITING_SHIPMENT" },
+  // Shopee: PROCESSED (待取货), TikTok: AWAITING_COLLECTION
+  { key: "toPickup", ...ORDER_STATUS_LABELS.toPickup, filterValue: "__to_pickup__", iconBg: "bg-gradient-to-br from-blue-400 to-blue-600", iconColor: "text-white", numberColor: "text-blue-600", icon: ShoppingCart, match: (o) => o.platform === "Shopee" ? o.platformStatus === "PROCESSED" : (o.platformStatus === "AWAITING_COLLECTION" || o.platformStatus === "PROCESSED") },
   { key: "inTransit", ...ORDER_STATUS_LABELS.inTransit, filterValue: "__in_transit__", iconBg: "bg-gradient-to-br from-purple-400 to-purple-600", iconColor: "text-white", numberColor: "text-purple-600", icon: Truck, match: (o) => o.platformStatus === "IN_TRANSIT" || o.platformStatus === "SHIPPED" },
   // Shopee real data confirmed live (2026-08-17): 0 rows ever use DELIVERED,
   // 612 real rows use COMPLETED — Shopee has no separate "delivered but not
