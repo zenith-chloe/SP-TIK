@@ -748,6 +748,16 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <div className="text-4xl font-bold text-white tabular-nums leading-tight">{orders.length}</div>
           <div className="text-xs font-semibold text-white">↑ +12.5%</div>
           <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
+          <svg className="absolute bottom-2 right-2 w-12 h-8" viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="grad-indigo" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#C7D2FE" stopOpacity="0.4" />
+                <stop offset="100%" stopColor="#C7D2FE" stopOpacity="0.1" />
+              </linearGradient>
+            </defs>
+            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6" stroke="white" strokeWidth="1.5" fill="none" />
+            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6 L 48 32 L 0 32 Z" fill="url(#grad-indigo)" />
+          </svg>
         </button>
 
         <div className="relative overflow-hidden bg-gradient-to-br from-teal-600 via-teal-500 to-teal-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
@@ -760,6 +770,16 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <div className="text-4xl font-bold text-white tabular-nums leading-tight">{orders.filter((o) => o.paymentMethod === "COD").length}</div>
           <div className="text-xs font-semibold text-white">↑ +8.2%</div>
           <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
+          <svg className="absolute bottom-2 right-2 w-12 h-8" viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="grad-teal" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#99F6E4" stopOpacity="0.4" />
+                <stop offset="100%" stopColor="#99F6E4" stopOpacity="0.1" />
+              </linearGradient>
+            </defs>
+            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6" stroke="white" strokeWidth="1.5" fill="none" />
+            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6 L 48 32 L 0 32 Z" fill="url(#grad-teal)" />
+          </svg>
         </div>
 
         <div className="relative overflow-hidden bg-gradient-to-br from-blue-600 via-blue-500 to-blue-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
@@ -772,6 +792,16 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <div className="text-4xl font-bold text-white tabular-nums leading-tight">{orders.filter((o) => o.deliveryOption && o.deliveryOption.includes("Express")).length}</div>
           <div className="text-xs font-semibold text-white">↑ +16.3%</div>
           <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
+          <svg className="absolute bottom-2 right-2 w-12 h-8" viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="grad-blue" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#93C5FD" stopOpacity="0.4" />
+                <stop offset="100%" stopColor="#93C5FD" stopOpacity="0.1" />
+              </linearGradient>
+            </defs>
+            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6" stroke="white" strokeWidth="1.5" fill="none" />
+            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6 L 48 32 L 0 32 Z" fill="url(#grad-blue)" />
+          </svg>
         </div>
 
         <div className="relative overflow-hidden bg-gradient-to-br from-purple-600 via-purple-500 to-purple-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
@@ -784,6 +814,16 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <div className="text-4xl font-bold text-white tabular-nums leading-tight">{orders.filter((o) => o.platform === "Shopee").length}</div>
           <div className="text-xs font-semibold text-white">↑ +18.7%</div>
           <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
+          <svg className="absolute bottom-2 right-2 w-12 h-8" viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="grad-purple" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#E9D5FF" stopOpacity="0.4" />
+                <stop offset="100%" stopColor="#E9D5FF" stopOpacity="0.1" />
+              </linearGradient>
+            </defs>
+            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6" stroke="white" strokeWidth="1.5" fill="none" />
+            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6 L 48 32 L 0 32 Z" fill="url(#grad-purple)" />
+          </svg>
         </div>
 
         <div className="relative overflow-hidden bg-gradient-to-br from-rose-600 via-rose-500 to-rose-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
@@ -796,6 +836,16 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <div className="text-4xl font-bold text-white tabular-nums leading-tight">{orders.filter((o) => o.platform === "TikTok Shop").length}</div>
           <div className="text-xs font-semibold text-white">↑ +22.1%</div>
           <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
+          <svg className="absolute bottom-2 right-2 w-12 h-8" viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="grad-rose" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#FBCFE8" stopOpacity="0.4" />
+                <stop offset="100%" stopColor="#FBCFE8" stopOpacity="0.1" />
+              </linearGradient>
+            </defs>
+            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6" stroke="white" strokeWidth="1.5" fill="none" />
+            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6 L 48 32 L 0 32 Z" fill="url(#grad-rose)" />
+          </svg>
         </div>
       </div>
 
