@@ -209,24 +209,52 @@ async function upsertShopeeOrderBatch(
   let syncedItems = 0;
   if (batch.length === 0) return { syncedOrders, syncedItems };
 
-  const detailResp = await shopeeGet("/api/v2/order/get_order_detail", creds, account.shop_id, accessToken, {
-    order_sn_list: batch.join(","),
-    // buyer_user_id + buyer_username (2026-08-20) — for the order drawer's
-    // 即时聊天 button. buyer_user_id (numeric) turned out not to work as a
-    // Shopee webchat URL query param (confirmed live); buyer_username (the
-    // buyer's real account handle string) is fetched instead, for a
-    // copy-to-clipboard workflow. Purely additive fields, doesn't change
-    // any existing item/status/fee mapping below.
-    response_optional_fields: "item_list,recipient_address,total_amount,shipping_carrier,order_status,cod,buyer_user_id,buyer_username",
-  });
+  let detailResp;
+  let lastError: string | null = null;
+
+  // Retry logic for get_order_detail (HTTP 500, network errors, etc)
+  for (let retry = 0; retry < 3; retry++) {
+    try {
+      detailResp = await shopeeGet("/api/v2/order/get_order_detail", creds, account.shop_id, accessToken, {
+        order_sn_list: batch.join(","),
+        response_optional_fields: "item_list,recipient_address,total_amount,shipping_carrier,order_status,cod,buyer_user_id,buyer_username",
+      });
+      lastError = null;
+      break; // Success
+    } catch (e) {
+      lastError = (e as Error).message;
+      if (retry < 2) {
+        // Retry on temporary errors (500, network timeout, etc)
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, retry) * 1000));
+        continue;
+      }
+      // Final retry failed - log and skip this batch
+      await supabase.from("sync_logs").insert({
+        action: "shopee_sync_order_batch",
+        status: "failed",
+        message: `batch of ${batch.length} order_sns failed after 3 retries: ${lastError}. order_sns: ${batch.slice(0, 3).join(",")}${batch.length > 3 ? "..." : ""}`,
+      });
+      return { syncedOrders, syncedItems };
+    }
+  }
 
   const orderList = detailResp.response?.order_list ?? [];
+
+  // Log when API returns fewer orders than requested (not necessarily an error)
+  if (orderList.length < batch.length && batch.length > 0) {
+    await supabase.from("sync_logs").insert({
+      action: "shopee_sync_order_batch",
+      status: "success",
+      message: `batch of ${batch.length} order_sns returned ${orderList.length} results (some may be deleted/hidden). got: ${orderList.map((o: Record<string, unknown>) => o.order_sn).join(",")}`,
+    });
+  }
+
+  // If API returned 0 orders for requested batch, log the issue
   if (orderList.length === 0 && batch.length > 0) {
-    // API returned no orders for the batch we requested — log this anomaly
     await supabase.from("sync_logs").insert({
       action: "shopee_sync_order_batch",
       status: "failed",
-      message: `batch of ${batch.length} order_sns returned 0 results from get_order_detail: possibly invalid order_sn format or orders already deleted. order_sns: ${batch.slice(0, 3).join(",")}${batch.length > 3 ? "..." : ""}`,
+      message: `batch of ${batch.length} order_sns returned 0 results from get_order_detail. requested: ${batch.join(",")} — possibly invalid order_sn format, shop permission, or orders already deleted.`,
     });
   }
 
@@ -468,7 +496,20 @@ async function syncOneShop(creds: ShopeeCredentials, account: {
         ...(cursor ? { cursor } : {}),
       });
       const pageOrders: { order_sn: string }[] = listResp.response?.order_list ?? [];
-      const orderSns = pageOrders.map((o) => o.order_sn);
+      // Filter out invalid order_sns (empty or not string)
+      const orderSns = pageOrders
+        .map((o) => String(o.order_sn || "").trim())
+        .filter((sn) => sn.length > 0);
+
+      if (pageOrders.length > 0 && orderSns.length === 0) {
+        // All order_sns were invalid
+        await supabase.from("sync_logs").insert({
+          action: "shopee_get_order_list",
+          status: "warning",
+          message: `get_order_list returned ${pageOrders.length} orders but all order_sns were invalid/empty. response: ${JSON.stringify(pageOrders.slice(0, 2))}`,
+        });
+      }
+
       const more = !!listResp.response?.more && !!listResp.response?.next_cursor;
       const nextCursor: string = listResp.response?.next_cursor ?? "";
 
@@ -476,7 +517,17 @@ async function syncOneShop(creds: ShopeeCredentials, account: {
       // checkpoint write below only happens once list+detail+upsert have all
       // completed for this page, so a page can never be recorded as done
       // half-way through.
-      const pageResult = await upsertShopeeOrderBatch(creds, account, accessToken, orderSns);
+      let pageResult = { syncedOrders: 0, syncedItems: 0 };
+      if (orderSns.length > 0) {
+        pageResult = await upsertShopeeOrderBatch(creds, account, accessToken, orderSns);
+      } else if (pageOrders.length > 0) {
+        // Page has orders but all had invalid order_sn — skip batch processing
+        await supabase.from("sync_logs").insert({
+          action: "shopee_sync_page",
+          status: "skipped",
+          message: `page with ${pageOrders.length} orders had no valid order_sns, skipping batch processing`,
+        });
+      }
       runSyncedOrders += pageResult.syncedOrders;
       runSyncedItems += pageResult.syncedItems;
       cumulativeOrders += pageResult.syncedOrders;
