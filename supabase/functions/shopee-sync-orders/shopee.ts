@@ -39,8 +39,11 @@ export function mapShopeeOrderStatus(shopeeStatus: string): string {
     case "INVOICE_PENDING":
       return "processing";
     case "SHIPPED":
+    case "TO_CONFIRM_RECEIVE":
     case "COMPLETED":
       return "shipped";
+    case "TO_RETURN":
+      return "returned";
     case "IN_CANCEL":
     case "CANCELLED":
       return "cancelled";

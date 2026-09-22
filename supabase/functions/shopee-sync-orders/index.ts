@@ -409,7 +409,11 @@ async function upsertShopeeOrderBatch(
 // Time budget per invocation, leaving headroom under Supabase's own worker
 // limit (this replaced a single unbounded pass that hit WORKER_RESOURCE_LIMIT
 // once a shop had real order volume — see sync_logs 2026-08-10).
-const TIME_BUDGET_MS = 90000;
+// Increased 2026-09-22 from 90s to 240s to allow incremental resume to complete
+// in fewer runs (when status='in_progress', continue from last checkpoint instead
+// of restarting; with 2-min cron + 15-min stale timeout, 240s budget prevents
+// the in_progress state from becoming stale while still being safe under worker limits).
+const TIME_BUDGET_MS = 240000;
 // A platform_sync_progress row idle this long while status='in_progress' is
 // treated as an abandoned invocation (crashed, never returned) rather than a
 // still-running one. Resuming from its last checkpoint is always safe (see
