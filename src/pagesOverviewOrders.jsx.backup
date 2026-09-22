@@ -5,10 +5,10 @@ import {
   CheckCircle, Printer, Clock, Info, MapPin, PackagePlus, PackageMinus, SlidersHorizontal,
   Plus, Trash2, Warehouse as WarehouseIcon, ChevronDown,
   Package, CreditCard, ShoppingCart, RotateCcw, XCircle, PackageOpen, PackageCheck,
-  ShoppingBag, Music2, Send, Zap, Copy, DollarSign, BarChart3, PieChart as PieChartIcon,
+  ShoppingBag, Music2, Send, Zap, Copy,
 } from "lucide-react";
 import {
-  LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend, PieChart, Pie, Cell,
 } from "recharts";
 import {
@@ -70,11 +70,12 @@ export function KPICard({ label, value, sub, icon: Icon, tone, onClick, platform
 const PLATFORM_SHORT_LABEL = { Shopee: "Shopee", "TikTok Shop": "TikTok" };
 const PLATFORM_ICON = { Shopee: ShoppingBag, "TikTok Shop": Music2 };
 
-// Status breakdown donut colors — unified with KPI Cards design system
-// 2026-09-21: aligned with Dashboard color palette for visual coherence
+// Status breakdown donut colors — same families as statusColor() badges
+// elsewhere (shared.jsx), just as hex fills for recharts instead of
+// Tailwind classes. Purely cosmetic, not a new status taxonomy.
 const STATUS_DONUT_COLORS = {
-  待处理: "#00BFFF", 包装: "#00BFFF", 出货: "#39FF14", 物流中: "#14B8A6",
-  已签收: "#14B8A6", 已取消: "#DC2626", 退款中: "#94a3b8",
+  待处理: "#f59e0b", 包装: "#6366f1", 出货: "#3b82f6", 物流中: "#06b6d4",
+  已签收: "#10b981", 已取消: "#94a3b8", 退款中: "#f43f5e",
 };
 
 // date-range predicate shared by the KPI card's own click-through modal —
@@ -323,7 +324,7 @@ function OrderOverviewModal({ t, orders, onClose, onSelectPlatform }) {
                 <button
                   key={p.platform}
                   onClick={() => openDetail(p.platform)}
-                  className="w-full flex items-center justify-between rounded-xl border border-slate-100 bg-white/60 px-3 py-2.5 hover:bg-white transition-3d text-left"
+                  className="w-full flex items-center justify-between rounded-xl border border-slate-200 bg-white/60 px-3 py-2.5 hover:bg-white transition-3d text-left"
                 >
                   <div className="flex items-center gap-2">
                     <div className={`h-8 w-8 rounded-lg flex items-center justify-center icon-badge-3d ${p.platform === "Shopee" ? "bg-gradient-to-br from-orange-400 to-orange-600" : "bg-gradient-to-br from-rose-500 to-rose-700"}`}>
@@ -366,7 +367,7 @@ function OrderOverviewModal({ t, orders, onClose, onSelectPlatform }) {
                 <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="input-3d border border-slate-200 rounded-lg px-2 py-1.5 outline-none flex-1" />
               </div>
             )}
-            <div className="rounded-xl border border-slate-100 bg-white/60 px-4 py-4 text-center">
+            <div className="rounded-xl border border-slate-200 bg-white/60 px-4 py-4 text-center">
               <div className="text-xs text-slate-400 mb-1">{t("订单数量", "Orders")}</div>
               <div className="text-3xl font-semibold tabular-nums">{detailCount}</div>
             </div>
@@ -397,7 +398,7 @@ function PendingPlatformModal({ t, onClose, onSelectPlatform, platformCounts }) 
               <button
                 key={p.platform}
                 onClick={() => onSelectPlatform(p.platform)}
-                className="w-full flex items-center gap-3 rounded-xl border border-slate-100 bg-white/60 px-3 py-3 hover:bg-white transition-3d text-left"
+                className="w-full flex items-center gap-3 rounded-xl border border-slate-200 bg-white/60 px-3 py-3 hover:bg-white transition-3d text-left"
               >
                 <div className={`h-9 w-9 rounded-lg flex items-center justify-center icon-badge-3d shrink-0 ${p.platform === "Shopee" ? "bg-gradient-to-br from-orange-400 to-orange-600" : "bg-gradient-to-br from-rose-500 to-rose-700"}`}>
                   <Icon size={16} className="text-white" />
@@ -408,199 +409,6 @@ function PendingPlatformModal({ t, onClose, onSelectPlatform, platformCounts }) 
               </button>
             );
           })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Custom Tooltip for Status Distribution - formats data for display
-function StatusTooltip({ active, payload, statusLabel, lang, total }) {
-  if (active && payload && payload.length) {
-    const data = payload[0].payload;
-    const percentage = ((data.count / total) * 100).toFixed(1);
-    return (
-      <div>
-        <div style={{ fontWeight: 500, color: '#1e293b' }}>{statusLabel(data.status, lang)}</div>
-        <div style={{ color: '#64748b', fontSize: '0.6875rem', marginTop: '0.25rem' }}>{data.count} · {percentage}%</div>
-      </div>
-    );
-  }
-  return null;
-}
-
-// Status Distribution Card - Hover Tooltip with dynamic positioning
-function StatusDistributionCard({ t, statusBreakdown, orders, statusLabel, lang }) {
-  const total = orders.length;
-  const [hoveredStatus, setHoveredStatus] = useState(null);
-  const [tooltipPos, setTooltipPos] = useState(null);
-  const chartRef = useRef(null);
-
-  const handleMouseMove = (e) => {
-    if (hoveredStatus && chartRef.current) {
-      const rect = chartRef.current.getBoundingClientRect();
-      setTooltipPos({
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top
-      });
-    }
-  };
-
-  return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-xs flex flex-col relative" ref={chartRef} onMouseMove={handleMouseMove}>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="h-7 w-7 rounded-lg bg-purple-100/60 flex items-center justify-center shrink-0">
-          <PieChartIcon size={16} className="text-purple-600" />
-        </div>
-        <div className="text-sm font-semibold text-slate-800">{t("订单状态分布", "Order Status")}</div>
-      </div>
-      <div className="flex flex-col items-center">
-        <div className="relative h-44 w-44 mb-3">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={statusBreakdown}
-                dataKey="count"
-                nameKey="status"
-                innerRadius={28}
-                outerRadius={56}
-                paddingAngle={1}
-                isAnimationActive={false}
-                onMouseEnter={(_, index) => setHoveredStatus(statusBreakdown[index])}
-                onMouseLeave={() => { setHoveredStatus(null); setTooltipPos(null); }}
-              >
-                {statusBreakdown.map((s, idx) => (
-                  <Cell
-                    key={s.status}
-                    fill={s.color}
-                    style={{ outline: 'none', stroke: 'none', cursor: 'pointer' }}
-                  />
-                ))}
-              </Pie>
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-            <div className="text-[9px] text-slate-400">{t("总计", "Total")}</div>
-            <div className="text-base font-bold tabular-nums text-slate-800">{orders.length}</div>
-          </div>
-        </div>
-        {hoveredStatus && tooltipPos && (
-          <div className="absolute bg-white rounded-lg px-3 py-2 shadow-lg border border-slate-200 text-xs z-50 pointer-events-none"
-               style={{
-                 left: `${tooltipPos.x + 10}px`,
-                 top: `${tooltipPos.y - 50}px`
-               }}>
-            <div style={{ fontWeight: 500, color: '#1e293b' }}>{statusLabel(hoveredStatus.status, lang)}</div>
-            <div style={{ color: '#64748b', fontSize: '0.6875rem', marginTop: '0.25rem' }}>
-              {hoveredStatus.count} · {((hoveredStatus.count / total) * 100).toFixed(1)}%
-            </div>
-          </div>
-        )}
-        <div className="flex items-center justify-center gap-4 text-xs w-full flex-wrap">
-          {statusBreakdown.slice(0, 3).map((s) => (
-            <div key={s.status} className="flex items-center gap-1.5 text-slate-600 whitespace-nowrap">
-              <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
-              <span>{statusLabel(s.status, lang)}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Custom Tooltip for Platform Distribution
-function PlatformTooltip({ active, payload, total }) {
-  if (active && payload && payload.length) {
-    const data = payload[0].payload;
-    const displayName = data.name === "TikTok" ? "TikTok Shop" : data.name;
-    const percentage = ((data.value / total) * 100).toFixed(1);
-    return (
-      <div>
-        <div style={{ fontWeight: 500, color: '#1e293b' }}>{displayName}</div>
-        <div style={{ color: '#64748b', fontSize: '0.6875rem', marginTop: '0.25rem' }}>{data.value} · {percentage}%</div>
-      </div>
-    );
-  }
-  return null;
-}
-
-// Platform Distribution Card - Hover Tooltip with dynamic positioning
-function PlatformDistributionCard({ t, platformBreakdownData, orders }) {
-  const total = orders.length;
-  const [hoveredPlatform, setHoveredPlatform] = useState(null);
-  const [tooltipPos, setTooltipPos] = useState(null);
-  const chartRef = useRef(null);
-
-  const handleMouseMove = (e) => {
-    if (hoveredPlatform && chartRef.current) {
-      const rect = chartRef.current.getBoundingClientRect();
-      setTooltipPos({
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top
-      });
-    }
-  };
-
-  return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-xs flex flex-col relative" ref={chartRef} onMouseMove={handleMouseMove}>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="h-7 w-7 rounded-lg bg-purple-100/60 flex items-center justify-center shrink-0">
-          <BarChart3 size={16} className="text-purple-600" />
-        </div>
-        <div className="text-sm font-semibold text-slate-800">{t("订单按平台分布", "By Platform")}</div>
-      </div>
-      <div className="flex flex-col items-center">
-        <div className="relative h-44 w-44 mb-3">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={platformBreakdownData}
-                dataKey="value"
-                nameKey="name"
-                innerRadius={28}
-                outerRadius={56}
-                paddingAngle={1}
-                isAnimationActive={false}
-                onMouseEnter={(_, index) => setHoveredPlatform(platformBreakdownData[index])}
-                onMouseLeave={() => { setHoveredPlatform(null); setTooltipPos(null); }}
-              >
-                {platformBreakdownData.map((p, idx) => (
-                  <Cell
-                    key={idx}
-                    fill={p.name === "Shopee" ? "#F97316" : "#DC2626"}
-                    style={{ outline: 'none', stroke: 'none', cursor: 'pointer' }}
-                  />
-                ))}
-              </Pie>
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-            <div className="text-[9px] text-slate-400">{t("总计", "Total")}</div>
-            <div className="text-base font-bold tabular-nums text-slate-800">{orders.length}</div>
-          </div>
-        </div>
-        {hoveredPlatform && tooltipPos && (
-          <div className="absolute bg-white rounded-lg px-3 py-2 shadow-lg border border-slate-200 text-xs z-50 pointer-events-none"
-               style={{
-                 left: `${tooltipPos.x + 10}px`,
-                 top: `${tooltipPos.y - 50}px`
-               }}>
-            <div style={{ fontWeight: 500, color: '#1e293b' }}>
-              {hoveredPlatform.name === "TikTok" ? "TikTok Shop" : hoveredPlatform.name}
-            </div>
-            <div style={{ color: '#64748b', fontSize: '0.6875rem', marginTop: '0.25rem' }}>
-              {hoveredPlatform.value} · {((hoveredPlatform.value / total) * 100).toFixed(1)}%
-            </div>
-          </div>
-        )}
-        <div className="flex items-center justify-center gap-4 text-xs w-full flex-wrap">
-          {platformBreakdownData.map((p) => (
-            <div key={p.name} className="flex items-center gap-1.5 text-slate-600 whitespace-nowrap">
-              <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: p.name === "Shopee" ? "#F97316" : "#DC2626" }} />
-              <span>{p.name === "TikTok" ? "TikTok Shop" : p.name}</span>
-            </div>
-          ))}
         </div>
       </div>
     </div>
@@ -673,18 +481,62 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
     orders.reduce((acc, o) => { acc[o.status] = (acc[o.status] || 0) + 1; return acc; }, {}),
   ).map(([status, count]) => ({ status, count, color: STATUS_DONUT_COLORS[status] || "#cbd5e1" }));
 
-  // Data for redesigned dashboard
-  const platformBreakdownData = useMemo(() => {
-    return ["Shopee", "TikTok Shop"].map((p) => ({
-      name: p === "Shopee" ? "Shopee" : "TikTok",
+  // === Row 1: KPI Calculations ===
+  // Total Orders (all orders)
+  const totalOrders = orders.length;
+
+  // COD Orders (using existing isCod field)
+  const codOrders = orders.filter((o) => o.isCod).length;
+
+  // Express Orders (using existing deliveryOption field)
+  const expressOrders = orders.filter((o) => o.deliveryOption?.includes("Express")).length;
+
+  // Shopee Orders (by platform)
+  const shopeeOrders = orders.filter((o) => o.platform === "Shopee").length;
+
+  // TikTok Orders (by platform)
+  const tikTokOrders = orders.filter((o) => o.platform === "TikTok Shop").length;
+
+  // === Row 2: Revenue Overview by Date ===
+  // Calculate revenue aggregated by date (last 7 days)
+  const revenueByDate = useMemo(() => {
+    const today = new Date();
+    const dateMap = {};
+
+    // Initialize last 7 days
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().slice(0, 10);
+      const dayName = d.toLocaleDateString("en-US", { weekday: "short" });
+      dateMap[dateStr] = { date: dateStr, day: dayName, revenue: 0 };
+    }
+
+    // Aggregate order revenue by date
+    orders.forEach((o) => {
+      if (o.date && dateMap[o.date]) {
+        dateMap[o.date].revenue += o.unitPrice * o.qty;
+      }
+    });
+
+    return Object.values(dateMap);
+  }, [orders]);
+
+  // === Row 3: Platform Breakdown for Donut Chart ===
+  const platformDonutData = useMemo(() => {
+    const platforms = ["Shopee", "TikTok Shop"];
+    return platforms.map((p) => ({
+      name: p,
       value: orders.filter((o) => o.platform === p).length,
+      color: p === "Shopee" ? "#f97316" : "#e11d48",
     }));
   }, [orders]);
 
-  const topProductsData = useMemo(() => {
+  // === Row 3: Top Selling Products ===
+  const topProducts = useMemo(() => {
     const productMap = {};
     orders.forEach((o) => {
-      if (o.items && Array.isArray(o.items)) {
+      if (o.items && o.items.length > 0) {
         o.items.forEach((item) => {
           const key = item.productName || item.sku || "Unknown";
           if (!productMap[key]) {
@@ -695,33 +547,17 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
         });
       }
     });
-    return Object.values(productMap).sort((a, b) => b.sales - a.sales);
-  }, [orders]);
-
-  const revenueByDateChartData = useMemo(() => {
-    const today = new Date();
-    const dateMap = {};
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().slice(0, 10);
-      const dayName = d.toLocaleDateString("en-US", { weekday: "short" });
-      dateMap[dateStr] = { date: dateStr, day: dayName, revenue: 0 };
-    }
-    orders.forEach((o) => {
-      if (o.date && dateMap[o.date]) {
-        dateMap[o.date].revenue += (o.unitPrice || 0) * (o.qty || 0);
-      }
-    });
-    return Object.values(dateMap);
+    return Object.values(productMap)
+      .sort((a, b) => b.sales - a.sales)
+      .slice(0, 5);
   }, [orders]);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-6">
       {manualStores.length > 0 && (
-        <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-xs">
-          <Info size={14} className="text-amber-600 shrink-0" />
-          <div className="text-amber-800 flex-1">
+        <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+          <Info size={16} className="text-amber-600 shrink-0" />
+          <div className="text-xs text-amber-800 flex-1">
             <span className="font-medium">
               {t(`${manualStores.length} 个店铺尚未连接平台API`, `${manualStores.length} store(s) not yet connected to platform API`)}
             </span>
@@ -730,199 +566,305 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
               ` (${manualStores.map((s) => s.name).join(", ")}). Orders/inventory need manual import for now — auto-sync unavailable.`,
             )}
           </div>
-          <button onClick={() => goTo("manualimport")} className="text-xs px-2.5 py-1 rounded-md bg-amber-600 text-white hover:bg-amber-700 shrink-0 font-medium">
+          <button onClick={() => goTo("manualimport")} className="text-xs px-3 py-1.5 rounded-lg bg-amber-600 text-white hover:bg-amber-700 shrink-0">
             {t("去手动导入", "Go to Manual Import")}
           </button>
         </div>
       )}
 
-      {/* ROW 1: 5 KPI Cards - Horizontal Rectangle with Gradient */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
-        <button type="button" onClick={() => setShowOrderOverview(true)} className="relative overflow-hidden bg-gradient-to-br from-purple-600 via-purple-500 to-pink-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
-          <div className="flex items-center gap-2">
-            <div className="h-10 w-10 rounded-lg bg-white/30 flex items-center justify-center shrink-0">
-              <ShoppingCart size={20} className="text-white" />
+      {/* === ROW 1: KPI Cards - 5 Columns === */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        {/* KPI 1: Total Orders - Violet/Magenta Gradient */}
+        <div className="bg-gradient-to-br from-violet-500 via-purple-600 to-magenta-600 rounded-2xl p-5 shadow-lg text-white">
+          <div className="flex items-start gap-3">
+            <div className="h-10 w-10 rounded-lg flex items-center justify-center shrink-0 bg-white/20">
+              <ShoppingCart size={18} className="text-white" />
             </div>
-            <div className="text-xs font-medium text-white/90">{t("订单总数", "Total Orders")}</div>
-          </div>
-          <div className="text-4xl font-bold text-white tabular-nums leading-tight">{orders.length}</div>
-          <div className="text-xs font-semibold text-white">↑ +12.5%</div>
-          <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
-        </button>
-
-        <div className="relative overflow-hidden bg-gradient-to-br from-cyan-500 via-cyan-400 to-teal-300 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
-          <div className="flex items-center gap-2">
-            <div className="h-10 w-10 rounded-lg bg-white/30 flex items-center justify-center shrink-0">
-              <CreditCard size={20} className="text-white" />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium mb-1 text-white/80">{t("订单总数", "Total Orders")}</div>
+              <div className="text-2xl font-bold tabular-nums text-white">{totalOrders}</div>
             </div>
-            <div className="text-xs font-medium text-white/90">{t("COD订单", "COD Orders")}</div>
           </div>
-          <div className="text-4xl font-bold text-white tabular-nums leading-tight">{orders.filter((o) => o.paymentMethod === "COD").length}</div>
-          <div className="text-xs font-semibold text-white">↑ +8.2%</div>
-          <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
         </div>
 
-        <div className="relative overflow-hidden bg-gradient-to-br from-blue-600 via-blue-500 to-blue-300 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
-          <div className="flex items-center gap-2">
-            <div className="h-10 w-10 rounded-lg bg-white/30 flex items-center justify-center shrink-0">
-              <Truck size={20} className="text-white" />
+        {/* KPI 2: COD Orders - Cyan/Teal Gradient */}
+        <div className="bg-gradient-to-br from-cyan-400 via-teal-500 to-cyan-600 rounded-2xl p-5 shadow-lg text-white">
+          <div className="flex items-start gap-3">
+            <div className="h-10 w-10 rounded-lg flex items-center justify-center shrink-0 bg-white/20">
+              <CreditCard size={18} className="text-white" />
             </div>
-            <div className="text-xs font-medium text-white/90">{t("Express Orders", "Express Orders")}</div>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium mb-1 text-white/80">{t("COD订单", "COD Orders")}</div>
+              <div className="text-2xl font-bold tabular-nums text-white">{codOrders}</div>
+            </div>
           </div>
-          <div className="text-4xl font-bold text-white tabular-nums leading-tight">{orders.filter((o) => o.deliveryOption && o.deliveryOption.includes("Express")).length}</div>
-          <div className="text-xs font-semibold text-white">↑ +16.3%</div>
-          <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
         </div>
 
-        <div className="relative overflow-hidden bg-gradient-to-br from-violet-600 via-violet-500 to-purple-400 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
-          <div className="flex items-center gap-2">
-            <div className="h-10 w-10 rounded-lg bg-white/30 flex items-center justify-center shrink-0">
-              <ShoppingBag size={20} className="text-white" />
+        {/* KPI 3: Express Orders - Blue Gradient */}
+        <div className="bg-gradient-to-br from-blue-400 via-blue-500 to-blue-600 rounded-2xl p-5 shadow-lg text-white">
+          <div className="flex items-start gap-3">
+            <div className="h-10 w-10 rounded-lg flex items-center justify-center shrink-0 bg-white/20">
+              <Zap size={18} className="text-white" />
             </div>
-            <div className="text-xs font-medium text-white/90">{t("Shopee订单", "Shopee Orders")}</div>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium mb-1 text-white/80">{t("快递订单", "Express Orders")}</div>
+              <div className="text-2xl font-bold tabular-nums text-white">{expressOrders}</div>
+            </div>
           </div>
-          <div className="text-4xl font-bold text-white tabular-nums leading-tight">{orders.filter((o) => o.platform === "Shopee").length}</div>
-          <div className="text-xs font-semibold text-white">↑ +18.7%</div>
-          <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
         </div>
 
-        <div className="relative overflow-hidden bg-gradient-to-br from-rose-500 via-pink-400 to-pink-300 rounded-3xl px-5 py-4 flex flex-col gap-1 h-32 text-white shadow-md hover:shadow-lg transition-all">
-          <div className="flex items-center gap-2">
-            <div className="h-10 w-10 rounded-lg bg-white/30 flex items-center justify-center shrink-0">
-              <Music2 size={20} className="text-white" />
+        {/* KPI 4: Shopee Orders - Purple/Magenta Gradient */}
+        <div className="bg-gradient-to-br from-purple-500 via-violet-600 to-pink-600 rounded-2xl p-5 shadow-lg text-white">
+          <div className="flex items-start gap-3">
+            <div className="h-10 w-10 rounded-lg flex items-center justify-center shrink-0 bg-white/20">
+              <ShoppingBag size={18} className="text-white" />
             </div>
-            <div className="text-xs font-medium text-white/90">{t("TikTok订单", "TikTok Orders")}</div>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium mb-1 text-white/80">Shopee {t("订单", "Orders")}</div>
+              <div className="text-2xl font-bold tabular-nums text-white">{shopeeOrders}</div>
+            </div>
           </div>
-          <div className="text-4xl font-bold text-white tabular-nums leading-tight">{orders.filter((o) => o.platform === "TikTok Shop").length}</div>
-          <div className="text-xs font-semibold text-white">↑ +22.1%</div>
-          <div className="text-xs text-white/80">{t("vs. last week", "vs. last week")}</div>
+        </div>
+
+        {/* KPI 5: TikTok Orders - Cyan/Pink Gradient */}
+        <div className="bg-gradient-to-br from-cyan-500 via-pink-500 to-magenta-600 rounded-2xl p-5 shadow-lg text-white">
+          <div className="flex items-start gap-3">
+            <div className="h-10 w-10 rounded-lg flex items-center justify-center shrink-0 bg-white/20">
+              <Music2 size={18} className="text-white" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium mb-1 text-white/80">TikTok {t("订单", "Orders")}</div>
+              <div className="text-2xl font-bold tabular-nums text-white">{tikTokOrders}</div>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* ROW 2: Sales Trend + Revenue */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
-        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="flex items-center justify-center w-6 h-6 rounded bg-purple-100/60">
-              <BarChart3 size={16} className="text-purple-600" />
-            </div>
-            <div className="text-sm font-semibold text-slate-800">{t("近14天销售趋势", "Sales Trend")}</div>
-          </div>
-          <div className="h-48 bg-white">
+      {/* === ROW 2: Charts - 2/3 + 1/3 === */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Left: Orders Trend (2/3 width) */}
+        <div className="lg:col-span-2 bg-white border border-slate-100 rounded-2xl p-6 shadow-sm">
+          <div className="text-sm font-semibold text-slate-800 mb-4">{t("近14天销售趋势（按平台）", "14-Day Sales Trend (by Platform)")}</div>
+          <div className="h-80 bg-white/50">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={SALES_TREND} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="shopeeGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#F97316" stopOpacity={0.25} />
-                    <stop offset="100%" stopColor="#F97316" stopOpacity={0.10} />
-                  </linearGradient>
-                  <linearGradient id="tiktokGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#A855F7" stopOpacity={0.25} />
-                    <stop offset="100%" stopColor="#A855F7" stopOpacity={0.10} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="1 2" stroke="#e5e7eb" vertical={false} />
-                <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#9ca3af" }} stroke="none" />
-                <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} stroke="none" width={30} />
-                <Tooltip contentStyle={{ backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px" }} />
-                <Legend wrapperStyle={{ paddingTop: "8px", fontSize: "12px" }} />
-                <Area type="monotone" dataKey="Shopee" stroke="#F97316" strokeWidth={2.5} fill="url(#shopeeGradient)" isAnimationActive={false} dot={{ fill: "#F97316", r: 2 }} />
-                <Area type="monotone" dataKey="TikTok Shop" stroke="#A855F7" strokeWidth={2.5} fill="url(#tiktokGradient)" isAnimationActive={false} dot={{ fill: "#A855F7", r: 2 }} />
-              </AreaChart>
+              <LineChart data={SALES_TREND} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#a0aec0" }} stroke="none" />
+                <YAxis tick={{ fontSize: 10, fill: "#a0aec0" }} stroke="none" width={35} />
+                <Tooltip contentStyle={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: "8px" }} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Line type="monotone" dataKey="Shopee" stroke="#fb923c" strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="TikTok Shop" stroke="#ec4899" strokeWidth={2} dot={false} isAnimationActive={false} />
+              </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
-          <div className="text-sm font-semibold text-slate-800 mb-2">{t("收入总览", "Revenue Overview")}</div>
-          <div className="h-48 bg-white">
+        {/* Right: Revenue Overview (1/3 width) */}
+        <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm">
+          <div className="text-sm font-semibold text-slate-800 mb-4">{t("收入总览", "Revenue Overview")}</div>
+          <div className="h-80 bg-white/50">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={revenueByDateChartData || [{day:"Mon",revenue:0}]} margin={{ top: 5, right: 8, left: -15, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="1 2" stroke="#e5e7eb" vertical={false} />
-                <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#9ca3af" }} stroke="none" />
-                <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} stroke="none" width={30} />
-                <Tooltip formatter={(value) => fmt(value || 0)} contentStyle={{ backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px" }} />
-                <Bar dataKey="revenue" fill="#3b82f6" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+              <BarChart data={revenueByDate} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#a0aec0" }} stroke="none" />
+                <YAxis tick={{ fontSize: 10, fill: "#a0aec0" }} stroke="none" width={35} />
+                <Tooltip formatter={(value) => fmt(value)} contentStyle={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: "8px" }} />
+                <Bar dataKey="revenue" fill="#60a5fa" radius={[6, 6, 0, 0]} isAnimationActive={false} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
       </div>
 
-      {/* ROW 3: Status Distribution + Platform Distribution + Top Products */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <StatusDistributionCard t={t} statusBreakdown={statusBreakdown} orders={orders} statusLabel={statusLabel} lang={lang} />
-        <PlatformDistributionCard t={t} platformBreakdownData={platformBreakdownData} orders={orders} />
-
-        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
-          <div className="text-sm font-semibold text-slate-800 mb-2">{t("热销商品", "Top Products")}</div>
-          <div className="space-y-1.5 max-h-40 overflow-y-auto text-xs">
-            {topProductsData.slice(0, 4).map((product, idx) => (
-              <div key={idx} className="flex items-start gap-2 pb-1.5 border-b border-slate-100 last:border-0">
-                <div className="text-slate-400 font-bold w-4 shrink-0">{idx + 1}</div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-slate-700 truncate text-xs">{product.name}</div>
-                  <div className="text-slate-500">{fmt(product.sales)}</div>
-                </div>
+      {/* === ROW 3: Status / Platform / Top Products === */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Orders by Status (Pie) */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow">
+          <div className="text-base font-semibold text-slate-900 mb-4">{t("订单状态分布", "Order Status Distribution")}</div>
+          <div className="flex flex-col items-center gap-3">
+            <div className="relative h-40 w-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={statusBreakdown} dataKey="count" nameKey="status" innerRadius={40} outerRadius={60} paddingAngle={2}>
+                    {statusBreakdown.map((s) => <Cell key={s.status} fill={s.color} />)}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <div className="text-xs text-slate-400">{t("总数", "Total")}</div>
+                <div className="text-lg font-bold text-slate-900">{orders.length}</div>
               </div>
-            ))}
+            </div>
+            <div className="w-full space-y-1 text-xs max-h-32 overflow-y-auto">
+              {statusBreakdown.map((s) => (
+                <div key={s.status} className="flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-slate-600 truncate">
+                    <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
+                    {statusLabel(s.status, lang)}
+                  </span>
+                  <span className="text-slate-500 shrink-0">{s.count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Orders by Platform (Donut) */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow">
+          <div className="text-base font-semibold text-slate-900 mb-4">{t("订单按平台分布", "Orders by Platform")}</div>
+          <div className="flex flex-col items-center gap-3">
+            <div className="relative h-40 w-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={platformDonutData} dataKey="value" nameKey="name" innerRadius={50} outerRadius={65} paddingAngle={2}>
+                    {platformDonutData.map((p) => <Cell key={p.name} fill={p.color} />)}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <div className="text-xs text-slate-400">{t("总数", "Total")}</div>
+                <div className="text-lg font-bold text-slate-900">{totalOrders}</div>
+              </div>
+            </div>
+            <div className="w-full space-y-1.5 text-xs">
+              {platformDonutData.map((p) => (
+                <div key={p.name} className="flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-slate-600">
+                    <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                    {p.name}
+                  </span>
+                  <span className="font-semibold text-slate-900">{p.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Top Selling Products */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow">
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-base font-semibold text-slate-900">{t("热销商品", "Top Selling Products")}</div>
+            <button onClick={() => goTo("products")} className="text-xs text-blue-600 font-medium hover:text-blue-700">
+              {t("查看全部", "View All")}
+            </button>
+          </div>
+          <div className="space-y-3 max-h-96 overflow-y-auto">
+            {topProducts.length > 0 ? (
+              topProducts.map((product, idx) => (
+                <div key={product.name} className="flex items-center justify-between pb-2.5 border-b border-slate-100 last:border-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-bold text-slate-400 w-5">{idx + 1}</span>
+                      <span className="text-sm font-medium text-slate-900 truncate">{product.name}</span>
+                    </div>
+                    <div className="text-xs text-slate-500 ml-7">
+                      {product.qty} {t("件", "pcs")} · RM {fmt(product.sales)}
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="text-center py-6 text-xs text-slate-400">{t("无销售数据", "No sales data")}</div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* ROW 4: Latest Orders + Stock Alerts + Recent Activity */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-sm font-semibold text-slate-800">{t("最新订单", "Latest Orders")}</div>
-            <button onClick={() => goTo("orders")} className="text-xs text-blue-600 hover:underline font-medium">{t("查看全部", "View All")}</button>
+      {/* === ROW 4: Recent Orders / Low Stock / Recent Activities === */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Recent Orders */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow">
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-base font-semibold text-slate-900">{t("最新订单", "Recent Orders")}</div>
+            <button onClick={() => goTo("orders")} className="text-xs text-blue-600 font-medium hover:text-blue-700">
+              {t("查看全部", "View All")}
+            </button>
           </div>
-          <div className="space-y-1.5 max-h-40 overflow-y-auto text-xs">
-            {recent.slice(0, 4).map((o) => (
-              <div key={o.id} className="flex items-start justify-between pb-1.5 border-b border-slate-100 last:border-0">
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {recent.slice(0, 5).map((o) => (
+              <div
+                key={o.id}
+                className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50 -mx-2 px-2 py-1.5 rounded"
+                onClick={() => onOpenOrder(o)}
+              >
                 <div className="min-w-0 flex-1">
-                  <div className="font-medium text-slate-700 truncate">{o.id}</div>
-                  <div className="text-slate-500 text-xs">{o.platform}</div>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className={`h-2 w-2 rounded-full ${PLATFORM_THEME[o.platform].dot}`} />
+                    <span className="text-xs font-semibold text-slate-900 truncate">{o.id}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 truncate">{o.customer}</div>
                 </div>
-                <span className={`text-xs px-1.5 py-0.5 rounded whitespace-nowrap shrink-0 ml-1 ${statusColor(o.status)}`}>{statusLabel(o.status, lang)}</span>
+                <div className="text-right shrink-0">
+                  <div className={`text-xs px-1.5 py-0.5 rounded-full border font-medium ${statusColor(o.status)}`}>
+                    {statusLabel(o.status, lang)}
+                  </div>
+                </div>
               </div>
             ))}
           </div>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-sm font-semibold text-slate-800">{t("库存预警", "Low Stock")}</div>
-            <button onClick={() => goTo("inventory")} className="text-xs text-blue-600 hover:underline font-medium">{t("查看全部", "View All")}</button>
+        {/* Low Stock Alert (Table) */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow">
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-base font-semibold text-slate-900">{t("库存预警", "Low Stock Alert")}</div>
+            <button onClick={() => goTo("inventory")} className="text-xs text-blue-600 font-medium hover:text-blue-700">
+              {t("查看全部", "View All")}
+            </button>
           </div>
-          <div className="space-y-1.5 max-h-40 overflow-y-auto text-xs">
-            {lowStock.slice(0, 5).map((item) => (
-              <div key={item.sku} className="flex items-start justify-between pb-1.5 border-b border-slate-100 last:border-0">
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium text-slate-700 truncate">{item.name}</div>
-                  <div className="text-slate-500">{item.sku}</div>
-                </div>
-                <span className="text-slate-600 font-semibold shrink-0 ml-2">{item.warehouseA + item.warehouseB}</span>
-              </div>
-            ))}
+          <div className="space-y-0 max-h-80 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500">
+                  <th className="text-left py-2 font-medium">{t("商品", "Product")}</th>
+                  <th className="text-right py-2 font-medium">{t("库存", "Stock")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lowStock.slice(0, 5).map((item) => (
+                  <tr key={item.sku} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                    <td className="py-2 text-slate-900 font-medium truncate">{item.name}</td>
+                    <td className="py-2 text-right text-rose-600 font-bold tabular-nums">{item.warehouseA + item.warehouseB}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {lowStock.length === 0 && (
+              <div className="text-center py-6 text-xs text-slate-400">{t("库存充足", "Stock sufficient")}</div>
+            )}
           </div>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
-          <div className="text-sm font-semibold text-slate-800 mb-2">{t("最近活动", "Recent Activity")}</div>
-          <div className="space-y-2 max-h-40 overflow-y-auto text-xs">
-            <div className="flex items-start gap-2 pb-2 border-b border-slate-100">
-              <div className="h-1.5 w-1.5 rounded-full bg-green-500 shrink-0 mt-1 mt-1" />
-              <div className="text-slate-600">{orders.length} {t("个订单", "orders")}</div>
-            </div>
-            <div className="flex items-start gap-2 pb-2 border-b border-slate-100">
-              <div className="h-1.5 w-1.5 rounded-full bg-orange-500 shrink-0 mt-1" />
-              <div className="text-slate-600">{pending} {t("个待处理", "pending")}</div>
-            </div>
-            <div className="flex items-start gap-2">
-              <div className="h-1.5 w-1.5 rounded-full bg-red-500 shrink-0 mt-1" />
-              <div className="text-slate-600">{lowStock.length} {t("个库存预警", "low stock")}</div>
-            </div>
+        {/* Recent Activities */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow">
+          <div className="text-base font-semibold text-slate-900 mb-4">{t("最近活动", "Recent Activities")}</div>
+          <div className="space-y-3 max-h-80 overflow-y-auto">
+            {recent.slice(0, 5).map((o) => (
+              <div key={o.id} className="flex items-start gap-3 pb-3 border-b border-slate-100 last:border-0">
+                <div className="h-8 w-8 rounded-lg flex items-center justify-center shrink-0" style={{
+                  backgroundColor: o.platform === "Shopee" ? "#fed7aa" : "#fce7f3",
+                }}>
+                  <Package size={14} className={o.platform === "Shopee" ? "text-orange-700" : "text-rose-700"} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-medium text-slate-900">
+                    {t("订单 ", "Order ")} {o.id}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    {t("状态：", "Status: ")} {statusLabel(o.status, lang)}
+                  </div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    {o.date}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {recent.length === 0 && (
+              <div className="text-center py-6 text-xs text-slate-400">{t("暂无活动", "No activities")}</div>
+            )}
           </div>
         </div>
       </div>

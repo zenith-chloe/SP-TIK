@@ -1542,21 +1542,21 @@ export default function App() {
 
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-64 shrink-0 bg-gradient-to-b from-violet-700 via-violet-800 to-violet-950 text-violet-100 flex flex-col transition-transform duration-200 md:static md:z-auto md:w-56 md:translate-x-0 glass-panel shadow-[4px_0_24px_-8px_rgba(0,0,0,0.35)] ${
+        className={`fixed inset-y-0 left-0 z-50 w-64 shrink-0 bg-gradient-to-b from-slate-950 via-blue-950 to-slate-950 text-blue-100 flex flex-col transition-transform duration-200 md:static md:z-auto md:w-56 md:translate-x-0 glass-panel shadow-[4px_0_24px_-8px_rgba(0,0,0,0.35)] ${
           mobileNavOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="px-5 py-5 border-b border-violet-800 flex items-center justify-between">
+        <div className="px-5 py-5 border-b border-slate-900 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-teal-300 to-teal-500 flex items-center justify-center icon-badge-3d">
-              <Boxes size={18} className="text-violet-900" />
+              <Boxes size={18} className="text-blue-900" />
             </div>
             <div>
               <div className="text-sm font-semibold text-white leading-tight">MY电商 ERP</div>
-              <div className="text-[11px] text-violet-300 leading-tight">{t("AI 智能管理系统", "AI Management System")}</div>
+              <div className="text-[11px] text-blue-300 leading-tight">{t("AI 智能管理系统", "AI Management System")}</div>
             </div>
           </div>
-          <button onClick={() => setMobileNavOpen(false)} className="text-violet-300 hover:text-white md:hidden">
+          <button onClick={() => setMobileNavOpen(false)} className="text-blue-300 hover:text-white md:hidden">
             <X size={18} />
           </button>
         </div>
@@ -1569,7 +1569,7 @@ export default function App() {
                 key={item.key}
                 onClick={() => { setTab(item.key); setMobileNavOpen(false); }}
                 className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm rounded-xl nav-item-3d ${
-                  active ? "is-active text-violet-700 font-medium" : "text-violet-300 hover:text-white hover:bg-white/10"
+                  active ? "is-active bg-gradient-to-r from-purple-600 to-purple-500 text-white font-medium" : "text-blue-200 hover:text-white hover:bg-blue-700/50"
                 }`}
               >
                 <Icon size={16} />
@@ -1578,20 +1578,20 @@ export default function App() {
             );
           })}
         </nav>
-        <div className="mx-3 mb-3 mt-1 rounded-xl bg-white/10 border border-white/10 px-3 py-2.5 glass-panel">
+        <div className="mx-3 mb-3 mt-1 rounded-xl bg-slate-900/50 border border-slate-800 px-3 py-2.5 glass-panel">
           <div className="text-xs font-medium text-white truncate">{session?.user?.email}</div>
-          <div className="text-[10px] text-violet-300 mt-0.5">{t("MVP 演示版 · 模拟数据", "MVP Demo · Mock Data")}</div>
+          <div className="text-[10px] text-blue-300 mt-0.5">{t("MVP 演示版 · 模拟数据", "MVP Demo · Mock Data")}</div>
         </div>
       </aside>
 
       {/* Main */}
-      <main className="flex-1 min-w-0 bg-gradient-to-br from-violet-50/40 via-white to-white min-h-screen">
-        <header className="h-14 border-b border-slate-200 bg-white flex items-center px-3 md:px-6 justify-between gap-2 shadow-[0_1px_3px_rgba(15,23,42,0.06)] relative z-10">
+      <main className="flex-1 min-w-0 bg-gradient-to-br from-slate-50 to-white min-h-screen">
+        <header className="h-14 border-b border-slate-900 bg-gradient-to-r from-slate-950 to-blue-950 flex items-center px-3 md:px-6 justify-between gap-2 shadow-[0_1px_3px_rgba(0,0,0,0.2)] relative z-10">
           <div className="flex items-center gap-2 min-w-0">
-            <button onClick={() => setMobileNavOpen(true)} className="text-slate-500 hover:text-slate-800 md:hidden shrink-0">
+            <button onClick={() => setMobileNavOpen(true)} className="text-blue-300 hover:text-white md:hidden shrink-0">
               <Menu size={20} />
             </button>
-            <div className="text-sm text-slate-500 truncate">
+            <div className="text-sm text-blue-200 truncate">
               {(() => {
                 const current = NAV.find((n) => n.key === tab);
                 return current ? (lang === "en" ? current.en : current.zh) : "";
@@ -1599,10 +1599,10 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
-            <div className="hidden md:block text-xs text-slate-400">{session.user.email}</div>
+            <div className="hidden md:block text-xs text-blue-300">{session.user.email}</div>
             <button
               onClick={() => loadRealData(false)}
-              className="flex items-center gap-1.5 text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50 btn-3d"
+              className="flex items-center gap-1.5 text-xs px-2 md:px-2.5 py-1 rounded-full border border-blue-700 text-blue-200 hover:bg-blue-800 hover:text-white btn-3d"
               title={t("重新读取数据", "Reload data")}
             >
               <RefreshCw size={13} />
@@ -1610,14 +1610,14 @@ export default function App() {
             </button>
             <button
               onClick={() => setLang((prev) => (prev === "zh" ? "en" : "zh"))}
-              className="text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50 btn-3d"
+              className="text-xs px-2 md:px-2.5 py-1 rounded-full border border-blue-700 text-blue-200 hover:bg-blue-800 hover:text-white btn-3d"
               title={t("切换语言", "Switch language")}
             >
               {lang === "zh" ? "中 / EN" : "EN / 中"}
             </button>
             <button
               onClick={() => supabaseClient.auth.signOut()}
-              className="flex items-center gap-1.5 text-xs px-2 md:px-2.5 py-1 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50 btn-3d"
+              className="flex items-center gap-1.5 text-xs px-2 md:px-2.5 py-1 rounded-full border border-blue-700 text-blue-200 hover:bg-blue-800 hover:text-white btn-3d"
               title={t("登出", "Log out")}
             >
               <LogOut size={13} />
@@ -1626,7 +1626,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className="p-3 md:p-6">
+        <div className="p-3 md:p-6 bg-gradient-to-br from-slate-50 to-white min-h-screen">
           {tab === "overview" && (
             <Overview
               t={t}

@@ -281,7 +281,6 @@ async function upsertShopeeOrderBatch(
           buyer_user_id: o.buyer_user_id ?? null,
           buyer_username: o.buyer_username ?? null,
           courier: o.shipping_carrier ?? null,
-          tracking_no: null,
           order_status: mapShopeeOrderStatus(o.order_status),
           platform_status: o.order_status ?? null,
           is_cod: o.cod ?? false,
@@ -443,7 +442,7 @@ async function syncOneShop(creds: ShopeeCredentials, account: {
     // subsequent resume of THIS pass reads it back instead of recomputing
     // "now", so time_from/time_to can't drift across invocations.
     const now = Math.floor(Date.now() / 1000);
-    windowFrom = now - 15 * 24 * 60 * 60;
+    windowFrom = now - 90 * 24 * 60 * 60; // 90 days instead of 15 — ensures status updates for older orders are captured
     windowTo = now;
     cursor = "";
     cumulativeOrders = 0;
