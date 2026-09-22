@@ -403,7 +403,6 @@ export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete, stor
         <button
           onClick={() => setShowSyncModal(true)}
           className="ml-auto flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-          className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
         >
           <Download size={14} /> {t("同步店铺商品", "Sync Products")}
         </button>
