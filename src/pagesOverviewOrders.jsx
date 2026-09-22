@@ -1387,15 +1387,16 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       base().eq("platform_status", "UNPAID"),
       // TikTok's AWAITING_SHIPMENT unchanged (includes instant orders — they're
       // real AWAITING_SHIPMENT orders on TikTok, not a separate status);
-      // READY_TO_SHIP added for Shopee (2026-08-11). Instant orders excluded
-      // for Shopee ONLY (2026-08-17) — they have their own card. TikTok count
-      // must match API total, which includes instant orders.
-      isShopee ? excludeInstant(base().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"])) : base().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"]),
-      // TikTok's AWAITING_COLLECTION unchanged; PROCESSED added for Shopee
-      // (2026-08-17). Instant orders excluded for Shopee only — TikTok's
-      // instant orders (if any) would be delivery_option instant, not
-      // AWAITING_COLLECTION (that's pickup status, different flow).
-      isShopee ? excludeInstant(base().in("platform_status", ["AWAITING_COLLECTION", "PROCESSED"])) : base().in("platform_status", ["AWAITING_COLLECTION", "PROCESSED"]),
+      // Shopee fix (2026-09-22): READY_TO_SHIP orders with NO tracking_no = 待发货
+      // NOT all READY_TO_SHIP (some have tracking when awaiting collection)
+      isShopee
+        ? excludeInstant(base().in("platform_status", ["READY_TO_SHIP"]).is("tracking_no", null))
+        : base().in("platform_status", ["AWAITING_SHIPMENT"]),
+      // Shopee fix (2026-09-22): READY_TO_SHIP with tracking_no = 待取货
+      // (picked up by merchant, awaiting courier collection; NOT PROCESSED status)
+      isShopee
+        ? excludeInstant(base().in("platform_status", ["READY_TO_SHIP"]).not("tracking_no", "is", null))
+        : base().in("platform_status", ["AWAITING_COLLECTION"]),
       // TikTok's IN_TRANSIT unchanged; SHIPPED added additively for Shopee
       // (2026-08-17) — Shopee's real post-ship_order-and-picked-up status
       // (confirmed live: 42 real SHIPPED rows on the visible store, 0 rows
@@ -1436,15 +1437,17 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       // wrote this row, which for a cancelled order is effectively when ERP
       // recorded the cancellation.
       base().eq("order_status", "cancelled").gte("updated_at", `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`),
-      // 即时订单 two-stage counts — Shopee card (2026-08-17) via onlyInstant's
-      // courier match, TikTok card (2026-08-17, same pattern) via
-      // onlyInstant's delivery_option match. AWAITING_SHIPMENT/READY_TO_SHIP
-      // = To Process (待发货/待处理), AWAITING_COLLECTION/PROCESSED =
-      // Processed (待取货/已处理) — same real status pair each platform's
-      // own regular toShip/toPickup cards already use, just narrowed to
-      // instant-only rows.
-      onlyInstant(base().in("platform_status", ["AWAITING_SHIPMENT", "READY_TO_SHIP"])),
-      onlyInstant(base().in("platform_status", ["AWAITING_COLLECTION", "PROCESSED"])),
+      // 即时订单 two-stage counts (2026-09-22 fix):
+      // Shopee: use courier match + READY_TO_SHIP (no tracking) = 即时待发货
+      // TikTok: use delivery_option match + AWAITING_SHIPMENT = to process
+      isShopee
+        ? onlyInstant(base().in("platform_status", ["READY_TO_SHIP"]).is("tracking_no", null))
+        : onlyInstant(base().in("platform_status", ["AWAITING_SHIPMENT"])),
+      // Shopee: READY_TO_SHIP (has tracking) = 即时待取货
+      // TikTok: AWAITING_COLLECTION = processed instant
+      isShopee
+        ? onlyInstant(base().in("platform_status", ["READY_TO_SHIP"]).not("tracking_no", "is", null))
+        : onlyInstant(base().in("platform_status", ["AWAITING_COLLECTION"])),
       // 已完成 (2026-08-17, new combo-card bottom half) — real
       // platform_status === "COMPLETED", scoped to the current
       // platform/store the same way every other count above already is
