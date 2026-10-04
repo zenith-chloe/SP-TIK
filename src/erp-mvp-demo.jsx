@@ -1638,6 +1638,8 @@ export default function App() {
               onOpenOrder={setSelectedOrder}
               goTo={setTab}
               onGoToOrdersToShip={(platform) => { setOrdersEntryFilter({ platform, status: "__to_ship__" }); setTab("orders"); }}
+              onStatusFilterChange={(status) => { setOrdersEntryFilter(status ? { status } : null); }}
+              onPlatformFilterChange={(platform) => { setOrdersEntryFilter(platform ? { platform } : null); }}
             />
           )}
           {tab === "orders" && (

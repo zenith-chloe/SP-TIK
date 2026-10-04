@@ -430,79 +430,245 @@ function StatusTooltip({ active, payload, statusLabel, lang, total }) {
 }
 
 // Status Distribution Card - Hover Tooltip with dynamic positioning
-function StatusDistributionCard({ t, statusBreakdown, orders, statusLabel, lang }) {
+function StatusDistributionCard({ t, statusBreakdown, orders, statusLabel, lang, selectedStatus, onStatusClick }) {
   const total = orders.length;
   const [hoveredStatus, setHoveredStatus] = useState(null);
   const [tooltipPos, setTooltipPos] = useState(null);
-  const chartRef = useRef(null);
+  const meterRef = useRef(null);
 
-  const handleMouseMove = (e) => {
-    if (hoveredStatus && chartRef.current) {
-      const rect = chartRef.current.getBoundingClientRect();
-      setTooltipPos({
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top
-      });
-    }
+  // Find specific status data
+  const pendingData = statusBreakdown.find(s => s.status === "待处理") || { status: "待处理", count: 0 };
+  const cancelledData = statusBreakdown.find(s => s.status === "已取消") || { status: "已取消", count: 0 };
+  const shippedData = statusBreakdown.find(s => s.status === "出货") || { status: "出货", count: 0 };
+
+  // Calculate percentages
+  const pendingPct = total > 0 ? ((pendingData.count / total) * 100).toFixed(1) : 0;
+  const cancelledPct = total > 0 ? ((cancelledData.count / total) * 100).toFixed(1) : 0;
+  const shippedPct = total > 0 ? ((shippedData.count / total) * 100).toFixed(1) : 0;
+
+  // Handle meter hover
+  const handleMeterMouseMove = (e) => {
+    if (!hoveredStatus || !meterRef.current) return;
+    const rect = meterRef.current.getBoundingClientRect();
+    setTooltipPos({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    });
+  };
+
+  // Color scheme from reference
+  const statusColors = {
+    pending: { main: "#3B82F6", bg: "#EFF6FF", text: "#1D4ED8" },
+    cancelled: { main: "#EF4444", bg: "#FEF2F2", text: "#991B1B" },
+    shipped: { main: "#22C55E", bg: "#F0FDF4", text: "#166534" }
+  };
+
+  // Meter outer colors
+  const meterColors = {
+    outer: "#111827",
+    darkGray: "#1F2937",
+    metalGray: "#374151"
+  };
+
+  // Calculate angles for the meter (3 segments)
+  const pendingAngle = (pendingData.count / total) * 360;
+  const cancelledAngle = (cancelledData.count / total) * 360;
+  const shippedAngle = (shippedData.count / total) * 360;
+
+  // Status selection helpers
+  const isStatusSelected = (status) => selectedStatus === status;
+  const getStatusOpacity = (status) => {
+    if (!selectedStatus) return 1;
+    return isStatusSelected(status) ? 1 : 0.3;
+  };
+  const getCardHighlight = (status) => {
+    if (!selectedStatus) return "none";
+    return isStatusSelected(status) ? "0 0 12px rgba(0,0,0,0.1)" : "none";
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex flex-col relative" ref={chartRef} onMouseMove={handleMouseMove}>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="h-7 w-7 rounded-lg bg-purple-100/60 flex items-center justify-center shrink-0">
-          <PieChartIcon size={16} className="text-purple-600" />
+    <div className="bg-white border border-gray-200 rounded-2xl p-3 shadow-sm flex flex-col" style={{ backgroundColor: "#FFFFFF", borderColor: "#E5E7EB" }}>
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-2">
+        <div className="h-6 w-6 rounded flex items-center justify-center shrink-0" style={{ backgroundColor: statusColors.pending.bg }}>
+          <Clock size={14} style={{ color: statusColors.pending.text }} />
         </div>
-        <div className="text-sm font-semibold text-slate-900">{t("订单状态分布", "Order Status")}</div>
+        <div className="text-xs font-semibold" style={{ color: "#111827" }}>{t("订单状态分布", "Order Status")}</div>
       </div>
-      <div className="flex flex-col items-center">
-        <div className="relative h-44 w-44 mb-3">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={statusBreakdown}
-                dataKey="count"
-                nameKey="status"
-                innerRadius={28}
-                outerRadius={56}
-                paddingAngle={1}
-                isAnimationActive={false}
-                onMouseEnter={(_, index) => setHoveredStatus(statusBreakdown[index])}
-                onMouseLeave={() => { setHoveredStatus(null); setTooltipPos(null); }}
-              >
-                {statusBreakdown.map((s, idx) => (
-                  <Cell
-                    key={s.status}
-                    fill={s.color}
-                    style={{ outline: 'none', stroke: 'none', cursor: 'pointer' }}
-                  />
-                ))}
-              </Pie>
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-            <div className="text-[9px] text-slate-400">{t("总计", "Total")}</div>
-            <div className="text-base font-bold tabular-nums text-slate-800">{orders.length}</div>
+
+      {/* Digi Meter Circle + Stats Layout */}
+      <div className="flex gap-2 items-start justify-center">
+        {/* Left: Digi Meter */}
+        <div className="relative flex-shrink-0 cursor-pointer" ref={meterRef} onMouseMove={handleMeterMouseMove} onMouseLeave={() => { setHoveredStatus(null); setTooltipPos(null); }}>
+          {/* Meter background with 3D effect */}
+          <svg width="120" height="120" viewBox="0 0 200 200" className="drop-shadow-sm">
+            {/* Outer black frame with border */}
+            <defs>
+              <filter id="meterShadow" x="-50%" y="-50%" width="200%" height="200%">
+                <feDropShadow dx="0" dy="2" stdDeviation="2" floodOpacity="0.1" />
+              </filter>
+              <linearGradient id="meterEdge" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style={{ stopColor: "#111827", stopOpacity: 1 }} />
+                <stop offset="50%" style={{ stopColor: "#1F2937", stopOpacity: 1 }} />
+                <stop offset="100%" style={{ stopColor: "#111827", stopOpacity: 1 }} />
+              </linearGradient>
+            </defs>
+
+            {/* Outer black border ring */}
+            <circle cx="100" cy="100" r="98" fill="none" stroke={meterColors.darkGray} strokeWidth="3" />
+            <circle cx="100" cy="100" r="95" fill="none" stroke={meterColors.metalGray} strokeWidth="1" opacity="0.5" />
+
+            {/* Inner white circle */}
+            <circle cx="100" cy="100" r="90" fill="white" />
+
+            {/* Meter segments (3 colors as pie slices) */}
+            {/* Blue segment (pending) */}
+            <path
+              d={`M 100,100 L ${100 + 85 * Math.cos((- 90) * Math.PI / 180)},${100 + 85 * Math.sin((- 90) * Math.PI / 180)} A 85,85 0 ${pendingAngle > 180 ? 1 : 0},1 ${100 + 85 * Math.cos((-90 + pendingAngle) * Math.PI / 180)},${100 + 85 * Math.sin((-90 + pendingAngle) * Math.PI / 180)} Z`}
+              fill={statusColors.pending.main}
+              opacity={getStatusOpacity("待处理")}
+              style={{ cursor: "pointer", transition: "opacity 0.2s" }}
+              onClick={() => onStatusClick("待处理")}
+              onMouseEnter={() => setHoveredStatus("待处理")}
+              onMouseLeave={() => { setHoveredStatus(null); setTooltipPos(null); }}
+            />
+
+            {/* Red segment (cancelled) */}
+            <path
+              d={`M 100,100 L ${100 + 85 * Math.cos((-90 + pendingAngle) * Math.PI / 180)},${100 + 85 * Math.sin((-90 + pendingAngle) * Math.PI / 180)} A 85,85 0 ${cancelledAngle > 180 ? 1 : 0},1 ${100 + 85 * Math.cos((-90 + pendingAngle + cancelledAngle) * Math.PI / 180)},${100 + 85 * Math.sin((-90 + pendingAngle + cancelledAngle) * Math.PI / 180)} Z`}
+              fill={statusColors.cancelled.main}
+              opacity={getStatusOpacity("已取消")}
+              style={{ cursor: "pointer", transition: "opacity 0.2s" }}
+              onClick={() => onStatusClick("已取消")}
+              onMouseEnter={() => setHoveredStatus("已取消")}
+              onMouseLeave={() => { setHoveredStatus(null); setTooltipPos(null); }}
+            />
+
+            {/* Green segment (shipped) */}
+            <path
+              d={`M 100,100 L ${100 + 85 * Math.cos((-90 + pendingAngle + cancelledAngle) * Math.PI / 180)},${100 + 85 * Math.sin((-90 + pendingAngle + cancelledAngle) * Math.PI / 180)} A 85,85 0 ${shippedAngle > 180 ? 1 : 0},1 ${100 + 85 * Math.cos((-90 + pendingAngle + cancelledAngle + shippedAngle) * Math.PI / 180)},${100 + 85 * Math.sin((-90 + pendingAngle + cancelledAngle + shippedAngle) * Math.PI / 180)} Z`}
+              fill={statusColors.shipped.main}
+              opacity={getStatusOpacity("出货")}
+              style={{ cursor: "pointer", transition: "opacity 0.2s" }}
+              onClick={() => onStatusClick("出货")}
+              onMouseEnter={() => setHoveredStatus("出货")}
+              onMouseLeave={() => { setHoveredStatus(null); setTooltipPos(null); }}
+            />
+
+            {/* Center white circle */}
+            <circle cx="100" cy="100" r="50" fill="white" />
+
+            {/* Meter needle/indicator line - at top */}
+            <line x1="100" y1="15" x2="100" y2="35" stroke={meterColors.outer} strokeWidth="2" />
+            <circle cx="100" cy="15" r="3" fill={meterColors.outer} />
+          </svg>
+
+          {/* Center text overlay - clickable to clear filter */}
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center cursor-pointer hover:opacity-75"
+            onClick={() => onStatusClick(null)}
+            title={t("点击清除筛选", "Click to clear filter")}
+          >
+            <div className="text-[8px]" style={{ color: "#64748B" }}>{t("总计", "Total")}</div>
+            <div className="text-lg font-bold" style={{ color: "#111827", lineHeight: 1 }}>{total}</div>
           </div>
+
+          {/* Tooltip */}
+          {hoveredStatus && tooltipPos && (
+            <div
+              className="absolute bg-slate-900 text-white rounded px-2 py-1 text-[9px] z-50 pointer-events-none whitespace-nowrap"
+              style={{
+                left: `${tooltipPos.x}px`,
+                top: `${tooltipPos.y - 40}px`,
+                transform: "translateX(-50%)"
+              }}
+            >
+              <div className="font-semibold">{statusLabel(hoveredStatus, lang)}</div>
+              <div className="text-slate-300">
+                {hoveredStatus === "待处理" && `${pendingData.count} · ${pendingPct}%`}
+                {hoveredStatus === "已取消" && `${cancelledData.count} · ${cancelledPct}%`}
+                {hoveredStatus === "出货" && `${shippedData.count} · ${shippedPct}%`}
+              </div>
+            </div>
+          )}
         </div>
-        {hoveredStatus && tooltipPos && (
-          <div className="absolute bg-white rounded-lg px-3 py-2 shadow-lg border border-slate-200 text-xs z-50 pointer-events-none"
-               style={{
-                 left: `${tooltipPos.x + 10}px`,
-                 top: `${tooltipPos.y - 50}px`
-               }}>
-            <div style={{ fontWeight: 500, color: '#1e293b' }}>{statusLabel(hoveredStatus.status, lang)}</div>
-            <div style={{ color: '#64748b', fontSize: '0.6875rem', marginTop: '0.25rem' }}>
-              {hoveredStatus.count} · {((hoveredStatus.count / total) * 100).toFixed(1)}%
+
+        {/* Right: Status Cards */}
+        <div className="flex flex-col gap-1.5 flex-1 min-w-[140px]">
+          {/* Pending Card */}
+          <button
+            onClick={() => onStatusClick("待处理")}
+            className="rounded-lg p-2 flex items-start gap-1.5 text-left transition-all hover:scale-105 active:scale-95"
+            style={{
+              backgroundColor: statusColors.pending.bg,
+              borderLeft: `3px solid ${statusColors.pending.main}`,
+              opacity: getStatusOpacity("待处理"),
+              boxShadow: getCardHighlight("待处理"),
+              border: isStatusSelected("待处理") ? `2px solid ${statusColors.pending.main}` : undefined,
+              cursor: "pointer"
+            }}
+          >
+            <div className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center" style={{ backgroundColor: statusColors.pending.main }}>
+              <Clock size={11} className="text-white" />
             </div>
-          </div>
-        )}
-        <div className="flex items-center justify-center gap-4 text-xs w-full flex-wrap">
-          {statusBreakdown.slice(0, 3).map((s) => (
-            <div key={s.status} className="flex items-center gap-1.5 text-slate-600 whitespace-nowrap">
-              <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
-              <span>{statusLabel(s.status, lang)}</span>
+            <div className="flex-1 min-w-0">
+              <div className="text-[9px]" style={{ color: statusColors.pending.text }}>待处理</div>
+              <div className="flex items-baseline gap-1">
+                <span className="text-sm font-bold" style={{ color: statusColors.pending.text }}>{pendingData.count}</span>
+                <span className="text-[8px]" style={{ color: statusColors.pending.text }}>{pendingPct}%</span>
+              </div>
             </div>
-          ))}
+          </button>
+
+          {/* Cancelled Card */}
+          <button
+            onClick={() => onStatusClick("已取消")}
+            className="rounded-lg p-2 flex items-start gap-1.5 text-left transition-all hover:scale-105 active:scale-95"
+            style={{
+              backgroundColor: statusColors.cancelled.bg,
+              borderLeft: `3px solid ${statusColors.cancelled.main}`,
+              opacity: getStatusOpacity("已取消"),
+              boxShadow: getCardHighlight("已取消"),
+              border: isStatusSelected("已取消") ? `2px solid ${statusColors.cancelled.main}` : undefined,
+              cursor: "pointer"
+            }}
+          >
+            <div className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center" style={{ backgroundColor: statusColors.cancelled.main }}>
+              <XCircle size={11} className="text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[9px]" style={{ color: statusColors.cancelled.text }}>已取消</div>
+              <div className="flex items-baseline gap-1">
+                <span className="text-sm font-bold" style={{ color: statusColors.cancelled.text }}>{cancelledData.count}</span>
+                <span className="text-[8px]" style={{ color: statusColors.cancelled.text }}>{cancelledPct}%</span>
+              </div>
+            </div>
+          </button>
+
+          {/* Shipped Card */}
+          <button
+            onClick={() => onStatusClick("出货")}
+            className="rounded-lg p-2 flex items-start gap-1.5 text-left transition-all hover:scale-105 active:scale-95"
+            style={{
+              backgroundColor: statusColors.shipped.bg,
+              borderLeft: `3px solid ${statusColors.shipped.main}`,
+              opacity: getStatusOpacity("出货"),
+              boxShadow: getCardHighlight("出货"),
+              border: isStatusSelected("出货") ? `2px solid ${statusColors.shipped.main}` : undefined,
+              cursor: "pointer"
+            }}
+          >
+            <div className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center" style={{ backgroundColor: statusColors.shipped.main }}>
+              <PackageCheck size={11} className="text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[9px]" style={{ color: statusColors.shipped.text }}>出货</div>
+              <div className="flex items-baseline gap-1">
+                <span className="text-sm font-bold" style={{ color: statusColors.shipped.text }}>{shippedData.count}</span>
+                <span className="text-[8px]" style={{ color: statusColors.shipped.text }}>{shippedPct}%</span>
+              </div>
+            </div>
+          </button>
         </div>
       </div>
     </div>
@@ -526,88 +692,201 @@ function PlatformTooltip({ active, payload, total }) {
 }
 
 // Platform Distribution Card - Hover Tooltip with dynamic positioning
-function PlatformDistributionCard({ t, platformBreakdownData, orders }) {
+function PlatformDistributionCard({ t, platformBreakdownData, orders, selectedPlatform, onPlatformClick }) {
   const total = orders.length;
   const [hoveredPlatform, setHoveredPlatform] = useState(null);
   const [tooltipPos, setTooltipPos] = useState(null);
-  const chartRef = useRef(null);
+  const meterRef = useRef(null);
 
-  const handleMouseMove = (e) => {
-    if (hoveredPlatform && chartRef.current) {
-      const rect = chartRef.current.getBoundingClientRect();
-      setTooltipPos({
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top
-      });
-    }
+  // Find platform data (TikTok Shop vs Shopee)
+  const tiktokData = platformBreakdownData.find(p => p.name === "TikTok" || p.name === "TikTok Shop") || { name: "TikTok Shop", value: 0 };
+  const shopeeData = platformBreakdownData.find(p => p.name === "Shopee") || { name: "Shopee", value: 0 };
+
+  const tiktokPct = total > 0 ? ((tiktokData.value / total) * 100).toFixed(1) : 0;
+  const shopeePct = total > 0 ? ((shopeeData.value / total) * 100).toFixed(1) : 0;
+
+  // Color scheme for platforms
+  const platformColors = {
+    tiktok: { main: "#8B5CF6", bg: "#F5F3FF", text: "#6D28D9" },
+    shopee: { main: "#F97316", bg: "#FFF7ED", text: "#C2410C" }
+  };
+
+  // Meter outer colors
+  const meterColors = {
+    outer: "#111827",
+    darkGray: "#1F2937",
+    metalGray: "#374151"
+  };
+
+  // Calculate angles
+  const tiktokAngle = (tiktokData.value / total) * 360;
+  const shopeeAngle = (shopeeData.value / total) * 360;
+
+  // Helper functions
+  const isPlatformSelected = (platform) => selectedPlatform === platform;
+  const getPlatformOpacity = (platform) => {
+    if (!selectedPlatform) return 1;
+    return isPlatformSelected(platform) ? 1 : 0.3;
+  };
+  const getCardHighlight = (platform) => {
+    if (!selectedPlatform) return "none";
+    return isPlatformSelected(platform) ? "0 0 12px rgba(0,0,0,0.1)" : "none";
+  };
+
+  const handleMeterMouseMove = (e) => {
+    if (!hoveredPlatform || !meterRef.current) return;
+    const rect = meterRef.current.getBoundingClientRect();
+    setTooltipPos({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    });
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex flex-col relative" ref={chartRef} onMouseMove={handleMouseMove}>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="h-7 w-7 rounded-lg bg-purple-100/60 flex items-center justify-center shrink-0">
-          <BarChart3 size={16} className="text-purple-600" />
+    <div className="bg-white border border-gray-200 rounded-2xl p-3 shadow-sm flex flex-col" style={{ backgroundColor: "#FFFFFF", borderColor: "#E5E7EB" }}>
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-2">
+        <div className="h-6 w-6 rounded flex items-center justify-center shrink-0" style={{ backgroundColor: platformColors.tiktok.bg }}>
+          <BarChart3 size={14} style={{ color: platformColors.tiktok.text }} />
         </div>
-        <div className="text-sm font-semibold text-slate-900">{t("订单按平台分布", "By Platform")}</div>
+        <div className="text-xs font-semibold" style={{ color: "#111827" }}>{t("订单按平台分布", "By Platform")}</div>
       </div>
-      <div className="flex flex-col items-center">
-        <div className="relative h-44 w-44 mb-3">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={platformBreakdownData}
-                dataKey="value"
-                nameKey="name"
-                innerRadius={28}
-                outerRadius={56}
-                paddingAngle={1}
-                isAnimationActive={false}
-                onMouseEnter={(_, index) => setHoveredPlatform(platformBreakdownData[index])}
-                onMouseLeave={() => { setHoveredPlatform(null); setTooltipPos(null); }}
-              >
-                {platformBreakdownData.map((p, idx) => (
-                  <Cell
-                    key={idx}
-                    fill={p.name === "Shopee" ? "#F97316" : "#DC2626"}
-                    style={{ outline: 'none', stroke: 'none', cursor: 'pointer' }}
-                  />
-                ))}
-              </Pie>
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-            <div className="text-[9px] text-slate-400">{t("总计", "Total")}</div>
-            <div className="text-base font-bold tabular-nums text-slate-800">{orders.length}</div>
+
+      {/* Digi Meter Circle + Platform Cards Layout */}
+      <div className="flex gap-2 items-start justify-center">
+        {/* Left: Digi Meter */}
+        <div className="relative flex-shrink-0 cursor-pointer" ref={meterRef} onMouseMove={handleMeterMouseMove} onMouseLeave={() => { setHoveredPlatform(null); setTooltipPos(null); }}>
+          <svg width="120" height="120" viewBox="0 0 200 200" className="drop-shadow-sm">
+            <defs>
+              <filter id="platformMeterShadow" x="-50%" y="-50%" width="200%" height="200%">
+                <feDropShadow dx="0" dy="2" stdDeviation="2" floodOpacity="0.1" />
+              </filter>
+            </defs>
+
+            {/* Outer black border ring */}
+            <circle cx="100" cy="100" r="98" fill="none" stroke={meterColors.darkGray} strokeWidth="3" />
+            <circle cx="100" cy="100" r="95" fill="none" stroke={meterColors.metalGray} strokeWidth="1" opacity="0.5" />
+
+            {/* Inner white circle */}
+            <circle cx="100" cy="100" r="90" fill="white" />
+
+            {/* TikTok Shop segment (purple) */}
+            <path
+              d={`M 100,100 L ${100 + 85 * Math.cos((- 90) * Math.PI / 180)},${100 + 85 * Math.sin((- 90) * Math.PI / 180)} A 85,85 0 ${tiktokAngle > 180 ? 1 : 0},1 ${100 + 85 * Math.cos((-90 + tiktokAngle) * Math.PI / 180)},${100 + 85 * Math.sin((-90 + tiktokAngle) * Math.PI / 180)} Z`}
+              fill={platformColors.tiktok.main}
+              opacity={getPlatformOpacity("TikTok Shop")}
+              style={{ cursor: "pointer", transition: "opacity 0.2s" }}
+              onClick={() => onPlatformClick("TikTok Shop")}
+              onMouseEnter={() => setHoveredPlatform("TikTok Shop")}
+              onMouseLeave={() => { setHoveredPlatform(null); setTooltipPos(null); }}
+            />
+
+            {/* Shopee segment (orange) */}
+            <path
+              d={`M 100,100 L ${100 + 85 * Math.cos((-90 + tiktokAngle) * Math.PI / 180)},${100 + 85 * Math.sin((-90 + tiktokAngle) * Math.PI / 180)} A 85,85 0 ${shopeeAngle > 180 ? 1 : 0},1 ${100 + 85 * Math.cos((-90 + tiktokAngle + shopeeAngle) * Math.PI / 180)},${100 + 85 * Math.sin((-90 + tiktokAngle + shopeeAngle) * Math.PI / 180)} Z`}
+              fill={platformColors.shopee.main}
+              opacity={getPlatformOpacity("Shopee")}
+              style={{ cursor: "pointer", transition: "opacity 0.2s" }}
+              onClick={() => onPlatformClick("Shopee")}
+              onMouseEnter={() => setHoveredPlatform("Shopee")}
+              onMouseLeave={() => { setHoveredPlatform(null); setTooltipPos(null); }}
+            />
+
+            {/* Center white circle */}
+            <circle cx="100" cy="100" r="50" fill="white" />
+
+            {/* Meter needle/indicator line - at top */}
+            <line x1="100" y1="15" x2="100" y2="35" stroke={meterColors.outer} strokeWidth="2" />
+            <circle cx="100" cy="15" r="3" fill={meterColors.outer} />
+          </svg>
+
+          {/* Center text overlay - clickable to clear filter */}
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center cursor-pointer hover:opacity-75"
+            onClick={() => onPlatformClick(null)}
+            title={t("点击清除筛选", "Click to clear filter")}
+          >
+            <div className="text-[8px]" style={{ color: "#64748B" }}>{t("总计", "Total")}</div>
+            <div className="text-lg font-bold" style={{ color: "#111827", lineHeight: 1 }}>{total}</div>
           </div>
+
+          {/* Tooltip */}
+          {hoveredPlatform && tooltipPos && (
+            <div
+              className="absolute bg-slate-900 text-white rounded px-2 py-1 text-[9px] z-50 pointer-events-none whitespace-nowrap"
+              style={{
+                left: `${tooltipPos.x}px`,
+                top: `${tooltipPos.y - 40}px`,
+                transform: "translateX(-50%)"
+              }}
+            >
+              <div className="font-semibold">{hoveredPlatform === "TikTok Shop" ? "TikTok Shop" : hoveredPlatform}</div>
+              <div className="text-slate-300">
+                {hoveredPlatform === "TikTok Shop" && `${tiktokData.value} · ${tiktokPct}%`}
+                {hoveredPlatform === "Shopee" && `${shopeeData.value} · ${shopeePct}%`}
+              </div>
+            </div>
+          )}
         </div>
-        {hoveredPlatform && tooltipPos && (
-          <div className="absolute bg-white rounded-lg px-3 py-2 shadow-lg border border-slate-200 text-xs z-50 pointer-events-none"
-               style={{
-                 left: `${tooltipPos.x + 10}px`,
-                 top: `${tooltipPos.y - 50}px`
-               }}>
-            <div style={{ fontWeight: 500, color: '#1e293b' }}>
-              {hoveredPlatform.name === "TikTok" ? "TikTok Shop" : hoveredPlatform.name}
+
+        {/* Right: Platform Cards */}
+        <div className="flex flex-col gap-1.5 flex-1 min-w-[140px]">
+          {/* TikTok Shop Card */}
+          <button
+            onClick={() => onPlatformClick("TikTok Shop")}
+            className="rounded-lg p-2 flex items-start gap-1.5 text-left transition-all hover:scale-105 active:scale-95"
+            style={{
+              backgroundColor: platformColors.tiktok.bg,
+              borderLeft: `3px solid ${platformColors.tiktok.main}`,
+              opacity: getPlatformOpacity("TikTok Shop"),
+              boxShadow: getCardHighlight("TikTok Shop"),
+              border: isPlatformSelected("TikTok Shop") ? `2px solid ${platformColors.tiktok.main}` : undefined,
+              cursor: "pointer"
+            }}
+          >
+            <div className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center" style={{ backgroundColor: platformColors.tiktok.main }}>
+              <Music2 size={11} className="text-white" />
             </div>
-            <div style={{ color: '#64748b', fontSize: '0.6875rem', marginTop: '0.25rem' }}>
-              {hoveredPlatform.value} · {((hoveredPlatform.value / total) * 100).toFixed(1)}%
+            <div className="flex-1 min-w-0">
+              <div className="text-[9px]" style={{ color: platformColors.tiktok.text }}>TikTok Shop</div>
+              <div className="flex items-baseline gap-1">
+                <span className="text-sm font-bold" style={{ color: platformColors.tiktok.text }}>{tiktokData.value}</span>
+                <span className="text-[8px]" style={{ color: platformColors.tiktok.text }}>{tiktokPct}%</span>
+              </div>
             </div>
-          </div>
-        )}
-        <div className="flex items-center justify-center gap-4 text-xs w-full flex-wrap">
-          {platformBreakdownData.map((p) => (
-            <div key={p.name} className="flex items-center gap-1.5 text-slate-600 whitespace-nowrap">
-              <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: p.name === "Shopee" ? "#F97316" : "#DC2626" }} />
-              <span>{p.name === "TikTok" ? "TikTok Shop" : p.name}</span>
+          </button>
+
+          {/* Shopee Card */}
+          <button
+            onClick={() => onPlatformClick("Shopee")}
+            className="rounded-lg p-2 flex items-start gap-1.5 text-left transition-all hover:scale-105 active:scale-95"
+            style={{
+              backgroundColor: platformColors.shopee.bg,
+              borderLeft: `3px solid ${platformColors.shopee.main}`,
+              opacity: getPlatformOpacity("Shopee"),
+              boxShadow: getCardHighlight("Shopee"),
+              border: isPlatformSelected("Shopee") ? `2px solid ${platformColors.shopee.main}` : undefined,
+              cursor: "pointer"
+            }}
+          >
+            <div className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center" style={{ backgroundColor: platformColors.shopee.main }}>
+              <ShoppingBag size={11} className="text-white" />
             </div>
-          ))}
+            <div className="flex-1 min-w-0">
+              <div className="text-[9px]" style={{ color: platformColors.shopee.text }}>Shopee</div>
+              <div className="flex items-baseline gap-1">
+                <span className="text-sm font-bold" style={{ color: platformColors.shopee.text }}>{shopeeData.value}</span>
+                <span className="text-[8px]" style={{ color: platformColors.shopee.text }}>{shopeePct}%</span>
+              </div>
+            </div>
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGoToOrdersToShip }) {
+export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGoToOrdersToShip, onStatusFilterChange, onPlatformFilterChange }) {
   const pending = orders.filter((o) => o.status === "待处理" && o.platformStatus !== "UNPAID" && !(o.printCount > 0)).length;
   const totalProfit = orders.filter((o) => o.status !== "已取消").reduce((s, o) => s + profit(o), 0);
   const lowStock = inventory.filter((i) => i.warehouseA + i.warehouseB < i.reorderPoint);
@@ -618,6 +897,8 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
   const [showPendingPopup, setShowPendingPopup] = useState(false);
   const [storeFilter, setStoreFilter] = useState("all"); // "all" | "Shopee" | "TikTok Shop" | store id
   const [revenueTimeRange, setRevenueTimeRange] = useState("7d"); // "7d" | "30d" | "60d"
+  const [selectedOrderStatus, setSelectedOrderStatus] = useState(null); // null | "待处理" | "已取消" | "出货"
+  const [selectedPlatform, setSelectedPlatform] = useState(null); // null | "Shopee" | "TikTok Shop"
 
   // 订单总数 card — today's PENDING orders only (Shopee + TikTok combined),
   // same isPendingOrder definition used by the 待处理订单 card below, just
@@ -673,6 +954,36 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
   const statusBreakdown = Object.entries(
     orders.reduce((acc, o) => { acc[o.status] = (acc[o.status] || 0) + 1; return acc; }, {}),
   ).map(([status, count]) => ({ status, count, color: STATUS_DONUT_COLORS[status] || "#cbd5e1" }));
+
+  // Handle status filter click
+  const handleStatusFilterClick = (status) => {
+    if (status === null) {
+      // Clear filter
+      setSelectedOrderStatus(null);
+      if (onStatusFilterChange) onStatusFilterChange(null);
+      goTo("orders");
+    } else {
+      // Set filter and navigate
+      setSelectedOrderStatus(status);
+      if (onStatusFilterChange) onStatusFilterChange(status);
+      goTo("orders");
+    }
+  };
+
+  // Handle platform filter click
+  const handlePlatformFilterClick = (platform) => {
+    if (platform === null) {
+      // Clear filter
+      setSelectedPlatform(null);
+      if (onPlatformFilterChange) onPlatformFilterChange(null);
+      goTo("orders");
+    } else {
+      // Set filter and navigate
+      setSelectedPlatform(platform);
+      if (onPlatformFilterChange) onPlatformFilterChange(platform);
+      goTo("orders");
+    }
+  };
 
   // Data for redesigned dashboard
   const platformBreakdownData = useMemo(() => {
@@ -1017,8 +1328,8 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
 
       {/* ROW 3: Status Distribution + Platform Distribution + Top Products */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <StatusDistributionCard t={t} statusBreakdown={statusBreakdown} orders={orders} statusLabel={statusLabel} lang={lang} />
-        <PlatformDistributionCard t={t} platformBreakdownData={platformBreakdownData} orders={orders} />
+        <StatusDistributionCard t={t} statusBreakdown={statusBreakdown} orders={orders} statusLabel={statusLabel} lang={lang} selectedStatus={selectedOrderStatus} onStatusClick={handleStatusFilterClick} />
+        <PlatformDistributionCard t={t} platformBreakdownData={platformBreakdownData} orders={orders} selectedPlatform={selectedPlatform} onPlatformClick={handlePlatformFilterClick} />
 
         <div className="bg-white border border-gray-200 rounded-2xl p-3 shadow-sm">
           <div className="text-sm font-semibold text-slate-900 mb-2">{t("热销商品", "Top Products")}</div>
