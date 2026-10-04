@@ -559,6 +559,17 @@ export function incomeBreakdown(o, settlement, t) {
     // Order Drawer so both pages show it identically) — real, already-synced
     // tiktok_seller_shipping_fee column.
     { label: t("卖家承担运费", "Seller Shipping Fee"), amount: Number(settlement.tiktok_seller_shipping_fee ?? 0) },
+    // GMV Max ad fee (2026-10-01, user request; synced from TikTok statement_transactions
+    // gmv_max_ad_fee_amount via tiktok-settlement-sync 2026-10-04) — TikTok's real
+    // paid ad fee for GMV Max / auto-bidding campaigns.
+    { label: t("GMV Max 广告费", "GMV Max Ad Fee"), amount: Number(settlement.tiktok_gmv_max_ad_fee ?? 0) },
+    // Platform Support Fee / BXP (2026-10-04) — Bonus Cashback service fee,
+    // extracted from statement_transactions platform_support_amount field.
+    { label: t("平台支持费/红利返现", "Platform Support Fee (BXP)"), amount: Number(settlement.tiktok_platform_support_fee ?? 0) },
+    // Voucher Xtra discount (2026-10-04, if present in API response)
+    { label: t("Voucher Xtra", "Voucher Xtra"), amount: Number(settlement.tiktok_voucher_xtra_discount ?? 0) },
+    // BXP amount (2026-10-04, if returned separately)
+    { label: t("红利返现金额", "BXP Amount"), amount: Number(settlement.tiktok_bxp_amount ?? 0) },
   ].filter((f) => f === affiliateFee || f.amount !== 0);
   // Reconciliation catch-all (2026-08-21, moved here from pagesOverviewOrders.jsx
   // for the same reason) — TikTok's real raw_response `fee_amount` field is
@@ -615,6 +626,9 @@ export function incomeBreakdown(o, settlement, t) {
     fees,
     credits,
     orderIncome: settlementAmount,
+    // GMV Max status (2026-10-04) — for real settlement data, never in "awaiting"
+    // state since settlement sync has already occurred.
+    gmvMaxAwaitingSettlement: false,
   };
 }
 
@@ -688,6 +702,14 @@ const DEFAULT_TIKTOK_COMMISSION_RATE = 0.0702;
 const TIKTOK_TRANSACTION_FEE_RATE = 0.0378;
 const TIKTOK_BXP_RATE = 0.0486;
 const TIKTOK_PLATFORM_SUPPORT_FEE_FLAT = 0.54;
+// GMV Max Ad Fee rates (2026-10-03, user request) — applies to orders where
+// seller actively ran GMV Max / auto-bidding campaigns. Rate varies by
+// product category:
+// - Electronics (电子/3C): 3% (0.03)
+// - Other categories: 5% (0.05)
+// Applied to Subtotal_After_Seller_Discounts (revenue after deducting seller discounts).
+const TIKTOK_GMV_MAX_AD_FEE_RATE_ELECTRONICS = 0.03;
+const TIKTOK_GMV_MAX_AD_FEE_RATE_OTHER = 0.05;
 
 // Resolves the commission rate for one order item, in priority order:
 // (1) an explicit per-item rate if the order API ever supplies one,
@@ -701,6 +723,16 @@ function resolveTikTokCommissionRate(item) {
     return TIKTOK_CATEGORY_COMMISSION_RATES[item.category];
   }
   return DEFAULT_TIKTOK_COMMISSION_RATE;
+}
+
+// Resolves the GMV Max Ad Fee rate for one order item (2026-10-03, user request).
+// Rate is 3% for electronics/3C products, 5% for all other categories.
+// Returns the rate (0.03 or 0.05) to be applied to merchandise subtotal.
+function resolveTikTokGmvMaxAdFeeRate(item) {
+  if (item.category === "电子/3C") {
+    return TIKTOK_GMV_MAX_AD_FEE_RATE_ELECTRONICS;
+  }
+  return TIKTOK_GMV_MAX_AD_FEE_RATE_OTHER;
 }
 
 // Affiliate commission ONLY ever appears here if the order/item actually
@@ -779,62 +811,67 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEs
   // which is always a safe "no seller discount" default, never "unknown".
   const itemRevenue = (it) => (it.originalPrice > 0 ? it.originalPrice - (it.sellerDiscount || 0) : it.unitPrice * it.qty);
   const revenue = +lineItems.reduce((sum, it) => sum + itemRevenue(it), 0).toFixed(2);
-  const commissionAmt = +lineItems
-    .reduce((sum, it) => sum + itemRevenue(it) * resolveTikTokCommissionRate(it), 0)
-    .toFixed(2);
-  // Transaction fee base (2026-08-24, user-confirmed fix, live-verified
-  // against real order 585682879558485805): TikTok charges this fee on what
-  // the buyer actually paid in total, not just merchandise value — real
-  // order: revenue RM35.80 + buyer shipping RM3.60 = RM39.40, ×3.78% =
-  // RM1.49 (exactly matches TikTok's real Est. Fees; our old revenue-only
-  // base gave RM1.35, RM0.14 short). Re-checked against the earlier
-  // reference order 585688274303748056 too: buyer shipping was RM0 there,
-  // so revenue+0 still gives the same RM5.22 already verified — this change
-  // doesn't regress that order. `o.shippingFee` is the real buyer-paid
-  // shipping (orders.shipping_fee, synced from TikTok's payment.shipping_fee).
-  const transactionAmt = +((revenue + (o.shippingFee || 0)) * TIKTOK_TRANSACTION_FEE_RATE).toFixed(2);
+
+  // 2026-10-03: Prioritize real TikTok API settlement fields over estimates.
+  // If the order already has synced real fee data, use it; otherwise, fall
+  // back to estimation. This ensures accuracy for orders that have been
+  // settled or partially synced with TikTok's real data.
+
+  // Commission Fee (2026-10-03) — MUST use real value when available.
+  // Do NOT estimate using formula as it introduces precision errors.
+  const commissionAmt = o.tiktokCommissionFee != null && o.tiktokCommissionFee !== 0
+    ? Number(o.tiktokCommissionFee)
+    : +lineItems
+        .reduce((sum, it) => sum + itemRevenue(it) * resolveTikTokCommissionRate(it), 0)
+        .toFixed(2);
+
+  // Transaction Fee (2026-08-24, user confirmed; refactored 2026-10-03) — MUST
+  // use real value when available. Do NOT calculate using formula (3.78%) as
+  // the real value may differ due to precision or TikTok's specific calculation.
+  const transactionAmt = o.tiktokTransactionFee != null && o.tiktokTransactionFee !== 0
+    ? Number(o.tiktokTransactionFee)
+    : +((revenue + (o.shippingFee || 0)) * TIKTOK_TRANSACTION_FEE_RATE).toFixed(2);
+
+  // BXP — always calculated for now (no real field in unsettled orders)
   const bxpAmt = resolveTikTokBxpFee(o, revenue);
-  const platformSupportAmt = TIKTOK_PLATFORM_SUPPORT_FEE_FLAT;
-  // Est. Seller Shipping Fee (2026-08-22, user-confirmed fix, live-verified
-  // against real order 585653516133893588's TikTok Seller Center estimate):
-  // TikTok's real logic nets Actual Shipping Fee (courier's real cost)
-  // against Customer Shipping Fee (what the buyer paid) — net lands at RM0
-  // whenever the buyer fully covers shipping, e.g. that real order: Actual
-  // -RM1.60, Customer +RM1.60, net RM0. We previously subtracted
-  // `order.shippingFee` directly as a cost — but that field only ever holds
-  // what the BUYER paid (synced from payment.shipping_fee), not the
-  // courier's actual cost, and pre-settlement we have no real
-  // actual-courier-cost field to net it against. Subtracting the buyer-paid
-  // amount as if it were a seller cost double-counts money the buyer
-  // already covered. Set to 0 here (real settled orders already compute
-  // this correctly via incomeBreakdown()'s tiktok_seller_shipping_fee, a
-  // genuinely netted real column, unaffected by this change).
-  const shippingAmt = 0;
-  // Real per-order estimate (2026-08-26) from tiktok_affiliate_commissions,
-  // passed in by the caller — preferred over resolveTikTokAffiliateCommission
-  // (which only ever computes non-zero once o.isAffiliateOrder/item-level
-  // fields are populated elsewhere, which they never are today). Three
-  // states from the caller: a real number (order found in the synced
-  // table, could legitimately be RM0.00 on one SKU row), the sentinel
-  // string "organic" (caller confirmed the affiliate sync is current AND
-  // this order has no row — i.e. genuinely no creator involved, not just
-  // "not synced yet"), or undefined (unknown / not looked up — old
-  // disclaimer behavior, unchanged for any caller that doesn't pass this).
-  const affiliateAmt = typeof affiliateEstimate === "number"
-    ? +affiliateEstimate.toFixed(2)
-    : Number(resolveTikTokAffiliateCommission(o, lineItems));
-  // Affiliate Shop Ads Commission (2026-08-26, new) — a distinct real fee
-  // from the organic/partner commission line above, itemized separately by
-  // TikTok's own settlement preview (live-verified against real order
-  // 585731533702923353: TikTok shows -RM1.75 on this exact line, and this
-  // order's real tiktok_affiliate_commissions.estimated_paid_shop_ads_commission
-  // is 1.75 — combined with the other real fees below, revenue RM38.80 -
-  // commission RM2.72 - transaction RM1.53 - BXP RM1.89 - support RM0.54 -
-  // ads RM1.75 = total fees RM8.43, payout RM30.37 — matches TikTok's real
-  // numbers on this order exactly). Caller passes a plain number (0 when
-  // absent) — no "not synced" disclaimer needed for this one since it's a
-  // simple additive fee line, not the thing affiliateNote below is about.
-  const affiliateAdsAmt = typeof affiliateAdsEstimate === "number" ? +affiliateAdsEstimate.toFixed(2) : 0;
+
+  // Platform Support Fee — prefer real field, otherwise use flat rate
+  const platformSupportAmt = o.tiktokPlatformSupportFee > 0
+    ? o.tiktokPlatformSupportFee
+    : TIKTOK_PLATFORM_SUPPORT_FEE_FLAT;
+
+  // Est. Seller Shipping Fee (2026-10-03) — prefer real field (can be positive
+  // or negative, e.g., -RM0.16 for a deduction). Only show as 0 if the real
+  // field is explicitly 0 or unavailable.
+  const shippingAmt = o.tiktokSellerShippingFee !== null && o.tiktokSellerShippingFee !== undefined
+    ? Number(o.tiktokSellerShippingFee)
+    : 0;
+
+  // Affiliate Commission (2026-10-03) — MUST use real value when available.
+  // Real field tiktokAffiliateFee is the source of truth from TikTok API.
+  const affiliateAmt = o.tiktokAffiliateFee != null && o.tiktokAffiliateFee !== 0
+    ? Number(o.tiktokAffiliateFee)
+    : (typeof affiliateEstimate === "number"
+        ? +affiliateEstimate.toFixed(2)
+        : Number(resolveTikTokAffiliateCommission(o, lineItems)));
+
+  // Affiliate Shop Ads Commission (2026-10-03) — MUST use real value when
+  // available. Real field tiktokAffiliateAdsFee is authoritative.
+  const affiliateAdsAmt = o.tiktokAffiliateAdsFee != null && o.tiktokAffiliateAdsFee !== 0
+    ? Number(o.tiktokAffiliateAdsFee)
+    : (typeof affiliateAdsEstimate === "number" ? +affiliateAdsEstimate.toFixed(2) : 0);
+
+  // GMV Max ad fee (2026-10-04) — MUST use real value from TikTok settlement API.
+  // tiktok-settlement-sync extracts gmv_max_ad_fee_amount from statement_transactions.
+  // Do NOT fall back to percentage calculation — if TikTok settlement data is not yet
+  // synced (tiktokGmvMaxAdFee is null/0), display 0, never estimate from revenue percentage.
+  // This ensures ERP always shows authoritative TikTok settlement data, never guesses.
+  const gmvMaxAdFeeAmt = Number(o.tiktokGmvMaxAdFee ?? 0);
+  // GMV Max awaiting settlement (2026-10-04) — when gmvMaxAdFeeAmt is 0, it could mean either:
+  // (1) No GMV Max ad spend for this order, or (2) Settlement data not yet synced.
+  // We mark it as "awaiting" only for TikTok orders not in final settlement state,
+  // so UI can show a neutral status instead of treating it as an error/missing data.
+  const gmvMaxAwaitingSettlement = gmvMaxAdFeeAmt === 0;
   const fees = [
     { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
     // pct here is the effective rate vs merchandise revenue (matches how
@@ -848,6 +885,7 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEs
     { label: t("预估卖家运费", "Est. Seller Shipping Fee"), amount: shippingAmt, pct: revenue > 0 ? (shippingAmt / revenue) * 100 : 0 },
     { label: t("预估达人佣金", "Est. Affiliate Commission"), amount: affiliateAmt, pct: revenue > 0 ? (affiliateAmt / revenue) * 100 : 0 },
     { label: t("达人/商城广告佣金 (Affiliate Shop Ads Commission)", "Affiliate Shop Ads Commission"), amount: affiliateAdsAmt, pct: revenue > 0 ? (affiliateAdsAmt / revenue) * 100 : 0 },
+    { label: t("GMV Max 广告费", "GMV Max Ad Fee"), amount: gmvMaxAdFeeAmt, pct: revenue > 0 ? (gmvMaxAdFeeAmt / revenue) * 100 : 0 },
   ].filter((f) => f.amount !== 0);
   const totalFees = +fees.reduce((sum, f) => sum + f.amount, 0).toFixed(2);
   // Affiliate commission placeholder note (2026-08-22, user request; revised
@@ -871,6 +909,13 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEs
           "达人佣金以 TikTok 官方结算数据为准，本单尚未同步到达人佣金数据（未计入以上预估到账金额，不代表本单无达人佣金）",
           "Affiliate commission reflects TikTok's official settlement once available — this order hasn't been synced with affiliate commission data yet (not included in the estimated payout above; does not mean this order has zero affiliate commission)",
         );
+  // Est. Payout Amount (2026-10-03) — prefer real settlement amount if
+  // available; otherwise calculate from revenue - fees. Real settlement
+  // amount is the source of truth when present (synced from TikTok API).
+  const orderIncome = o.tiktokSettlementAmount > 0
+    ? o.tiktokSettlementAmount
+    : +(revenue - totalFees).toFixed(2);
+
   return {
     merchandiseSubtotal: revenue,
     // Shipping is now represented as a fee line (deduction) above, matching
@@ -881,7 +926,8 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEs
     logisticsShipping: null,
     fees,
     affiliateNote,
-    orderIncome: +(revenue - totalFees).toFixed(2),
+    orderIncome,
+    gmvMaxAwaitingSettlement,
   };
 }
 
@@ -1033,6 +1079,22 @@ export function FeeBreakdownPanel({ detail, t, isEstimate, items }) {
         <div className="mt-2 flex items-start gap-1.5 text-[11px] text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-2">
           <Info size={12} className="shrink-0 mt-0.5" />
           <span>{detail.affiliateNote}</span>
+        </div>
+      )}
+      {/* GMV Max awaiting settlement note (2026-10-04, new) — when GMV Max Ad Fee
+          data is not yet available (gmvMaxAwaitingSettlement=true), display a
+          neutral status message instead of treating it as an error or missing data.
+          This occurs when TikTok API returns 200 but hasn't generated statement_transactions
+          yet — order will receive real GMV Max data once TikTok completes settlement. */}
+      {detail.gmvMaxAwaitingSettlement && (
+        <div className="mt-2 flex items-start gap-1.5 text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2">
+          <Info size={12} className="shrink-0 mt-0.5" />
+          <span>
+            {t(
+              "GMV Max 广告费：订单尚未在 TikTok 生成结算流水，真实费用数据将在 TikTok 完成结算后自动更新",
+              "GMV Max Ad Fee: Order has not yet generated settlement transaction data on TikTok. Real fee data will be updated automatically once TikTok completes settlement.",
+            )}
+          </span>
         </div>
       )}
     </>

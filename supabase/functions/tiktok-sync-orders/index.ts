@@ -1377,6 +1377,109 @@ Deno.serve(async (req: Request) => {
         });
       }
       const statusParam = url.searchParams.get("status");
+      // Read-only diagnostic (2026-09-24, 投递失败 investigation): pages
+      // through every order of `status` (default CANCELLED) created in the
+      // last `days` (default 60) via next_page_token, 100/page, and returns
+      // only aggregate counts — cancel_reason × cancellation_initiator ×
+      // tracking_number presence, plus line-item display/package status and
+      // per-status totals for the same window. Never writes to any table.
+      if (url.searchParams.get("summary") === "1") {
+        const days = Number(url.searchParams.get("days") ?? "60");
+        const createTimeGe = Math.floor(Date.now() / 1000) - days * 86400;
+        const summaryStatus = statusParam ?? "CANCELLED";
+        // deno-lint-ignore no-explicit-any
+        const bump = (m: Record<string, any>, k: string) => { m[k] = (m[k] ?? 0) + 1; };
+        const combos: Record<string, { cancel_reason: string; cancellation_initiator: string; count: number; with_tracking: number; sample_order_ids: string[] }> = {};
+        const byInitiator: Record<string, number> = {};
+        const lineDisplayStatus: Record<string, number> = {};
+        const linePackageStatus: Record<string, number> = {};
+        const lineCancelUser: Record<string, number> = {};
+        const orderKeyPresence: Record<string, number> = {};
+        let scanned = 0;
+        let withTracking = 0;
+        let totalCount: number | null = null;
+        let pages = 0;
+        const deliveryFailedIds: string[] = [];
+        let pageToken: string | undefined;
+        do {
+          const q: Record<string, string> = { shop_cipher: shopCipher, page_size: "100", sort_field: "create_time", sort_order: "DESC" };
+          if (pageToken) q.page_token = pageToken;
+          const page = await tiktokCall("POST", "/order/202309/orders/search", creds, accounts[0], q, { order_status: summaryStatus, create_time_ge: createTimeGe });
+          pages++;
+          totalCount = page?.total_count ?? totalCount;
+          for (const o of page?.orders ?? []) {
+            scanned++;
+            const reason = String(o.cancel_reason ?? "<none>");
+            const initiator = String(o.cancellation_initiator ?? "<none>");
+            const hasTracking = !!(o.tracking_number || (o.line_items ?? []).some((li: { tracking_number?: string }) => li.tracking_number));
+            if (hasTracking) withTracking++;
+            const key = `${reason}||${initiator}`;
+            const c = combos[key] ??= { cancel_reason: reason, cancellation_initiator: initiator, count: 0, with_tracking: 0, sample_order_ids: [] };
+            c.count++;
+            if (hasTracking) c.with_tracking++;
+            if (c.sample_order_ids.length < 3) c.sample_order_ids.push(o.id);
+            bump(byInitiator, initiator);
+            if (mapTikTokFulfillmentStatus(o.status, o) === "delivery_failed") deliveryFailedIds.push(o.id);
+            for (const k of Object.keys(o)) if (o[k] !== null && o[k] !== "" && o[k] !== undefined) bump(orderKeyPresence, k);
+            for (const li of o.line_items ?? []) {
+              bump(lineDisplayStatus, String(li.display_status ?? "<none>"));
+              bump(linePackageStatus, String(li.package_status ?? "<none>"));
+              bump(lineCancelUser, String(li.cancel_user ?? "<none>"));
+            }
+          }
+          pageToken = page?.next_page_token || undefined;
+        } while (pageToken && pages < 60);
+
+        // apply=1 (2026-09-24, 投递失败 backfill): writes ONLY
+        // fulfillment_status='delivery_failed' onto the existing TikTok rows
+        // the real mapping above matched within this window — no other
+        // column, no other row, nothing ever cleared or deleted.
+        let applied: number | null = null;
+        let applyError: string | null = null;
+        if (url.searchParams.get("apply") === "1" && deliveryFailedIds.length > 0) {
+          const { data: upd, error: updErr } = await supabase
+            .from("orders")
+            .update({ fulfillment_status: "delivery_failed" })
+            .eq("platform", "tiktok")
+            .eq("platform_account_id", accounts[0].id)
+            .eq("platform_status", "CANCELLED")
+            .in("order_no", deliveryFailedIds)
+            .select("id");
+          applied = upd?.length ?? 0;
+          applyError = updErr?.message ?? null;
+        }
+
+        const statusTotals: Record<string, number | string> = {};
+        for (const s of ["UNPAID", "ON_HOLD", "AWAITING_SHIPMENT", "PARTIALLY_SHIPPING", "AWAITING_COLLECTION", "IN_TRANSIT", "DELIVERED", "COMPLETED", "CANCELLED"]) {
+          try {
+            const r = await tiktokCall("POST", "/order/202309/orders/search", creds, accounts[0], { shop_cipher: shopCipher, page_size: "1" }, { order_status: s, create_time_ge: createTimeGe });
+            statusTotals[s] = r?.total_count ?? 0;
+          } catch (e) {
+            statusTotals[s] = `error: ${(e as Error).message}`;
+          }
+        }
+
+        return new Response(JSON.stringify({
+          endpoint: "POST /order/202309/orders/search",
+          filter: { order_status: summaryStatus, create_time_ge: createTimeGe, days },
+          total_count: totalCount,
+          scanned,
+          pages,
+          truncated: !!pageToken,
+          with_tracking: withTracking,
+          delivery_failed_count: deliveryFailedIds.length,
+          delivery_failed_order_ids: deliveryFailedIds,
+          applied,
+          apply_error: applyError,
+          by_initiator: byInitiator,
+          combos: Object.values(combos).sort((a, b) => b.count - a.count),
+          line_item_display_status: lineDisplayStatus,
+          line_item_package_status: linePackageStatus,
+          line_item_cancel_user: lineCancelUser,
+          order_key_presence: orderKeyPresence,
+          status_totals_same_window: statusTotals,
+        }, null, 2), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
       const searchData = await tiktokCall(
         "POST",
         "/order/202309/orders/search",

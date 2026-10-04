@@ -88,6 +88,8 @@ export function mapDbProduct(p, fallbackShopId) {
     costPrice: Number(p.cost_price || 0),
     status: p.status || "active",
     autocountItemCode: p.autocount_item_code || "",
+    platform: p.platform || null,
+    platformSyncId: p.platform_sync_id || null,
   };
 }
 
@@ -304,6 +306,21 @@ export function mapDbOrder(order, items) {
     lastPrintedBy: order.last_printed_by || null,
     noteColor: order.note_color || null,
     noteText: order.note_text || "",
+    // TikTok real settlement fee fields (2026-10-04) — synced from TikTok API
+    // by tiktok-settlement-sync. For unsettled orders, these will be null/0,
+    // and tiktokEstimatedBreakdown() will use estimated values instead.
+    // All values must come directly from TikTok statement_transactions API,
+    // never calculated or estimated from revenue percentages.
+    tiktokCommissionFee: Number(order.tiktok_commission_fee ?? 0),
+    tiktokTransactionFee: Number(order.tiktok_transaction_fee ?? 0),
+    tiktokAffiliateFee: Number(order.tiktok_affiliate_commission ?? 0),
+    tiktokAffiliateAdsFee: Number(order.tiktok_affiliate_ads_commission ?? 0),
+    tiktokSellerShippingFee: Number(order.tiktok_seller_shipping_fee ?? 0),
+    tiktokGmvMaxAdFee: Number(order.tiktok_gmv_max_ad_fee ?? 0),
+    tiktokPlatformSupportFee: Number(order.tiktok_platform_support_fee ?? 0),
+    tiktokVoucherXtraDiscount: Number(order.tiktok_voucher_xtra_discount ?? 0),
+    tiktokBxpAmount: Number(order.tiktok_bxp_amount ?? 0),
+    tiktokSettlementAmount: Number(order.tiktok_settlement_amount ?? 0),
   };
 }
 

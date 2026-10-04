@@ -423,7 +423,7 @@ export default function App() {
   useEffect(() => { myRoleRef.current = myRole; }, [myRole]);
   useEffect(() => { myStoreIdsRef.current = myStoreIds; }, [myStoreIds]);
 
-  const ORDER_COLUMNS = "id, order_no, platform, platform_account_id, buyer_name, buyer_phone, shipping_address, buyer_user_id, buyer_username, tracking_no, courier, order_status, platform_status, warehouse_stage, cancel_stage, is_cod, shipping_fee, order_date, ship_deadline, delivery_option, print_count, last_printed_at, last_printed_by, note_color, note_text, updated_at";
+  const ORDER_COLUMNS = "id, order_no, platform, platform_account_id, buyer_name, buyer_phone, shipping_address, buyer_user_id, buyer_username, tracking_no, courier, order_status, platform_status, fulfillment_status, warehouse_stage, cancel_stage, is_cod, shipping_fee, order_date, ship_deadline, delivery_option, print_count, last_printed_at, last_printed_by, note_color, note_text, updated_at";
 
   // Supabase's REST API caps any single response at 1000 rows and a `.in()`
   // filter with thousands of ids blows past sane URL length limits, so once
@@ -531,7 +531,7 @@ export default function App() {
     // every non-owner regardless of correct store_ids — a regression, not a
     // real access-control boundary. Left unfiltered pending a real decision
     // on what "product access scope" should even mean for this business.
-    const productsQuery = supabaseClient.from("products").select("id, sku, name, warehouse_a_qty, warehouse_b_qty, listed_shop_id, location, location_id, price, weight_kg, unit, image_url, category, brand, part_number, barcode, cost_price, status, autocount_item_code");
+    const productsQuery = supabaseClient.from("products").select("id, sku, name, warehouse_a_qty, warehouse_b_qty, listed_shop_id, location, location_id, price, weight_kg, unit, image_url, category, brand, part_number, barcode, cost_price, status, autocount_item_code, platform, platform_sync_id");
 
     const [accountsRes, productsRes, suppliersRes, purchaseOrdersRes, ordersRes, transferLogsRes, warehouseLocationsRes, adjustmentRequestsRes, cancellationRecordsRes] = await Promise.all([
       accountsQuery,

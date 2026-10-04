@@ -9,3 +9,9 @@ verify_jwt = false
 
 [functions.tiktok-sync-orders]
 verify_jwt = false
+
+[functions.tiktok-auth-start]
+verify_jwt = false
+
+[functions.tiktok-auth-callback]
+verify_jwt = false

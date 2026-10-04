@@ -14,7 +14,7 @@ import {
 import {
   PLATFORM_THEME, SALES_TREND, STATUS_STEPS, ACTIONABLE_STATUS,
   profit, fmt, statusColor, statusLabel, warehouseLabel, supabaseClient,
-  mapDbStockMovement, MOVEMENT_TYPE_LABELS, DEMO_TO_DB_PLATFORM,
+  mapDbStockMovement, MOVEMENT_TYPE_LABELS, DEMO_TO_DB_PLATFORM, mapDbOrder,
 } from "./shared.jsx";
 // Reused from the Finance page's real settlement/estimate logic
 // (2026-08-20, new) — OrderDrawer's new "预估收入明细"/"买家实付金额"
@@ -617,6 +617,7 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
   const [showOrderOverview, setShowOrderOverview] = useState(false);
   const [showPendingPopup, setShowPendingPopup] = useState(false);
   const [storeFilter, setStoreFilter] = useState("all"); // "all" | "Shopee" | "TikTok Shop" | store id
+  const [revenueTimeRange, setRevenueTimeRange] = useState("7d"); // "7d" | "30d" | "60d"
 
   // 订单总数 card — today's PENDING orders only (Shopee + TikTok combined),
   // same isPendingOrder definition used by the 待处理订单 card below, just
@@ -701,7 +702,11 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
   const revenueByDateChartData = useMemo(() => {
     const today = new Date();
     const dateMap = {};
-    for (let i = 6; i >= 0; i--) {
+    let daysBack = 6; // default to 7 days
+    if (revenueTimeRange === "30d") daysBack = 29;
+    else if (revenueTimeRange === "60d") daysBack = 59;
+
+    for (let i = daysBack; i >= 0; i--) {
       const d = new Date(today);
       d.setDate(d.getDate() - i);
       const dateStr = d.toISOString().slice(0, 10);
@@ -714,7 +719,28 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
       }
     });
     return Object.values(dateMap);
-  }, [orders]);
+  }, [orders, revenueTimeRange]);
+
+  const revenueMaxValue = useMemo(() => {
+    if (!revenueByDateChartData || revenueByDateChartData.length === 0) return 1000;
+    const max = Math.max(...revenueByDateChartData.map(d => d.revenue || 0));
+    if (max === 0) return 1000;
+    const magnitude = Math.pow(10, Math.floor(Math.log10(max)));
+    const normalized = Math.ceil(max / magnitude) * magnitude;
+    return normalized;
+  }, [revenueByDateChartData]);
+
+  const revenueYAxisTicks = useMemo(() => {
+    const ticks = [];
+    const step = Math.ceil(revenueMaxValue / 5 / 50) * 50;
+    for (let i = 0; i <= revenueMaxValue; i += step) {
+      ticks.push(i);
+    }
+    if (ticks[ticks.length - 1] < revenueMaxValue) {
+      ticks.push(revenueMaxValue);
+    }
+    return ticks;
+  }, [revenueMaxValue]);
 
   return (
     <div className="space-y-2">
@@ -751,12 +777,12 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <svg className="absolute bottom-2 right-2 w-12 h-8" viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <linearGradient id="grad-indigo" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#C7D2FE" stopOpacity="0.4" />
-                <stop offset="100%" stopColor="#C7D2FE" stopOpacity="0.1" />
+                <stop offset="0%" stopColor="#C7D2FE" stopOpacity="0.5" />
+                <stop offset="100%" stopColor="#C7D2FE" stopOpacity="0.05" />
               </linearGradient>
             </defs>
-            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6" stroke="white" strokeWidth="1.5" fill="none" />
-            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6 L 48 32 L 0 32 Z" fill="url(#grad-indigo)" />
+            <path d="M 0 22 Q 8 20 12 18 Q 16 16 20 14 Q 24 12 28 13 Q 32 14 36 10 Q 40 8 48 6 L 48 28 Q 40 28 36 28 Q 32 28 28 28 Q 24 28 20 28 Q 16 28 12 28 Q 8 28 0 28 Z" fill="url(#grad-indigo)" />
+            <path d="M 0 22 Q 8 20 12 18 Q 16 16 20 14 Q 24 12 28 13 Q 32 14 36 10 Q 40 8 48 6" stroke="rgba(255,255,255,0.9)" strokeWidth="1.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
 
@@ -773,12 +799,12 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <svg className="absolute bottom-2 right-2 w-12 h-8" viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <linearGradient id="grad-teal" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#99F6E4" stopOpacity="0.4" />
-                <stop offset="100%" stopColor="#99F6E4" stopOpacity="0.1" />
+                <stop offset="0%" stopColor="#99F6E4" stopOpacity="0.5" />
+                <stop offset="100%" stopColor="#99F6E4" stopOpacity="0.05" />
               </linearGradient>
             </defs>
-            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6" stroke="white" strokeWidth="1.5" fill="none" />
-            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6 L 48 32 L 0 32 Z" fill="url(#grad-teal)" />
+            <path d="M 0 22 Q 8 20 12 18 Q 16 16 20 14 Q 24 12 28 13 Q 32 14 36 10 Q 40 8 48 6 L 48 28 Q 40 28 36 28 Q 32 28 28 28 Q 24 28 20 28 Q 16 28 12 28 Q 8 28 0 28 Z" fill="url(#grad-teal)" />
+            <path d="M 0 22 Q 8 20 12 18 Q 16 16 20 14 Q 24 12 28 13 Q 32 14 36 10 Q 40 8 48 6" stroke="rgba(255,255,255,0.9)" strokeWidth="1.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
 
@@ -795,12 +821,12 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <svg className="absolute bottom-2 right-2 w-12 h-8" viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <linearGradient id="grad-blue" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#93C5FD" stopOpacity="0.4" />
-                <stop offset="100%" stopColor="#93C5FD" stopOpacity="0.1" />
+                <stop offset="0%" stopColor="#93C5FD" stopOpacity="0.5" />
+                <stop offset="100%" stopColor="#93C5FD" stopOpacity="0.05" />
               </linearGradient>
             </defs>
-            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6" stroke="white" strokeWidth="1.5" fill="none" />
-            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6 L 48 32 L 0 32 Z" fill="url(#grad-blue)" />
+            <path d="M 0 22 Q 8 20 12 18 Q 16 16 20 14 Q 24 12 28 13 Q 32 14 36 10 Q 40 8 48 6 L 48 28 Q 40 28 36 28 Q 32 28 28 28 Q 24 28 20 28 Q 16 28 12 28 Q 8 28 0 28 Z" fill="url(#grad-blue)" />
+            <path d="M 0 22 Q 8 20 12 18 Q 16 16 20 14 Q 24 12 28 13 Q 32 14 36 10 Q 40 8 48 6" stroke="rgba(255,255,255,0.9)" strokeWidth="1.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
 
@@ -817,12 +843,12 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <svg className="absolute bottom-2 right-2 w-12 h-8" viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <linearGradient id="grad-purple" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#E9D5FF" stopOpacity="0.4" />
-                <stop offset="100%" stopColor="#E9D5FF" stopOpacity="0.1" />
+                <stop offset="0%" stopColor="#E9D5FF" stopOpacity="0.5" />
+                <stop offset="100%" stopColor="#E9D5FF" stopOpacity="0.05" />
               </linearGradient>
             </defs>
-            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6" stroke="white" strokeWidth="1.5" fill="none" />
-            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6 L 48 32 L 0 32 Z" fill="url(#grad-purple)" />
+            <path d="M 0 22 Q 8 20 12 18 Q 16 16 20 14 Q 24 12 28 13 Q 32 14 36 10 Q 40 8 48 6 L 48 28 Q 40 28 36 28 Q 32 28 28 28 Q 24 28 20 28 Q 16 28 12 28 Q 8 28 0 28 Z" fill="url(#grad-purple)" />
+            <path d="M 0 22 Q 8 20 12 18 Q 16 16 20 14 Q 24 12 28 13 Q 32 14 36 10 Q 40 8 48 6" stroke="rgba(255,255,255,0.9)" strokeWidth="1.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
 
@@ -839,12 +865,12 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           <svg className="absolute bottom-2 right-2 w-12 h-8" viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <linearGradient id="grad-rose" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#FBCFE8" stopOpacity="0.4" />
-                <stop offset="100%" stopColor="#FBCFE8" stopOpacity="0.1" />
+                <stop offset="0%" stopColor="#FBCFE8" stopOpacity="0.5" />
+                <stop offset="100%" stopColor="#FBCFE8" stopOpacity="0.05" />
               </linearGradient>
             </defs>
-            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6" stroke="white" strokeWidth="1.5" fill="none" />
-            <path d="M 0 20 L 8 18 L 16 14 L 24 12 L 32 10 L 40 8 L 48 6 L 48 32 L 0 32 Z" fill="url(#grad-rose)" />
+            <path d="M 0 22 Q 8 20 12 18 Q 16 16 20 14 Q 24 12 28 13 Q 32 14 36 10 Q 40 8 48 6 L 48 28 Q 40 28 36 28 Q 32 28 28 28 Q 24 28 20 28 Q 16 28 12 28 Q 8 28 0 28 Z" fill="url(#grad-rose)" />
+            <path d="M 0 22 Q 8 20 12 18 Q 16 16 20 14 Q 24 12 28 13 Q 32 14 36 10 Q 40 8 48 6" stroke="rgba(255,255,255,0.9)" strokeWidth="1.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
       </div>
@@ -883,16 +909,106 @@ export function Overview({ t, orders, inventory, stores, onOpenOrder, goTo, onGo
           </div>
         </div>
 
-        <div className="bg-white border border-gray-200 rounded-2xl p-3 shadow-sm">
-          <div className="text-sm font-semibold text-slate-900 mb-2">{t("收入总览", "Revenue Overview")}</div>
-          <div className="h-48 bg-white">
+        <div className="bg-white border rounded-2xl p-4" style={{ borderColor: "#E5E7EB", boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)" }}>
+          {/* Header with Title and Tabs */}
+          <div className="flex items-start justify-between mb-6">
+            <div className="flex items-center gap-2">
+              <BarChart3 size={16} className="text-slate-700" strokeWidth={1.5} />
+              <h3 className="text-base font-semibold text-slate-900">{t("收入总览", "Revenue Overview")}</h3>
+            </div>
+
+            {/* Text Tab Design */}
+            <div className="flex gap-6 items-end">
+              <div
+                onClick={() => setRevenueTimeRange("7d")}
+                className="cursor-pointer pb-1 border-b-2 transition-all"
+                style={{
+                  borderColor: revenueTimeRange === "7d" ? "#2563EB" : "transparent",
+                  paddingBottom: "4px"
+                }}
+              >
+                <span className={revenueTimeRange === "7d" ? "text-xs font-medium text-slate-900" : "text-xs text-slate-500 font-normal"}>
+                  7{t("天", "d")}
+                </span>
+              </div>
+              <div
+                onClick={() => setRevenueTimeRange("30d")}
+                className="cursor-pointer pb-1 border-b-2 transition-all"
+                style={{
+                  borderColor: revenueTimeRange === "30d" ? "#2563EB" : "transparent",
+                  paddingBottom: "4px"
+                }}
+              >
+                <span className={revenueTimeRange === "30d" ? "text-xs font-medium text-slate-900" : "text-xs text-slate-500 font-normal"}>
+                  30{t("天", "d")}
+                </span>
+              </div>
+              <div
+                onClick={() => setRevenueTimeRange("60d")}
+                className="cursor-pointer pb-1 border-b-2 transition-all"
+                style={{
+                  borderColor: revenueTimeRange === "60d" ? "#2563EB" : "transparent",
+                  paddingBottom: "4px"
+                }}
+              >
+                <span className={revenueTimeRange === "60d" ? "text-xs font-medium text-slate-900" : "text-xs text-slate-500 font-normal"}>
+                  60{t("天", "d")}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Chart Container */}
+          <div style={{ height: "240px" }}>
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={revenueByDateChartData || [{day:"Mon",revenue:0}]} margin={{ top: 5, right: 8, left: -15, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="1 2" stroke="#e5e7eb" vertical={false} />
-                <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#9ca3af" }} stroke="none" />
-                <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} stroke="none" width={30} />
-                <Tooltip formatter={(value) => fmt(value || 0)} contentStyle={{ backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px" }} />
-                <Bar dataKey="revenue" fill="#3b82f6" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+              <BarChart
+                data={revenueByDateChartData || [{day:"Mon",revenue:0}]}
+                margin={{ top: 8, right: 12, left: 48, bottom: 24 }}
+                barCategoryGap="2%"
+              >
+                <defs>
+                  <linearGradient id="revenueGradient" x1="0" y1="100%" x2="0" y2="0%">
+                    <stop offset="0%" stopColor="#93C5FD" />
+                    <stop offset="100%" stopColor="#3B82F6" />
+                  </linearGradient>
+                  <filter id="revenueBlur">
+                    <feGaussianBlur in="SourceGraphic" stdDeviation="0.5" />
+                  </filter>
+                </defs>
+                <CartesianGrid strokeDasharray="0" stroke="#F3F4F6" vertical={false} />
+                <XAxis
+                  dataKey="day"
+                  tick={{ fontSize: 10, fill: "#9CA3AF" }}
+                  stroke="none"
+                  interval={revenueTimeRange === "7d" ? 0 : revenueTimeRange === "30d" ? 4 : 8}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: "#6B7280" }}
+                  tickFormatter={(value) => {
+                    if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
+                    return Math.round(value).toString();
+                  }}
+                  stroke="none"
+                  width={44}
+                  axisLine={false}
+                  tickLine={false}
+                  domain={[0, revenueMaxValue]}
+                  label={{ value: 'RM', angle: 0, position: 'left', offset: 0, dx: -40, dy: 0, style: { fill: '#4B5563', fontSize: 10, fontWeight: 600, textAnchor: 'end' } }}
+                />
+                <Tooltip
+                  formatter={(value) => fmt(value || 0)}
+                  contentStyle={{ backgroundColor: "#1F2937", border: "1px solid #374151", borderRadius: "6px", color: "#F3F4F6" }}
+                  labelStyle={{ color: "#9CA3AF" }}
+                />
+                <Bar
+                  dataKey="revenue"
+                  fill="url(#revenueGradient)"
+                  radius={[3, 3, 0, 0]}
+                  isAnimationActive={false}
+                  filter="url(#revenueBlur)"
+                />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -1051,6 +1167,59 @@ const ORDER_STATUS_LABELS = {
   cancelled: { zh: "已取消", en: "Cancelled" },
 };
 
+// Real Shopee get_return_detail `reverse_logistics_status`/`logistics_status`
+// values, confirmed live 2026-09-23 against all 24 real synced returns across
+// both connected shops (see shopee_returns.raw) — only the values actually
+// observed are labeled below; anything else falls back to showing Shopee's
+// raw value as-is (never invented/guessed, e.g. no fabricated "Delivery
+// Failed" state — that value has not been seen in real data).
+// Internal-only (never sent to Shopee) problem-tag palette for the Return/
+// Refund popover — deliberately a separate map from NOTE_COLORS (that one
+// is the existing red/yellow/purple order-note feature elsewhere on this
+// page; this feature's palette is red/green/blue per explicit redesign).
+// Legacy 'yellow'/'purple' values saved before this redesign still render
+// correctly (falls back to their own hex here) even though the popover no
+// longer offers them as a choice — nothing is silently discarded.
+const SHOPEE_RETURN_FLAG_COLOR_HEX = { red: "#ef4444", green: "#22c55e", blue: "#3b82f6", yellow: "#eab308", purple: "#a855f7" };
+
+const SHOPEE_RETURN_LOGISTICS_LABELS = {
+  LOGISTICS_NOT_STARTED: { zh: "尚未开始", en: "Not Started" },
+  LOGISTICS_PICKUP_DONE: { zh: "已取件·运输中", en: "Picked Up · In Transit" },
+  LOGISTICS_DELIVERY_DONE: { zh: "已送达", en: "Delivered" },
+  LOGISTICS_REQUEST_CANCELED: { zh: "物流请求已取消", en: "Logistics Cancelled" },
+  Delivered: { zh: "已送达", en: "Delivered" },
+};
+
+// Parses the real Shopee get_return_detail response already stored in
+// shopee_returns.raw (no new DB columns, no new API call) into the product
+// items + RETURN-parcel ("reverse") logistics fields the UI needs. Every
+// field read here was confirmed present in the actual live response before
+// this was written — item[]/reverse_logistics_status/reverse_logistics_
+// channel_name/tracking_number, checked across all 24 real synced returns.
+// get_return_detail never carries the ORIGINAL/forward shipment (courier,
+// forward tracking no, forward delivery status) — that only exists on the
+// already-synced `orders` row, read separately (shopeeReturnForwardByOrder).
+function parseShopeeReturnDetail(raw) {
+  const resp = raw?.response || {};
+  const items = Array.isArray(resp.item)
+    ? resp.item.map((it) => ({
+        name: it.name || null,
+        qty: it.amount ?? null,
+        sku: it.item_sku || it.variation_sku || null,
+        image: Array.isArray(it.images) && it.images.length > 0 ? it.images[0] : null,
+      }))
+    : [];
+  const needsLogistics = resp.needs_logistics === true;
+  const logisticsStatusRaw = resp.reverse_logistics_status || resp.logistics_status || null;
+  return {
+    items,
+    needsLogistics,
+    logisticsStatusRaw,
+    trackingNumber: resp.tracking_number || null,
+    courier: resp.reverse_logistics_channel_name || null,
+  };
+}
+
 // Card border is neutral gray by default; icon/number colors are permanent
 // and never change (untouched by selection state). Each card's `filterValue`
 // matches the status chip row's values below purely so the card can pick up
@@ -1144,6 +1313,85 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
     if (entryFilter && onConsumeEntryFilter) onConsumeEntryFilter();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 退货/退款 (Return/Refund) real data — reads the real shopee_returns
+  // table (synced by the shopee-sync-returns edge function + its own
+  // independent cron), NOT derived/guessed from orders.order_status.
+  // Only fetched while this exact filter is active, scoped to activeStore
+  // when a specific Shopee shop is selected (same platformAccountId the
+  // store cards already use elsewhere on this page). Read-only — never
+  // writes to shopee_returns, orders, or any other table.
+  const [shopeeReturns, setShopeeReturns] = useState([]);
+  const [shopeeReturnsLoading, setShopeeReturnsLoading] = useState(false);
+  // order_id -> real order_items rows (sku/product_name/variation/qty/
+  // image_url) — the exact same table/columns the normal order list already
+  // reads (see fetchOrderItemsFor / mapDbOrder in erp-mvp-demo.jsx & shared.jsx),
+  // just scoped to the orders these returns point at. No new image system,
+  // no products/inventory writes, read-only.
+  const [shopeeReturnItemsByOrder, setShopeeReturnItemsByOrder] = useState({});
+  // order_id -> real orders row (courier/tracking_no/platform_status) — the
+  // ORIGINAL outbound shipment ("Forward Logistic"), already synced by
+  // shopee-sync-orders and read-only here. get_return_detail itself only
+  // ever carries the REVERSE (return) shipment, never the forward one — see
+  // parseShopeeReturnDetail's comment — so this is the real, correct place
+  // to get Forward Logistic data from.
+  const [shopeeReturnForwardByOrder, setShopeeReturnForwardByOrder] = useState({});
+  // Internal problem tag — icon-triggered popover, not an always-open
+  // block. shopeeReturnPopoverId = which row's popover is open (its
+  // shopee_returns.id, or null); color/note/error are the draft state
+  // inside that open popover, only written to the DB on "保存" (both a
+  // color AND a note are required together — see the Save handler) —
+  // "取消" just closes the popover and discards the draft, leaving the
+  // last-saved value (and the ⚠️ icon's color) untouched. "删除标记" clears
+  // both fields back to null/gray.
+  const [shopeeReturnPopoverId, setShopeeReturnPopoverId] = useState(null);
+  const [shopeeReturnPopoverColor, setShopeeReturnPopoverColor] = useState(null);
+  const [shopeeReturnPopoverNote, setShopeeReturnPopoverNote] = useState("");
+  const [shopeeReturnPopoverError, setShopeeReturnPopoverError] = useState(null);
+  const [shopeeReturnSaving, setShopeeReturnSaving] = useState(null);
+  useEffect(() => {
+    if (!(statusFilter === "退款中" && activePlatform === "Shopee")) return;
+    let cancelled = false;
+    setShopeeReturnsLoading(true);
+    let q = supabaseClient
+      .from("shopee_returns")
+      .select("id, return_sn, order_no, order_id, status, refund_amount, reason, create_time, update_time, platform_account_id, raw, internal_flag_color, internal_note")
+      .order("update_time", { ascending: false });
+    if (activeStore) q = q.eq("platform_account_id", activeStore);
+    q.then(async ({ data, error }) => {
+      if (cancelled) return;
+      const rows = error ? [] : data || [];
+      setShopeeReturns(rows);
+
+      const orderIds = [...new Set(rows.map((r) => r.order_id).filter(Boolean))];
+      if (orderIds.length > 0) {
+        const [{ data: itemRows }, { data: orderRows }] = await Promise.all([
+          supabaseClient
+            .from("order_items")
+            .select("order_id, sku, product_name, variation, qty, image_url")
+            .in("order_id", orderIds),
+          supabaseClient
+            .from("orders")
+            .select("id, courier, tracking_no, platform_status")
+            .in("id", orderIds),
+        ]);
+        if (cancelled) return;
+        const byOrder = {};
+        (itemRows || []).forEach((it) => {
+          (byOrder[it.order_id] ||= []).push(it);
+        });
+        setShopeeReturnItemsByOrder(byOrder);
+        const forwardByOrder = {};
+        (orderRows || []).forEach((o) => { forwardByOrder[o.id] = o; });
+        setShopeeReturnForwardByOrder(forwardByOrder);
+      } else {
+        setShopeeReturnItemsByOrder({});
+        setShopeeReturnForwardByOrder({});
+      }
+      setShopeeReturnsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [statusFilter, activePlatform, activeStore]);
 
   // 待发货 tab-switch cleanup (2026-08-26, new) — a stale search query,
   // date-range filter, or priority sub-tag left over from a previous view
@@ -1479,7 +1727,13 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
       // a delivery failure could carry on either platform, same set
       // isFailedDeliveryOrder()/ORDER_CENTER_CARDS' "failed" card use — see
       // that function's own comment for the full list + rationale.
-      base().in("platform_status", [...TIKTOK_FAILED_DELIVERY_STATUSES, ...SHOPEE_FAILED_DELIVERY_STATUSES]),
+      // TikTok (2026-09-24): real delivery failures arrive as CANCELLED +
+      // fulfillment_status='delivery_failed' (set by tiktok-sync-orders'
+      // mapTikTokFulfillmentStatus), never as a platform_status value — so
+      // the count must also match that column, same as isFailedDeliveryOrder().
+      isTikTok
+        ? base().or(`platform_status.in.(${[...TIKTOK_FAILED_DELIVERY_STATUSES, ...SHOPEE_FAILED_DELIVERY_STATUSES].join(",")}),fulfillment_status.eq.delivery_failed`)
+        : base().in("platform_status", [...TIKTOK_FAILED_DELIVERY_STATUSES, ...SHOPEE_FAILED_DELIVERY_STATUSES]),
       base().eq("order_status", "cancelled"),
       // 今天取消: no dedicated "cancelled_at" column exists (not adding one
       // per explicit instruction), so this uses the existing `updated_at`
@@ -2246,6 +2500,302 @@ export function Orders({ t, orders, stores, onOpenOrder, onPrint, onConfirmProce
             <div className="text-sm font-medium text-slate-700">
               {t(`已完成订单页面 · 共 ${cardCounts.completed ?? all.filter(DELIVERED_COMPLETED_SPLIT_CARD.bottom.match).length} 笔`, `Completed Orders · ${cardCounts.completed ?? all.filter(DELIVERED_COMPLETED_SPLIT_CARD.bottom.match).length} total`)}
             </div>
+          </div>
+        )}
+
+        {/* Shopee Return/Refund — real data from `shopee_returns`, including
+            its `raw` column (the full, real get_return_detail response
+            already captured by shopee-sync-returns — no new API call, no new
+            DB column). Product items + return-parcel logistics status/
+            tracking number are parsed straight out of that raw response by
+            parseShopeeReturnDetail(). Not derived from orders.order_status.
+            Only shown for Shopee (TikTok has no such table/sync yet, left
+            untouched). Read-only, no write path here. */}
+        {statusFilter === "退款中" && activePlatform === "Shopee" && (
+          <div className="px-5 pt-3 pb-1 border-t border-slate-100">
+            <div className="text-sm font-medium text-slate-700 mb-2">
+              {t(`Shopee 退货/退款（真实数据）· 共 ${shopeeReturns.length} 笔`, `Shopee Return/Refund (real data) · ${shopeeReturns.length} total`)}
+            </div>
+            {shopeeReturnsLoading ? (
+              <div className="text-xs text-slate-400 py-3">{t("加载中…", "Loading…")}</div>
+            ) : shopeeReturns.length === 0 ? (
+              <div className="text-xs text-slate-400 py-3">{t("暂无退货/退款记录", "No return/refund records")}</div>
+            ) : (
+              <div className="space-y-2 pb-2">
+                {shopeeReturns.map((r) => {
+                  const detail = parseShopeeReturnDetail(r.raw);
+                  // Real per-return item[] from Shopee's own detail response
+                  // is the primary source (accurate even for partial
+                  // returns); the order_items join is only a fallback for
+                  // the rare case that array came back empty — still real
+                  // data either way, never a placeholder/mock image.
+                  const items = detail.items.length > 0
+                    ? detail.items
+                    : (shopeeReturnItemsByOrder[r.order_id] || []).map((it) => ({
+                        name: it.product_name, qty: it.qty, sku: it.sku, image: it.image_url,
+                      }));
+                  const returnLogisticsLabel = detail.logisticsStatusRaw
+                    ? (SHOPEE_RETURN_LOGISTICS_LABELS[detail.logisticsStatusRaw]
+                        ? t(SHOPEE_RETURN_LOGISTICS_LABELS[detail.logisticsStatusRaw].zh, SHOPEE_RETURN_LOGISTICS_LABELS[detail.logisticsStatusRaw].en)
+                        : detail.logisticsStatusRaw) // unrecognized real value — show Shopee's raw text, never guessed
+                    : null;
+                  // Forward Logistic = the ORIGINAL outbound shipment, from
+                  // the already-synced `orders` row (courier/tracking_no/
+                  // platform_status) — get_return_detail does not carry this,
+                  // confirmed by inspecting its real response shape.
+                  const forward = shopeeReturnForwardByOrder[r.order_id] || null;
+                  // Real order object from the SAME `orders` array/shape this
+                  // whole page already uses for every other row's onOpenOrder
+                  // click — matched by the real order_id shopee-sync-returns
+                  // resolved server-side, not guessed from the order_no
+                  // string. Reuses the existing order detail drawer/route
+                  // as-is; no new page, no Shopee-site link.
+                  const matchedOrder = r.order_id ? orders.find((o) => o.id === r.order_id) : null;
+                  const popoverOpen = shopeeReturnPopoverId === r.id;
+                  const saving = shopeeReturnSaving === r.id;
+                  return (
+                    <div key={r.return_sn} className="border border-slate-200 rounded-xl p-3 flex gap-3">
+                      <div className="flex flex-col gap-1.5 shrink-0">
+                        {items.length > 0 ? items.map((it, idx) => (
+                          it.image ? (
+                            <img key={idx} src={it.image} alt={it.name || ""} title={it.name || ""} className="h-11 w-11 rounded-lg object-cover border border-slate-200" />
+                          ) : (
+                            <div key={idx} className="h-11 w-11 rounded-lg bg-slate-100 border border-slate-200" />
+                          )
+                        )) : (
+                          <div className="h-11 w-11 rounded-lg bg-slate-100 border border-slate-200" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1 text-xs">
+                        <div className="space-y-0.5">
+                          {items.length > 0 ? items.map((it, idx) => (
+                            <div key={idx} className="text-slate-700 truncate">
+                              <span className="font-medium">{it.name || t("（无商品名称）", "(no product name)")}</span>
+                              {" "}
+                              <span className="text-slate-400">
+                                {it.sku ? `${t("SKU", "SKU")}: ${it.sku} · ` : ""}{t("数量", "Qty")} {it.qty ?? "—"}
+                              </span>
+                            </div>
+                          )) : (
+                            <div className="text-slate-400">{t("（无商品资料）", "(no product data)")}</div>
+                          )}
+                        </div>
+                        <div className="text-slate-400 mt-1 font-mono">
+                          Return SN: {r.return_sn} · {t("订单号", "Order No")}:{" "}
+                          {r.order_id ? (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                // Fast path: this order is already in the
+                                // page's loaded `orders` array (same object
+                                // every other row's onOpenOrder click uses).
+                                // Fallback: that array is capped to a recent
+                                // window (pre-existing, unrelated to Return/
+                                // Refund) and can miss an older order, so
+                                // fetch + map just this one row on demand,
+                                // using the exact same mapDbOrder() the rest
+                                // of the app already uses — still the real
+                                // existing order detail drawer, no new page,
+                                // no route, no write.
+                                if (matchedOrder) {
+                                  onOpenOrder(matchedOrder);
+                                  return;
+                                }
+                                const [{ data: orderRow }, { data: itemRows }] = await Promise.all([
+                                  supabaseClient.from("orders").select("*").eq("id", r.order_id).maybeSingle(),
+                                  supabaseClient.from("order_items").select("*").eq("order_id", r.order_id),
+                                ]);
+                                if (orderRow) onOpenOrder(mapDbOrder(orderRow, itemRows || []));
+                              }}
+                              className="text-blue-600 hover:underline font-mono"
+                            >
+                              {r.order_no}
+                            </button>
+                          ) : (
+                            r.order_no
+                          )}
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-slate-600">
+                          <span>{t("状态", "Status")}: <span className="font-medium">{r.status || "—"}</span></span>
+                          <span>{t("退款", "Refund")}: <span className="font-medium">{r.refund_amount != null ? fmt(r.refund_amount) : "—"}</span></span>
+                          <span>{t("原因", "Reason")}: {r.reason || "—"}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">
+                          {t("创建", "Created")} {r.create_time ? new Date(r.create_time).toLocaleString() : "—"} · {t("更新", "Updated")} {r.update_time ? new Date(r.update_time).toLocaleString() : "—"}
+                        </div>
+
+                        {/* Forward Logistic — the ORIGINAL outbound shipment
+                            (real orders.courier/tracking_no/platform_status,
+                            already synced by shopee-sync-orders, read-only). */}
+                        <div className="mt-1.5 pt-1.5 border-t border-slate-100 text-slate-600">
+                          <div className="text-slate-500 font-medium mb-0.5">{t("正向物流 Forward Logistic", "Forward Logistic")}</div>
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                            <span>{t("物流公司", "Courier")}: {forward?.courier || "—"}</span>
+                            <span>Tracking No: {forward?.tracking_no || "—"}</span>
+                            <span>{t("物流状态", "Delivery Status")}: {forward?.platform_status || "—"}</span>
+                          </div>
+                        </div>
+
+                        {/* Return Logistic — the REVERSE (return-parcel)
+                            shipment, real reverse_logistics_status (falls
+                            back to logistics_status) + real courier +
+                            tracking_number from Shopee's own return detail
+                            response. Shown only when this return actually
+                            needed a physical shipment (needs_logistics ===
+                            true, a real field) — a refund-only return
+                            genuinely has no return parcel to track. */}
+                        {detail.needsLogistics && (
+                          <div className="mt-1.5 pt-1.5 border-t border-slate-100 text-slate-600">
+                            <div className="text-slate-500 font-medium mb-0.5 flex items-center gap-1">
+                              <Truck size={12} className="text-slate-400 shrink-0" /> {t("退货物流 Return Logistic", "Return Logistic")}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                              <span>{t("物流公司", "Courier")}: {detail.courier || "—"}</span>
+                              <span>Tracking No: {detail.trackingNumber || "—"}</span>
+                              <span>{t("物流状态", "Delivery Status")}: {returnLogisticsLabel || "—"}</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Internal problem tag — ERP-only, never sent to
+                            Shopee, never touches status/refund_amount/reason
+                            (see the restrict_shopee_returns_internal_update
+                            trigger). Reuses the existing shopee_returns.
+                            internal_flag_color/internal_note columns (no new
+                            columns, no new table) — a color + note pair,
+                            saved/read together, so each Return SN keeps its
+                            own independent tag that survives a refresh and a
+                            store switch (it's read straight from the DB row,
+                            not any client-only state). Icon-triggered
+                            popover: the icon itself changes color (no
+                            separate dot) — gray when untagged. */}
+                        <div className="mt-1.5 pt-1.5 border-t border-slate-100 relative inline-block">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (popoverOpen) {
+                                setShopeeReturnPopoverId(null);
+                              } else {
+                                setShopeeReturnPopoverColor(r.internal_flag_color || null);
+                                setShopeeReturnPopoverNote(r.internal_note || "");
+                                setShopeeReturnPopoverError(null);
+                                setShopeeReturnPopoverId(r.id);
+                              }
+                            }}
+                            className="flex items-center gap-1 text-slate-400 hover:text-slate-600"
+                            title={t("内部问题标记", "Internal Issue Tag")}
+                          >
+                            <AlertTriangle size={16} />
+                            {r.internal_flag_color && (
+                              <span
+                                className="h-2.5 w-2.5 rounded-full border border-black/10"
+                                style={{ backgroundColor: SHOPEE_RETURN_FLAG_COLOR_HEX[r.internal_flag_color] || "#94a3b8" }}
+                              />
+                            )}
+                          </button>
+                          {popoverOpen && (
+                            <>
+                              {/* Click-outside backdrop — same effect as 取消 (no save). */}
+                              <div className="fixed inset-0 z-40" onClick={() => setShopeeReturnPopoverId(null)} />
+                              <div className="absolute left-0 top-full mt-1 z-50 w-60 bg-white border border-slate-200 rounded-xl shadow-lg p-3">
+                                <div className="text-xs font-medium text-slate-700 mb-2">{t("内部问题标记", "Internal Issue Tag")}</div>
+                                <div className="text-[11px] text-slate-500 mb-1">{t("颜色", "Color")}</div>
+                                <div className="flex items-center gap-2 mb-2.5">
+                                  {["red", "green", "blue"].map((c) => (
+                                    <button
+                                      key={c}
+                                      type="button"
+                                      onClick={() => setShopeeReturnPopoverColor(c)}
+                                      title={c}
+                                      className={`h-6 w-6 rounded-full border-2 ${shopeeReturnPopoverColor === c ? "border-slate-700" : "border-transparent"}`}
+                                      style={{ backgroundColor: SHOPEE_RETURN_FLAG_COLOR_HEX[c] }}
+                                    />
+                                  ))}
+                                </div>
+                                <div className="text-[11px] text-slate-500 mb-1">{t("问题说明", "Issue Note")}</div>
+                                <textarea
+                                  value={shopeeReturnPopoverNote}
+                                  onChange={(e) => setShopeeReturnPopoverNote(e.target.value)}
+                                  placeholder={t("请输入这个退货/退款是什么问题", "Describe the issue with this return")}
+                                  rows={3}
+                                  className="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 outline-none focus:border-slate-400 resize-none"
+                                />
+                                {shopeeReturnPopoverError && (
+                                  <div className="text-[11px] text-rose-600 mt-1">{shopeeReturnPopoverError}</div>
+                                )}
+                                <div className="flex items-center justify-between gap-2 mt-2.5">
+                                  <button
+                                    type="button"
+                                    disabled={saving}
+                                    onClick={async () => {
+                                      setShopeeReturnSaving(r.id);
+                                      const { error } = await supabaseClient
+                                        .from("shopee_returns")
+                                        .update({ internal_flag_color: null, internal_note: null })
+                                        .eq("id", r.id);
+                                      if (!error) {
+                                        setShopeeReturns((prev) => prev.map((row) => (row.id === r.id ? { ...row, internal_flag_color: null, internal_note: null } : row)));
+                                        setShopeeReturnPopoverId(null);
+                                      }
+                                      setShopeeReturnSaving(null);
+                                    }}
+                                    className="text-xs px-2 py-1 rounded-lg text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+                                  >
+                                    {t("删除标记", "Delete Tag")}
+                                  </button>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => setShopeeReturnPopoverId(null)}
+                                      className="text-xs px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                                    >
+                                      {t("取消", "Cancel")}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={saving}
+                                      onClick={async () => {
+                                        // Both a color and a note are required together —
+                                        // a color-only tag with no explanation isn't
+                                        // allowed to be saved (explicit rule).
+                                        if (!shopeeReturnPopoverColor) {
+                                          setShopeeReturnPopoverError(t("请选择问题颜色", "Please choose a color"));
+                                          return;
+                                        }
+                                        if (!shopeeReturnPopoverNote.trim()) {
+                                          setShopeeReturnPopoverError(t("请输入问题说明", "Please enter an issue note"));
+                                          return;
+                                        }
+                                        setShopeeReturnPopoverError(null);
+                                        setShopeeReturnSaving(r.id);
+                                        const { error } = await supabaseClient
+                                          .from("shopee_returns")
+                                          .update({ internal_flag_color: shopeeReturnPopoverColor, internal_note: shopeeReturnPopoverNote.trim() })
+                                          .eq("id", r.id);
+                                        if (!error) {
+                                          setShopeeReturns((prev) => prev.map((row) => (row.id === r.id ? { ...row, internal_flag_color: shopeeReturnPopoverColor, internal_note: shopeeReturnPopoverNote.trim() } : row)));
+                                          setShopeeReturnPopoverId(null);
+                                        } else {
+                                          setShopeeReturnPopoverError(error.message);
+                                        }
+                                        setShopeeReturnSaving(null);
+                                      }}
+                                      className="text-xs px-2.5 py-1 rounded-lg bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-50"
+                                    >
+                                      {saving ? t("保存中…", "Saving…") : t("保存", "Save")}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 

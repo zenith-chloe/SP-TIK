@@ -239,8 +239,18 @@ Deno.serve(async (req: Request) => {
         + Math.abs(sum("affiliate_partner_commission_amount"));
       const affiliateAdsCommission = Math.abs(sum("affiliate_ads_commission_amount"));
       const platformDiscount = Math.abs(sum("platform_discount_amount"));
+      // GMV Max Ad Fee (2026-10-04) — real paid ad fee for GMV Max / auto-bidding
+      // campaigns, extracted directly from statement_transactions gmv_max_ad_fee_amount.
+      // Must use API value, never calculate from revenue percentage.
+      const gmvMaxAdFee = Math.abs(sum("gmv_max_ad_fee_amount"));
+      // Platform Support Fee (BXP / Bonus Cashback) — extracted from statement_transactions
+      const platformSupportFee = Math.abs(sum("platform_support_amount"));
+      // Voucher Xtra discount (if returned by API)
+      const voucherXtraDiscount = Math.abs(sum("voucher_xtra_discount_amount"));
+      // BXP amount (if returned separately)
+      const bxpAmount = Math.abs(sum("bxp_amount"));
       const settlementAmount = sum("settlement_amount");
-      const totalFees = transactionFee + commissionFee + sellerShippingFee + affiliateCommission + affiliateAdsCommission;
+      const totalFees = transactionFee + commissionFee + sellerShippingFee + affiliateCommission + affiliateAdsCommission + gmvMaxAdFee + platformSupportFee + voucherXtraDiscount + bxpAmount;
 
       const { error: upsertErr } = await supabase.from("order_settlements").upsert(
         {
@@ -252,6 +262,10 @@ Deno.serve(async (req: Request) => {
           tiktok_seller_shipping_fee: sellerShippingFee,
           tiktok_affiliate_commission: affiliateCommission,
           tiktok_affiliate_ads_commission: affiliateAdsCommission,
+          tiktok_gmv_max_ad_fee: gmvMaxAdFee,
+          tiktok_platform_support_fee: platformSupportFee,
+          tiktok_voucher_xtra_discount: voucherXtraDiscount,
+          tiktok_bxp_amount: bxpAmount,
           tiktok_platform_discount: platformDiscount,
           tiktok_settlement_amount: settlementAmount,
           total_fees: totalFees,

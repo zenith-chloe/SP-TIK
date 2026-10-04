@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Plus, Pencil, Trash2, X, Search, AlertTriangle, Package, Ban, CheckCircle2, Download } from "lucide-react";
+import { useState, Fragment as FragmentRows } from "react";
+import { Plus, Pencil, Trash2, X, Search, AlertTriangle, Package, Ban, CheckCircle2, Download, ChevronDown, ChevronRight } from "lucide-react";
 import { supabaseClient } from "./shared.jsx";
 
 // Product Master — internal SKU catalog (name/price/weight/unit/image), kept
@@ -9,6 +9,17 @@ import { supabaseClient } from "./shared.jsx";
 // no platform-linking fields exist yet, this only manages the internal SKU
 // identity and its master attributes, using the existing products table
 // as-is (no schema changes).
+// TikTok Product -> Variant grouping (2026-09-28). tiktok-sync-products
+// stores each imported TikTok SKU as one products row with
+// platform_sync_id = tiktok_<product_id>_<sku_id>; the parent product is
+// ONLY ever that real TikTok product_id — never name / SKU similarity.
+// Rows without that shape (manual ERP products) stay standalone rows.
+const TIKTOK_SYNC_ID = /^tiktok_(\d+)_(\d+)$/;
+function tiktokIdsOf(item) {
+  const m = TIKTOK_SYNC_ID.exec(item.platformSyncId || "");
+  return m ? { productId: m[1], skuId: m[2] } : null;
+}
+
 const emptyForm = {
   sku: "", name: "", price: "", weightKg: "", unit: "", imageUrl: "", initialStock: "",
   category: "", brand: "", partNumber: "", barcode: "", costPrice: "", status: "active", autocountItemCode: "",
@@ -316,6 +327,222 @@ export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete, stor
     });
   }
 
+  // Parent rows: one per real TikTok product_id (first-seen order), plus
+  // every non-TikTok product as its own standalone row, exactly as before.
+  const [expandedProducts, setExpandedProducts] = useState({});
+  const [variantDetails, setVariantDetails] = useState({}); // product_id -> { loading, error, data }
+  const tiktokAccountId = (stores || []).find((s) => s.platform === "TikTok Shop" && s.connectionStatus === "connected")?.id || null;
+
+  const erpSkusByProductId = new Map();
+  for (const item of inventory) {
+    const ids = tiktokIdsOf(item);
+    if (ids) erpSkusByProductId.set(ids.productId, [...(erpSkusByProductId.get(ids.productId) || []), item]);
+  }
+  const displayRows = [];
+  const groupIndex = new Map();
+  for (const item of filtered) {
+    const ids = tiktokIdsOf(item);
+    if (!ids) { displayRows.push({ type: "single", item }); continue; }
+    let group = groupIndex.get(ids.productId);
+    if (!group) {
+      group = { type: "tiktok", productId: ids.productId, items: [] };
+      groupIndex.set(ids.productId, group);
+      displayRows.push(group);
+    }
+    group.items.push(item);
+  }
+
+  // Read-only: live TikTok Get Product Detail via tiktok-sync-products
+  // (action "variantDetail") — shown in the expanded row only, never
+  // written back to products.
+  async function loadVariants(productId) {
+    if (!tiktokAccountId) {
+      setVariantDetails((prev) => ({ ...prev, [productId]: { loading: false, error: t("没有已连接的 TikTok 店铺", "No connected TikTok store"), data: null } }));
+      return;
+    }
+    setVariantDetails((prev) => ({ ...prev, [productId]: { loading: true, error: "", data: null } }));
+    const { data, error } = await supabaseClient.functions.invoke("tiktok-sync-products", {
+      body: { platformAccountId: tiktokAccountId, action: "variantDetail", productId },
+    });
+    if (error || !data?.success) {
+      setVariantDetails((prev) => ({ ...prev, [productId]: { loading: false, error: data?.message || error?.message || "Unknown error", data: null } }));
+      return;
+    }
+    setVariantDetails((prev) => ({ ...prev, [productId]: { loading: false, error: "", data } }));
+  }
+
+  function toggleExpand(productId) {
+    const next = !expandedProducts[productId];
+    setExpandedProducts((prev) => ({ ...prev, [productId]: next }));
+    if (next && !variantDetails[productId]?.data && !variantDetails[productId]?.loading) loadVariants(productId);
+  }
+
+  function toggleSelectGroup(items) {
+    const skus = items.map((i) => i.sku);
+    const allOn = skus.every((sku) => selectedSkus.includes(sku));
+    setSelectedSkus((prev) => (allOn ? prev.filter((s) => !skus.includes(s)) : Array.from(new Set([...prev, ...skus]))));
+  }
+
+  function renderErpActions(item) {
+    return (
+      <div className="flex items-center gap-2">
+        <button onClick={() => setFormState({ mode: "edit", item })} className="text-slate-400 hover:text-slate-700" title={t("编辑", "Edit")}>
+          <Pencil size={14} />
+        </button>
+        {item.status === "inactive" ? (
+          <button onClick={() => handleToggleStatus(item)} className="text-slate-400 hover:text-emerald-600" title={t("设为启用", "Set Active")}>
+            <CheckCircle2 size={14} />
+          </button>
+        ) : (
+          <button onClick={() => handleToggleStatus(item)} className="text-slate-400 hover:text-amber-600" title={t("设为停用", "Set Inactive")}>
+            <Ban size={14} />
+          </button>
+        )}
+        <button onClick={() => handleDelete(item)} className="text-slate-400 hover:text-rose-600" title={t("删除", "Delete")}>
+          <Trash2 size={14} />
+        </button>
+      </div>
+    );
+  }
+
+  function renderVariantPanel(group) {
+    const erpItems = erpSkusByProductId.get(group.productId) || [];
+    const erpBySkuId = new Map(erpItems.map((i) => [tiktokIdsOf(i).skuId, i]));
+    const detailState = variantDetails[group.productId];
+    const tiktokSkus = detailState?.data?.skus || [];
+    const sellerSkuCount = new Map();
+    for (const v of tiktokSkus) if (v.seller_sku) sellerSkuCount.set(v.seller_sku, (sellerSkuCount.get(v.seller_sku) || 0) + 1);
+    const tiktokSkuIds = new Set(tiktokSkus.map((v) => v.sku_id));
+    const erpOnly = detailState?.data ? erpItems.filter((i) => !tiktokSkuIds.has(tiktokIdsOf(i).skuId)) : [];
+    return (
+      <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+        <div className="text-xs text-slate-500">
+          {t("TikTok 实时 Variant / SKU（只读）", "Live TikTok Variants / SKUs (read-only)")}
+          {detailState?.data && ` · TikTok ${detailState.data.sku_count || 0} SKUs · ERP ${erpItems.length} SKUs`}
+        </div>
+        {detailState?.loading && <div className="text-xs text-slate-400 py-2">⏳ {t("正在读取 TikTok Product Detail…", "Loading TikTok Product Detail…")}</div>}
+        {detailState?.error && (
+          <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg border bg-rose-50 text-rose-600 border-rose-200">
+            <AlertTriangle size={13} /> TikTok: {detailState.error}
+            <button onClick={() => loadVariants(group.productId)} className="ml-auto underline">{t("重试", "Retry")}</button>
+          </div>
+        )}
+        {detailState?.data && (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-slate-400 border-b border-slate-200">
+                <th className="py-1.5 pr-3 font-medium w-10"></th>
+                <th className="py-1.5 pr-3 font-medium">{t("规格", "Variant")}</th>
+                <th className="py-1.5 pr-3 font-medium">Seller SKU</th>
+                <th className="py-1.5 pr-3 font-medium">TikTok SKU ID</th>
+                <th className="py-1.5 pr-3 font-medium">{t("TikTok 库存", "TikTok Stock")}</th>
+                <th className="py-1.5 pr-3 font-medium">{t("价格", "Price")}</th>
+                <th className="py-1.5 pr-3 font-medium">ERP</th>
+                <th className="py-1.5 pr-3 font-medium">{t("操作", "Actions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tiktokSkus.map((v) => {
+                const erpItem = erpBySkuId.get(v.sku_id);
+                const state = erpItem
+                  ? { label: t("已导入 ERP", "In ERP"), cls: "bg-emerald-50 text-emerald-600 border-emerald-200" }
+                  : !v.seller_sku
+                  ? { label: t("无 Seller SKU · 未导入", "No Seller SKU · not imported"), cls: "bg-slate-100 text-slate-500 border-slate-200" }
+                  : sellerSkuCount.get(v.seller_sku) > 1
+                  ? { label: t("Seller SKU 重复 · conflict", "Duplicate Seller SKU · conflict"), cls: "bg-amber-50 text-amber-600 border-amber-200" }
+                  : { label: t("未导入 ERP", "Not in ERP"), cls: "bg-slate-100 text-slate-500 border-slate-200" };
+                return (
+                  <tr key={v.sku_id} className="border-b border-slate-100 last:border-0">
+                    <td className="py-1.5 pr-3">
+                      {v.image ? <img src={v.image} alt={v.seller_sku || v.sku_id} className="h-8 w-8 object-cover rounded border border-slate-200" /> : <div className="h-8 w-8 rounded border border-slate-200 bg-white flex items-center justify-center text-slate-300"><Package size={12} /></div>}
+                    </td>
+                    <td className="py-1.5 pr-3">{(v.attributes && Array.isArray(v.attributes) && v.attributes.length > 0) ? v.attributes.map((a) => `${a.name}: ${a.value}`).join(" / ") : "—"}</td>
+                    <td className="py-1.5 pr-3 font-medium">{v.seller_sku || "—"}</td>
+                    <td className="py-1.5 pr-3 text-slate-500 tabular-nums">{v.sku_id}</td>
+                    <td className="py-1.5 pr-3 tabular-nums">{typeof v.stock === "number" ? v.stock : "—"}</td>
+                    <td className="py-1.5 pr-3 tabular-nums">{v.price ? `RM ${v.price.toFixed(2)}` : "—"}</td>
+                    <td className="py-1.5 pr-3"><span className={`text-[11px] px-2 py-0.5 rounded-full border ${state.cls}`}>{state.label}</span></td>
+                    <td className="py-1.5 pr-3">{erpItem ? renderErpActions(erpItem) : "—"}</td>
+                  </tr>
+                );
+              })}
+              {erpOnly.map((item) => (
+                <tr key={item.sku} className="border-b border-slate-100 last:border-0">
+                  <td className="py-1.5 pr-3"></td>
+                  <td className="py-1.5 pr-3 text-slate-400">—</td>
+                  <td className="py-1.5 pr-3 font-medium">{item.sku}</td>
+                  <td className="py-1.5 pr-3 text-slate-500 tabular-nums">{tiktokIdsOf(item).skuId}</td>
+                  <td className="py-1.5 pr-3">—</td>
+                  <td className="py-1.5 pr-3 tabular-nums">{item.price ? `RM ${item.price.toFixed(2)}` : "—"}</td>
+                  <td className="py-1.5 pr-3"><span className="text-[11px] px-2 py-0.5 rounded-full border bg-rose-50 text-rose-600 border-rose-200">{t("仅 ERP · TikTok 已无此 SKU", "ERP only · not on TikTok")}</span></td>
+                  <td className="py-1.5 pr-3">{renderErpActions(item)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    );
+  }
+
+  function renderSkuRow(item) {
+                const profit = (item.price || 0) - (item.costPrice || 0);
+    const margin = item.price > 0 ? (profit / item.price) * 100 : 0;
+    return (
+    <tr key={item.sku} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+      <td className="py-2.5 pr-3">
+        <input type="checkbox" checked={selectedSkus.includes(item.sku)} onChange={() => toggleSelectOne(item.sku)} />
+      </td>
+      <td className="py-2.5 pr-3">
+        {item.imageUrl ? (
+          <img src={item.imageUrl} alt={item.sku} className="h-8 w-8 object-cover rounded border border-slate-200" />
+        ) : (
+          <div className="h-8 w-8 rounded border border-slate-200 bg-slate-50 flex items-center justify-center text-slate-300">
+            <Package size={14} />
+          </div>
+        )}
+      </td>
+      <td className="py-2.5 pr-3 font-medium">{item.sku}</td>
+      <td className="py-2.5 pr-3">{item.name}</td>
+      <td className="py-2.5 pr-3 text-slate-500">{item.category || "—"}</td>
+      <td className="py-2.5 pr-3 text-slate-500">{item.brand || "—"}</td>
+      <td className="py-2.5 pr-3 text-slate-500">{item.partNumber || "—"}</td>
+      <td className="py-2.5 pr-3 text-slate-500">{item.autocountItemCode || "—"}</td>
+      <td className="py-2.5 pr-3 tabular-nums">{item.price ? `RM ${item.price.toFixed(2)}` : "—"}</td>
+      <td className="py-2.5 pr-3 tabular-nums">{item.costPrice ? `RM ${item.costPrice.toFixed(2)}` : "—"}</td>
+      <td className={`py-2.5 pr-3 tabular-nums ${profit < 0 ? "text-rose-500" : ""}`}>{item.price || item.costPrice ? `RM ${profit.toFixed(2)}` : "—"}</td>
+      <td className={`py-2.5 pr-3 tabular-nums ${margin < 0 ? "text-rose-500" : ""}`}>{item.price ? `${margin.toFixed(1)}%` : "—"}</td>
+      <td className="py-2.5 pr-3 tabular-nums">{item.weightKg ? `${item.weightKg} kg` : "—"}</td>
+      <td className="py-2.5 pr-3 text-slate-500">{item.unit || "—"}</td>
+      <td className="py-2.5 pr-3 tabular-nums font-medium">{item.warehouseA + item.warehouseB}</td>
+      <td className="py-2.5 pr-3">
+        <span className={`text-[11px] px-2 py-0.5 rounded-full border ${item.status === "inactive" ? "bg-slate-50 text-slate-400 border-slate-200" : "bg-emerald-50 text-emerald-600 border-emerald-200"}`}>
+          {item.status === "inactive" ? t("停用", "Inactive") : t("启用", "Active")}
+        </span>
+      </td>
+      <td className="py-2.5 pr-3">
+        <div className="flex items-center gap-2">
+          <button onClick={() => setFormState({ mode: "edit", item })} className="text-slate-400 hover:text-slate-700" title={t("编辑", "Edit")}>
+            <Pencil size={14} />
+          </button>
+          {item.status === "inactive" ? (
+            <button onClick={() => handleToggleStatus(item)} className="text-slate-400 hover:text-emerald-600" title={t("设为启用", "Set Active")}>
+              <CheckCircle2 size={14} />
+            </button>
+          ) : (
+            <button onClick={() => handleToggleStatus(item)} className="text-slate-400 hover:text-amber-600" title={t("设为停用", "Set Inactive")}>
+              <Ban size={14} />
+            </button>
+          )}
+          <button onClick={() => handleDelete(item)} className="text-slate-400 hover:text-rose-600" title={t("删除", "Delete")}>
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </td>
+    </tr>
+    );
+  }
+
   const allFilteredSelected = filtered.length > 0 && filtered.every((p) => selectedSkus.includes(p.sku));
 
   function toggleSelectAll() {
@@ -456,61 +683,66 @@ export function ProductMaster({ t, inventory, onCreate, onUpdate, onDelete, stor
               </tr>
             </thead>
             <tbody>
-              {filtered.map((item) => {
-                const profit = (item.price || 0) - (item.costPrice || 0);
-                const margin = item.price > 0 ? (profit / item.price) * 100 : 0;
+              {displayRows.map((row) => {
+                if (row.type === "single") return renderSkuRow(row.item);
+                const group = row;
+                const first = group.items[0];
+                const image = group.items.find((i) => i.imageUrl)?.imageUrl || null;
+                const totalErpSkus = (erpSkusByProductId.get(group.productId) || []).length;
+                const prices = group.items.map((i) => i.price || 0).filter((p) => p > 0);
+                const minP = prices.length ? Math.min(...prices) : 0;
+                const maxP = prices.length ? Math.max(...prices) : 0;
+                const groupStock = group.items.reduce((sum, i) => sum + i.warehouseA + i.warehouseB, 0);
+                const groupSelected = group.items.every((i) => selectedSkus.includes(i.sku));
+                const expanded = !!expandedProducts[group.productId];
                 return (
-                <tr key={item.sku} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                  <td className="py-2.5 pr-3">
-                    <input type="checkbox" checked={selectedSkus.includes(item.sku)} onChange={() => toggleSelectOne(item.sku)} />
-                  </td>
-                  <td className="py-2.5 pr-3">
-                    {item.imageUrl ? (
-                      <img src={item.imageUrl} alt={item.sku} className="h-8 w-8 object-cover rounded border border-slate-200" />
-                    ) : (
-                      <div className="h-8 w-8 rounded border border-slate-200 bg-slate-50 flex items-center justify-center text-slate-300">
-                        <Package size={14} />
-                      </div>
+                  <FragmentRows key={`tt-${group.productId}`}>
+                    <tr className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer" onClick={() => toggleExpand(group.productId)}>
+                      <td className="py-2.5 pr-3" onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" checked={groupSelected} onChange={() => toggleSelectGroup(group.items)} />
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        {image ? (
+                          <img src={image} alt={first.name} className="h-10 w-10 object-cover rounded border border-slate-200" />
+                        ) : (
+                          <div className="h-10 w-10 rounded border border-slate-200 bg-slate-50 flex items-center justify-center text-slate-300"><Package size={14} /></div>
+                        )}
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        <span className="text-[11px] px-2 py-0.5 rounded-full border bg-slate-50 text-slate-600 border-slate-200 whitespace-nowrap">
+                          {group.items.length === totalErpSkus ? `${totalErpSkus} SKUs` : `${group.items.length} / ${totalErpSkus} SKUs`}
+                        </span>
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        <div className="font-medium">{first.name}</div>
+                        <div className="text-[11px] text-slate-400 tabular-nums">Product ID: {group.productId}</div>
+                      </td>
+                      <td className="py-2.5 pr-3 text-slate-500">—</td>
+                      <td className="py-2.5 pr-3 text-slate-500">—</td>
+                      <td className="py-2.5 pr-3 text-slate-500">—</td>
+                      <td className="py-2.5 pr-3 text-slate-500">—</td>
+                      <td className="py-2.5 pr-3 tabular-nums whitespace-nowrap">{prices.length ? (minP === maxP ? `RM ${minP.toFixed(2)}` : `RM ${minP.toFixed(2)} – ${maxP.toFixed(2)}`) : "—"}</td>
+                      <td className="py-2.5 pr-3">—</td>
+                      <td className="py-2.5 pr-3">—</td>
+                      <td className="py-2.5 pr-3">—</td>
+                      <td className="py-2.5 pr-3">—</td>
+                      <td className="py-2.5 pr-3">—</td>
+                      <td className="py-2.5 pr-3 tabular-nums font-medium">{groupStock}</td>
+                      <td className="py-2.5 pr-3">
+                        <span className="text-[11px] px-2 py-0.5 rounded-full border bg-slate-50 text-slate-500 border-slate-200">TikTok</span>
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        <button onClick={(e) => { e.stopPropagation(); toggleExpand(group.productId); }} className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 whitespace-nowrap">
+                          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {expanded ? t("收起", "Collapse") : t("展开", "Expand")}
+                        </button>
+                      </td>
+                    </tr>
+                    {expanded && (
+                      <tr className="border-b border-slate-100">
+                        <td colSpan={17} className="py-2 pl-10 pr-3">{renderVariantPanel(group)}</td>
+                      </tr>
                     )}
-                  </td>
-                  <td className="py-2.5 pr-3 font-medium">{item.sku}</td>
-                  <td className="py-2.5 pr-3">{item.name}</td>
-                  <td className="py-2.5 pr-3 text-slate-500">{item.category || "—"}</td>
-                  <td className="py-2.5 pr-3 text-slate-500">{item.brand || "—"}</td>
-                  <td className="py-2.5 pr-3 text-slate-500">{item.partNumber || "—"}</td>
-                  <td className="py-2.5 pr-3 text-slate-500">{item.autocountItemCode || "—"}</td>
-                  <td className="py-2.5 pr-3 tabular-nums">{item.price ? `RM ${item.price.toFixed(2)}` : "—"}</td>
-                  <td className="py-2.5 pr-3 tabular-nums">{item.costPrice ? `RM ${item.costPrice.toFixed(2)}` : "—"}</td>
-                  <td className={`py-2.5 pr-3 tabular-nums ${profit < 0 ? "text-rose-500" : ""}`}>{item.price || item.costPrice ? `RM ${profit.toFixed(2)}` : "—"}</td>
-                  <td className={`py-2.5 pr-3 tabular-nums ${margin < 0 ? "text-rose-500" : ""}`}>{item.price ? `${margin.toFixed(1)}%` : "—"}</td>
-                  <td className="py-2.5 pr-3 tabular-nums">{item.weightKg ? `${item.weightKg} kg` : "—"}</td>
-                  <td className="py-2.5 pr-3 text-slate-500">{item.unit || "—"}</td>
-                  <td className="py-2.5 pr-3 tabular-nums font-medium">{item.warehouseA + item.warehouseB}</td>
-                  <td className="py-2.5 pr-3">
-                    <span className={`text-[11px] px-2 py-0.5 rounded-full border ${item.status === "inactive" ? "bg-slate-50 text-slate-400 border-slate-200" : "bg-emerald-50 text-emerald-600 border-emerald-200"}`}>
-                      {item.status === "inactive" ? t("停用", "Inactive") : t("启用", "Active")}
-                    </span>
-                  </td>
-                  <td className="py-2.5 pr-3">
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => setFormState({ mode: "edit", item })} className="text-slate-400 hover:text-slate-700" title={t("编辑", "Edit")}>
-                        <Pencil size={14} />
-                      </button>
-                      {item.status === "inactive" ? (
-                        <button onClick={() => handleToggleStatus(item)} className="text-slate-400 hover:text-emerald-600" title={t("设为启用", "Set Active")}>
-                          <CheckCircle2 size={14} />
-                        </button>
-                      ) : (
-                        <button onClick={() => handleToggleStatus(item)} className="text-slate-400 hover:text-amber-600" title={t("设为停用", "Set Inactive")}>
-                          <Ban size={14} />
-                        </button>
-                      )}
-                      <button onClick={() => handleDelete(item)} className="text-slate-400 hover:text-rose-600" title={t("删除", "Delete")}>
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+                  </FragmentRows>
                 );
               })}
               {filtered.length === 0 && (

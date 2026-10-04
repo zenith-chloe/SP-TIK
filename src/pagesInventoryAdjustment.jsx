@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Plus, Check, X, AlertTriangle, XCircle, SlidersHorizontal, Truck, Wifi, ShoppingBag, Music2, ChevronDown, LogIn, Store, Settings, Pencil } from "lucide-react";
 import { supabaseClient, SUPABASE_URL } from "./shared.jsx";
 import { PlatformLoginConnect, StoreManagement } from "./pagesMove.jsx";
@@ -234,6 +234,7 @@ const HUB_CARDS = [
   { key: "cancel", zh: "订单取消", en: "Order Cancellation", desc: { zh: "按平台/店铺查看与处理取消申请", en: "View / process cancellation requests by platform / store" }, icon: XCircle, iconBg: "bg-rose-100", iconColor: "text-rose-600" },
   { key: "adjust", zh: "库存调整", en: "Inventory Adjustment", desc: { zh: "按平台/店铺提交与审批库存调整", en: "Submit / approve inventory adjustments by platform / store" }, icon: SlidersHorizontal, iconBg: "bg-indigo-100", iconColor: "text-indigo-600" },
   { key: "autocountdo", zh: "AutoCount DO", en: "AutoCount DO", desc: { zh: "按平台/店铺查看待创建 DO 的订单", en: "View orders pending DO creation by platform / store" }, icon: Truck, iconBg: "bg-blue-100", iconColor: "text-blue-600" },
+  { key: "autocountsettings", zh: "AutoCount Integration", en: "AutoCount Integration", desc: { zh: "连接状态、手动/自动同步开关", en: "Connection status, manual/automatic sync toggle" }, icon: Settings, iconBg: "bg-slate-100", iconColor: "text-slate-600" },
   { key: "connect", zh: "平台/API 连接", en: "Platform / API Connections", desc: { zh: "Shopee / TikTok Shop / AutoCount 连接入口", en: "Shopee / TikTok Shop / AutoCount connection entry points" }, icon: Wifi, iconBg: "bg-emerald-100", iconColor: "text-emerald-600" },
   { key: "login", zh: "使用平台账号登录连接", en: "Connect via Platform Login", desc: { zh: "跳转 Shopee / TikTok Shop 官方登录授权", en: "Redirect to Shopee / TikTok Shop official login authorization" }, icon: LogIn, iconBg: "bg-teal-100", iconColor: "text-teal-600" },
   { key: "storelist", zh: "店铺列表 / 手动导入", en: "Store List / Manual Connect", desc: { zh: "已连接店铺列表、手动连接新店铺", en: "Connected store list, manually connect a new store" }, icon: Store, iconBg: "bg-amber-100", iconColor: "text-amber-600" },
@@ -431,6 +432,89 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
   const [selectedStore, setSelectedStore] = useState(""); // "" = 该平台全部店铺
   const [checkedStoreIds, setCheckedStoreIds] = useState(() => new Set());
   const [syncState, setSyncState] = useState({}); // { [storeId]: { status: "idle"|"syncing"|"success"|"error", lastSyncedAt, message } }
+
+  // AutoCount Integration — real state only, never a hardcoded "connected".
+  // autocountSettings mirrors the single autocount_settings row (owner-only
+  // RLS, so this stays null for non-owner sessions — same pattern as
+  // suppliers/purchase_orders elsewhere in this app). autocountStatusByKey
+  // is a scoped, local fetch of orders.autocount_sync_status/autocount_doc_no
+  // for just the orders shown on the AutoCount DO card — deliberately NOT
+  // added to mapDbOrder/ORDER_COLUMNS in shared.jsx/erp-mvp-demo.jsx, so
+  // nothing about the shared Orders data shape changes for this.
+  const [autocountSettings, setAutocountSettings] = useState(null);
+  const [autocountStatusByKey, setAutocountStatusByKey] = useState({}); // `${platform}:${order_no}` -> { status, docNo }
+  const [autocountSyncingKey, setAutocountSyncingKey] = useState(null);
+  const [autocountResultByKey, setAutocountResultByKey] = useState({}); // last message shown under a row after a click
+  const [autocountTogglePending, setAutocountTogglePending] = useState(false);
+
+  async function loadAutocountSettings() {
+    const { data } = await supabaseClient
+      .from("autocount_settings")
+      .select("id, company_name, api_base_url, api_key, status, auto_sync_enabled, last_synced_at")
+      .maybeSingle();
+    setAutocountSettings(data || null);
+  }
+
+  async function loadAutocountStatus(ordersToCheck) {
+    if (!ordersToCheck || ordersToCheck.length === 0) return;
+    const dbPlatform = ordersToCheck[0]?._dbPlatform;
+    const orderNos = ordersToCheck.map((o) => o.id);
+    const { data } = await supabaseClient
+      .from("orders")
+      .select("order_no, platform, autocount_sync_status, autocount_doc_no")
+      .eq("platform", dbPlatform)
+      .in("order_no", orderNos);
+    const byKey = {};
+    (data || []).forEach((r) => {
+      byKey[`${r.platform}:${r.order_no}`] = { status: r.autocount_sync_status, docNo: r.autocount_doc_no };
+    });
+    setAutocountStatusByKey((prev) => ({ ...prev, ...byKey }));
+  }
+
+  // The ONE call site the manual "同步到 AutoCount" button uses — this is
+  // literally the same autocount-sync Edge Function/core routine the future
+  // automatic queue will call too (see that function's own module comment).
+  async function syncOrderToAutoCount(order, dbPlatform) {
+    const key = `${dbPlatform}:${order.id}`;
+    setAutocountSyncingKey(key);
+    const { data, error } = await supabaseClient.functions.invoke("autocount-sync", {
+      body: { orderNo: order.id, platform: dbPlatform },
+    });
+    if (error) {
+      setAutocountResultByKey((prev) => ({ ...prev, [key]: t("请求失败", "Request failed") }));
+    } else {
+      setAutocountResultByKey((prev) => ({ ...prev, [key]: data?.message || "" }));
+      setAutocountStatusByKey((prev) => ({
+        ...prev,
+        [key]: { status: data?.result === "synced" ? "synced" : prev[key]?.status || "pending", docNo: data?.documentNo ?? prev[key]?.docNo ?? null },
+      }));
+    }
+    setAutocountSyncingKey(null);
+  }
+
+  useEffect(() => {
+    if (card === "autocountsettings" || card === "autocountdo") loadAutocountSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card]);
+
+  // Moved up from further below (same pure derivations, unchanged logic) —
+  // needed here, before any early `return`, so the AutoCount-status effect
+  // right after can be called unconditionally on every render (Rules of
+  // Hooks: a hook can't sit after a conditional return).
+  const platforms = ["Shopee", "TikTok Shop"];
+  const dbPlatform = platform === "Shopee" ? "shopee" : "tiktok";
+  const platformStores = stores.filter((s) => s.platform === platform);
+  const visibleStores = selectedStore ? platformStores.filter((s) => s.id === selectedStore) : platformStores;
+
+  useEffect(() => {
+    if (card !== "autocountdo") return;
+    const storeIds = new Set(visibleStores.map((s) => s.id));
+    const pending = (orders || []).filter(
+      (o) => storeIds.has(o.platformAccountId) && (o.printCount || 0) > 0 && o.status !== "已取消",
+    );
+    if (pending.length > 0) loadAutocountStatus(pending.map((o) => ({ id: o.id, _dbPlatform: dbPlatform })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card, dbPlatform, visibleStores.length, orders]);
 
   function toggleStoreChecked(id) {
     setCheckedStoreIds((prev) => {
@@ -711,21 +795,32 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
   }
 
   if (card === "connect") {
+    // AutoCount's row is real, data-driven (autocount_settings.api_base_url
+    // + api_key both present), same as Shopee/TikTok above — never a
+    // hardcoded `false`. It will flip to reflect real data the moment
+    // those two fields are actually filled in; no UI change needed then.
+    const autocountConnected = !!(autocountSettings?.api_base_url && autocountSettings?.api_key);
     const CONNECT_ROWS = [
-      { zh: "Shopee API", en: "Shopee API", connected: stores.some((s) => s.platform === "Shopee") },
-      { zh: "TikTok Shop API", en: "TikTok Shop API", connected: stores.some((s) => s.platform === "TikTok Shop") },
-      { zh: "AutoCount API", en: "AutoCount API", connected: false },
+      { key: "shopee", zh: "Shopee API", en: "Shopee API", connected: stores.some((s) => s.platform === "Shopee") },
+      { key: "tiktok", zh: "TikTok Shop API", en: "TikTok Shop API", connected: stores.some((s) => s.platform === "TikTok Shop") },
+      { key: "autocount", zh: "AutoCount API", en: "AutoCount API", connected: autocountConnected },
     ];
     return (
       <div className="space-y-4">
         <button onClick={() => setCard(null)} className="text-xs text-slate-500 hover:text-slate-700">{t("← 返回", "← Back")}</button>
         <div className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-100">
           {CONNECT_ROWS.map((row) => (
-            <div key={row.zh} className="flex items-center justify-between px-4 py-3">
+            <div key={row.key} className="flex items-center justify-between px-4 py-3">
               <div className="text-sm">{t(row.zh, row.en)}</div>
-              <span className={`text-xs ${row.connected ? "text-emerald-600" : "text-slate-400"}`}>
-                {row.connected ? t("已连接（见「使用平台账号登录连接」卡片）", "Connected (see “Connect via Platform Login” card)") : t("尚未接入", "Not yet connected")}
-              </span>
+              {row.key === "autocount" ? (
+                <span className="text-xs text-slate-400">
+                  {autocountConnected ? t("已保存 API 信息（见「AutoCount Integration」卡片）", "API info saved (see “AutoCount Integration” card)") : t("尚未接入", "Not yet connected")}
+                </span>
+              ) : (
+                <span className={`text-xs ${row.connected ? "text-emerald-600" : "text-slate-400"}`}>
+                  {row.connected ? t("已连接（见「使用平台账号登录连接」卡片）", "Connected (see “Connect via Platform Login” card)") : t("尚未接入", "Not yet connected")}
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -733,10 +828,67 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
     );
   }
 
-  const platforms = ["Shopee", "TikTok Shop"];
-  const dbPlatform = platform === "Shopee" ? "shopee" : "tiktok";
-  const platformStores = stores.filter((s) => s.platform === platform);
-  const visibleStores = selectedStore ? platformStores.filter((s) => s.id === selectedStore) : platformStores;
+  if (card === "autocountsettings") {
+    const connected = !!(autocountSettings?.api_base_url && autocountSettings?.api_key);
+    return (
+      <div className="space-y-4">
+        <button onClick={() => setCard(null)} className="text-xs text-slate-500 hover:text-slate-700">{t("← 返回", "← Back")}</button>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
+          <div className="text-sm font-semibold">AutoCount Integration</div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-slate-600">{t("连接状态 Connection", "Connection")}</div>
+            <span className={`text-xs px-2 py-0.5 rounded-full border ${connected ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-100 text-slate-500 border-slate-200"}`}>
+              {connected ? t("已连接", "Connected") : t("未连接 Not Connected", "Not Connected")}
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-slate-600">{t("手动同步 Manual Sync", "Manual Sync")}</div>
+            <span className="text-xs text-slate-400">
+              {t("在「AutoCount DO」卡片按订单逐笔点击「同步到 AutoCount」", "Use the per-order “Sync to AutoCount” button on the “AutoCount DO” card")}
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-slate-600">{t("自动同步 Automatic Sync", "Automatic Sync")}</div>
+            <button
+              type="button"
+              disabled={autocountTogglePending || myRole !== "owner"}
+              onClick={async () => {
+                if (!autocountSettings) return;
+                setAutocountTogglePending(true);
+                const next = !autocountSettings.auto_sync_enabled;
+                const { error } = await supabaseClient
+                  .from("autocount_settings")
+                  .update({ auto_sync_enabled: next })
+                  .eq("id", autocountSettings.id);
+                if (!error) setAutocountSettings((prev) => ({ ...prev, auto_sync_enabled: next }));
+                setAutocountTogglePending(false);
+              }}
+              className={`text-xs px-3 py-1.5 rounded-full border ${autocountSettings?.auto_sync_enabled ? "bg-emerald-500 border-emerald-500 text-white" : "bg-slate-100 border-slate-200 text-slate-500"} disabled:opacity-50`}
+              title={myRole !== "owner" ? t("仅限 owner 修改", "Owner only") : undefined}
+            >
+              {autocountSettings?.auto_sync_enabled ? t("ON", "ON") : t("OFF", "OFF")}
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-slate-600">{t("同步状态 Sync Status", "Sync Status")}</div>
+            <span className="text-xs text-slate-400">{t("未连接 Not Connected", "Not Connected")}</span>
+          </div>
+
+          <div className="text-xs text-slate-400 pt-2 border-t border-slate-100">
+            {t(
+              "AutoCount API 尚未连接，完成 API 配置后即可启用。自动同步开关现在只保存设置，实际的定时同步要等 API 连接后才会真正执行。",
+              "AutoCount API is not connected yet — it will be enabled once API configuration is complete. The Automatic Sync switch only saves the setting for now; the actual scheduled sync will only run once the API is connected.",
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const filteredCancellations = cancellationRecords.filter((r) => r.channel === dbPlatform);
   const shopIds = new Set(visibleStores.map((s) => s.id));
   const platformSkus = new Set(inventory.filter((i) => shopIds.has(i.listedShop)).map((i) => i.sku));
@@ -798,34 +950,51 @@ export function AutoImportHub({ t, lang, stores, inventory, adjustmentRequests, 
                   {pendingDoOrders.length === 0 && (
                     <div className="text-xs text-slate-400">{t("暂无待创建 DO 的订单", "No orders pending DO creation")}</div>
                   )}
-                  {pendingDoOrders.map((o) => (
-                    <div key={o.id} className="flex items-center gap-2 border border-slate-100 rounded-lg p-2">
-                      {o.productImage ? (
-                        <img src={o.productImage} alt={o.product} className="h-9 w-9 rounded-lg object-cover border border-slate-200 shrink-0" />
-                      ) : (
-                        <div className="h-9 w-9 rounded-lg bg-slate-100 border border-slate-200 shrink-0" />
-                      )}
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <div className="text-xs font-medium text-slate-700 truncate">{o.id}</div>
-                          <span className="text-[10px] text-slate-400 shrink-0">{o.date}</span>
+                  {pendingDoOrders.map((o) => {
+                    const key = `${dbPlatform}:${o.id}`;
+                    const acStatus = autocountStatusByKey[key];
+                    const isSynced = acStatus?.status === "synced";
+                    const isSyncing = autocountSyncingKey === key;
+                    const resultMsg = autocountResultByKey[key];
+                    return (
+                      <div key={o.id} className="flex items-center gap-2 border border-slate-100 rounded-lg p-2">
+                        {o.productImage ? (
+                          <img src={o.productImage} alt={o.product} className="h-9 w-9 rounded-lg object-cover border border-slate-200 shrink-0" />
+                        ) : (
+                          <div className="h-9 w-9 rounded-lg bg-slate-100 border border-slate-200 shrink-0" />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <div className="text-xs font-medium text-slate-700 truncate">{o.id}</div>
+                            <span className="text-[10px] text-slate-400 shrink-0">{o.date}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-600 truncate">{o.product}</div>
+                          <div className="text-[11px] text-slate-400 truncate">
+                            {o.variation ? `${o.variation} · ` : ""}{t("Seller SKU", "Seller SKU")}: {o.sku || t("（无SKU）", "(no SKU)")} · {s.name}
+                          </div>
+                          {resultMsg && !isSynced && (
+                            <div className="text-[10px] text-amber-600 mt-0.5">{resultMsg}</div>
+                          )}
                         </div>
-                        <div className="text-[11px] text-slate-600 truncate">{o.product}</div>
-                        <div className="text-[11px] text-slate-400 truncate">
-                          {o.variation ? `${o.variation} · ` : ""}{t("Seller SKU", "Seller SKU")}: {o.sku || t("（无SKU）", "(no SKU)")} · {s.name}
-                        </div>
+                        {isSynced ? (
+                          <div className="text-[10px] text-emerald-600 text-right shrink-0 px-2">
+                            {t("已同步", "Synced")}<br />{acStatus?.docNo || ""}
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isSyncing}
+                            onClick={() => syncOrderToAutoCount(o, dbPlatform)}
+                            title={t("检查订单资料 → 检查重复同步 → AutoCount Adapter", "Check order data → check duplicate → AutoCount Adapter")}
+                            className="text-[11px] px-2.5 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 shrink-0"
+                          >
+                            {isSyncing ? t("同步中…", "Syncing…") : t("同步到 AutoCount", "Sync to AutoCount")}
+                          </button>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
-                <button
-                  onClick={() => {}}
-                  disabled={pendingDoOrders.length === 0}
-                  title={t("预留：调用 AutoCount 创建 DO 接口", "Placeholder: call AutoCount Create DO API")}
-                  className={`text-xs px-3 py-1.5 rounded-lg ${pendingDoOrders.length > 0 ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
-                >
-                  {t("创建 DO", "Create DO")}
-                </button>
               </div>
             );
           })}

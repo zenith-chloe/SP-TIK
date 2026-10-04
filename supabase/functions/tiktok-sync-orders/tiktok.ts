@@ -89,6 +89,12 @@ export function mapTikTokOrderStatus(status: string, order?: any): string {
   }
 }
 
+export const TIKTOK_DELIVERY_FAILED_REASONS = new Set([
+  "Package delivery failed",
+  "Penghantaran bungkusan gagal",
+  "Pengiriman paket gagal",
+]);
+
 // Maps TikTok Shop order_status to fulfillment_status for Delivered/Completed/Delivery Failed
 export function mapTikTokFulfillmentStatus(status: string, order?: any): string | null {
   switch (status) {
@@ -97,9 +103,13 @@ export function mapTikTokFulfillmentStatus(status: string, order?: any): string 
     case "COMPLETED":
       return "completed";
     case "CANCELLED":
-      const reason = String(order?.cancel_reason || "").toUpperCase();
-      if (reason.includes("DELIVERY_FAILED") || reason.includes("UNDELIVERABLE") ||
-          reason.includes("LOGISTICS_FAIL") || reason.includes("PACKAGE_RETURNED")) {
+      // 投递失败 (2026-09-24): exact rule from a full live scan of the last
+      // 60 days of real CANCELLED orders (380 rows) — TikTok returns
+      // cancel_reason as localized free text, never a code. Only these 3
+      // SYSTEM-initiated reasons are delivery failures (31/31 carried a
+      // real tracking_number); SYSTEM "Customer overdue to pay" and every
+      // BUYER cancel (even with a tracking_number) are not.
+      if (order?.cancellation_initiator === "SYSTEM" && TIKTOK_DELIVERY_FAILED_REASONS.has(order?.cancel_reason)) {
         return "delivery_failed";
       }
       return null;
