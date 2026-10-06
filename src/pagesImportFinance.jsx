@@ -861,18 +861,16 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEs
     ? Number(o.tiktokAffiliateAdsFee)
     : (typeof affiliateAdsEstimate === "number" ? +affiliateAdsEstimate.toFixed(2) : 0);
 
-  // GMV Max ad fee (2026-10-04, UPDATED 2026-10-06) — prefer real value from TikTok settlement API.
-  // tiktok-settlement-sync extracts gmv_max_ad_fee_amount from statement_transactions.
-  // For unsettled orders where TikTok has not yet returned real data, use fallback estimate:
-  // GMV Max Ad Fee = Subtotal * 5%. Once TikTok completes settlement, real value automatically overrides.
-  const hasRealGmvMaxAdFee = o.tiktokGmvMaxAdFee != null && o.tiktokGmvMaxAdFee !== 0;
-  const gmvMaxAdFeeAmt = hasRealGmvMaxAdFee
-    ? Number(o.tiktokGmvMaxAdFee)
-    : +(revenue * 0.05).toFixed(2);
-  // GMV Max awaiting settlement (2026-10-04, UPDATED 2026-10-06) — marks when we're showing
-  // estimated GMV Max fee (using Subtotal * 5% fallback) rather than real settlement data.
-  // UI displays neutral message indicating estimate will be replaced with real data once synced.
-  const gmvMaxAwaitingSettlement = !hasRealGmvMaxAdFee;
+  // GMV Max ad fee (2026-10-04, UPDATED 2026-10-06) — use real value from TikTok Order Details API only.
+  // tiktok-sync-orders extracts gmv_max_ad_fee from TikTok API and syncs to orders.tiktok_gmv_max_ad_fee.
+  // Do NOT estimate or calculate fallback values — only display real data when TikTok API provides it.
+  // For unsettled orders without real data yet, show 0 (order has not yet synced from TikTok API).
+  const gmvMaxAdFeeAmt = Number(o.tiktokGmvMaxAdFee ?? 0);
+  // GMV Max awaiting settlement (2026-10-04) — when gmvMaxAdFeeAmt is 0, it could mean either:
+  // (1) No GMV Max ad spend for this order, or (2) Settlement data not yet synced from TikTok API.
+  // We mark it as "awaiting" only for TikTok orders not in final settlement state,
+  // so UI can show a neutral status instead of treating it as an error/missing data.
+  const gmvMaxAwaitingSettlement = gmvMaxAdFeeAmt === 0;
   const fees = [
     { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
     // pct here is the effective rate vs merchandise revenue (matches how
