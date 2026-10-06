@@ -430,6 +430,13 @@ async function upsertOrderPage(
           // TikTok Seller Centre order showing "Delivery option: Instant"
           // (order 584451043333343056, 2026-08-09).
           delivery_option: o.delivery_option_name ?? null,
+          // GMV Max Ad Fee (2026-10-06, new) — real paid ad fee from TikTok
+          // Order Details API for GMV Max / auto-bidding campaigns. Only
+          // display when TikTok API returns real value; do not estimate.
+          tiktok_gmv_max_ad_fee: (() => {
+            const gmvFee = o.gmv_max_ad_fee ?? o.gmv_max_ads_fee ?? o.gm_max_ads_fee ?? o.ad_spend ?? o.paid_ads_fee;
+            return gmvFee != null ? Number(gmvFee) : null;
+          })(),
           updated_at: new Date().toISOString(),
         },
         { onConflict: "platform,order_no" },
