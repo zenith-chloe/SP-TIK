@@ -430,11 +430,26 @@ async function upsertOrderPage(
           // TikTok Seller Centre order showing "Delivery option: Instant"
           // (order 584451043333343056, 2026-08-09).
           delivery_option: o.delivery_option_name ?? null,
-          // GMV Max Ad Fee (2026-10-06, new) — real paid ad fee from TikTok
-          // Order Details API for GMV Max / auto-bidding campaigns. Only
-          // display when TikTok API returns real value; do not estimate.
+          // GMV Max Ad Fee (2026-10-06, UPDATED 2026-10-XX) — real paid ad fee
+          // from TikTok Order Details API for GMV Max / auto-bidding campaigns.
+          // TikTok updated GMV Max API on 2026-09-15 with new response fields.
+          // Tries multiple field names per TikTok's API structure:
+          // - gmv_max_ad_fee (primary name)
+          // - gmv_max_ads_fee, gm_max_ads_fee (alternate forms)
+          // - ad_spend, paid_ads_fee, promotion_fee (post-9/15 update)
+          // - ads.gmv_max_ad_fee, ads_fee, gmv_max_fee (nested/alternate)
+          // Only display when TikTok API returns real value; do not estimate.
           tiktok_gmv_max_ad_fee: (() => {
-            const gmvFee = o.gmv_max_ad_fee ?? o.gmv_max_ads_fee ?? o.gm_max_ads_fee ?? o.ad_spend ?? o.paid_ads_fee;
+            const gmvFee = o.gmv_max_ad_fee
+              ?? o.gmv_max_ads_fee
+              ?? o.gm_max_ads_fee
+              ?? o.ad_spend
+              ?? o.paid_ads_fee
+              ?? o.promotion_fee
+              ?? o.ads_fee
+              ?? o.gmv_max_fee
+              ?? (o.ads?.gmv_max_ad_fee)
+              ?? (o.ads?.ad_spend);
             return gmvFee != null ? Number(gmvFee) : null;
           })(),
           updated_at: new Date().toISOString(),
@@ -453,6 +468,27 @@ async function upsertOrderPage(
       continue;
     }
     syncedOrders++;
+
+    // Debug logging for GMV Max Ad Fee (2026-10-XX) — log which field was
+    // extracted to help verify the post-9/15 API update is correctly parsed.
+    const gmvFeeDetected = o.gmv_max_ad_fee ?? o.gmv_max_ads_fee ?? o.gm_max_ads_fee ?? o.ad_spend ?? o.paid_ads_fee ?? o.promotion_fee ?? o.ads_fee ?? o.gmv_max_fee ?? o.ads?.gmv_max_ad_fee ?? o.ads?.ad_spend;
+    if (gmvFeeDetected != null) {
+      const fieldName = o.gmv_max_ad_fee != null ? "gmv_max_ad_fee"
+        : o.gmv_max_ads_fee != null ? "gmv_max_ads_fee"
+        : o.gm_max_ads_fee != null ? "gm_max_ads_fee"
+        : o.ad_spend != null ? "ad_spend"
+        : o.paid_ads_fee != null ? "paid_ads_fee"
+        : o.promotion_fee != null ? "promotion_fee"
+        : o.ads_fee != null ? "ads_fee"
+        : o.gmv_max_fee != null ? "gmv_max_fee"
+        : o.ads?.gmv_max_ad_fee != null ? "ads.gmv_max_ad_fee"
+        : "ads.ad_spend";
+      await supabase.from("sync_logs").insert({
+        action: "tiktok_gmv_max_fee_detected",
+        status: "info",
+        message: `Order ${o.id}: GMV Max Ad Fee = ${gmvFeeDetected} (from field: ${fieldName})`,
+      });
+    }
 
     // Diagnostic-only, additive: records first-sighting timestamps so the
     // real TikTok-API-indexing-delay vs. ERP-write-delay can be measured
