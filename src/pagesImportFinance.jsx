@@ -863,15 +863,13 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEs
 
   // GMV Max ad fee (2026-10-04, UPDATED 2026-10-06) — use real value from TikTok Order Details API only.
   // tiktok-sync-orders extracts gmv_max_ad_fee from TikTok API and syncs to orders.tiktok_gmv_max_ad_fee.
-  // Do NOT estimate or calculate fallback values — only display real data when TikTok API provides it.
-  // For unsettled orders without real data yet, show 0 (order has not yet synced from TikTok API).
-  const gmvMaxAdFeeAmt = Number(o.tiktokGmvMaxAdFee ?? 0);
-  // GMV Max awaiting settlement (2026-10-04) — when gmvMaxAdFeeAmt is 0, it could mean either:
-  // (1) No GMV Max ad spend for this order, or (2) Settlement data not yet synced from TikTok API.
-  // We mark it as "awaiting" only for TikTok orders not in final settlement state,
-  // so UI can show a neutral status instead of treating it as an error/missing data.
-  const gmvMaxAwaitingSettlement = gmvMaxAdFeeAmt === 0;
-  const fees = [
+  // Backend distinguishes: value (0, 0.79, etc.) = real data | null = not yet synced.
+  // Only show "awaiting settlement" when field is truly null/undefined (not synced yet).
+  const hasRealGmvMaxData = o.tiktokGmvMaxAdFee != null;
+  const gmvMaxAdFeeAmt = hasRealGmvMaxData ? Number(o.tiktokGmvMaxAdFee) : 0;
+  const gmvMaxAwaitingSettlement = !hasRealGmvMaxData;
+  // Build fees array with GMV Max handled specially (always show if we have real data)
+  const baseFees = [
     { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
     // pct here is the effective rate vs merchandise revenue (matches how
     // every other fee line's pct is computed just above/below) — now that
@@ -884,8 +882,17 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEs
     { label: t("预估卖家运费", "Est. Seller Shipping Fee"), amount: shippingAmt, pct: revenue > 0 ? (shippingAmt / revenue) * 100 : 0 },
     { label: t("预估达人佣金", "Est. Affiliate Commission"), amount: affiliateAmt, pct: revenue > 0 ? (affiliateAmt / revenue) * 100 : 0 },
     { label: t("达人/商城广告佣金 (Affiliate Shop Ads Commission)", "Affiliate Shop Ads Commission"), amount: affiliateAdsAmt, pct: revenue > 0 ? (affiliateAdsAmt / revenue) * 100 : 0 },
-    { label: t("GMV Max 广告费", "GMV Max Ad Fee"), amount: gmvMaxAdFeeAmt, pct: revenue > 0 ? (gmvMaxAdFeeAmt / revenue) * 100 : 0 },
   ].filter((f) => f.amount !== 0);
+  // GMV Max Ad Fee (2026-10-XX) — show only if we have real data from TikTok API.
+  // Real data means amount is a number (even if 0), meaning order has been synced.
+  // If amount is 0, it means order has no GMV Max ad spend (valid real data, show it).
+  // If data awaiting settlement, this line is not added to the array.
+  const fees = hasRealGmvMaxData
+    ? [
+        ...baseFees,
+        { label: t("GMV Max 广告费", "GMV Max Ad Fee"), amount: gmvMaxAdFeeAmt, pct: revenue > 0 ? (gmvMaxAdFeeAmt / revenue) * 100 : 0 },
+      ]
+    : baseFees;
   const totalFees = +fees.reduce((sum, f) => sum + f.amount, 0).toFixed(2);
   // Affiliate commission placeholder note (2026-08-22, user request; revised
   // 2026-08-26) — originally always shown because the Affiliate Seller API
