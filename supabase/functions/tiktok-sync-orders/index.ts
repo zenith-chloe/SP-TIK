@@ -432,15 +432,18 @@ async function upsertOrderPage(
           delivery_option: o.delivery_option_name ?? null,
           // GMV Max Ad Fee (2026-10-06, UPDATED 2026-10-XX) — real paid ad fee
           // from TikTok Order Details API for GMV Max / auto-bidding campaigns.
-          // TikTok updated GMV Max API on 2026-09-15 with new response fields.
-          // Tries multiple field names per TikTok's API structure:
-          // - gmv_max_ad_fee (primary name)
-          // - gmv_max_ads_fee, gm_max_ads_fee (alternate forms)
-          // - ad_spend, paid_ads_fee, promotion_fee (post-9/15 update)
-          // - ads.gmv_max_ad_fee, ads_fee, gmv_max_fee (nested/alternate)
+          // TikTok's API returns settlement data in nested objects:
+          // estimated_settlement_breakdown.gmv_max_ad_fee (primary source)
+          // OR statement_breakdown.gmv_max_ad_fee (alternate structure)
+          // Tries multiple extraction paths per TikTok's API structure:
+          // 1. Nested: estimated_settlement_breakdown.gmv_max_ad_fee (PRIMARY)
+          // 2. Nested: statement_breakdown.gmv_max_ad_fee (SECONDARY)
+          // 3. Root level: gmv_max_ad_fee, gmv_max_ads_fee, etc. (legacy)
           // Only display when TikTok API returns real value; do not estimate.
           tiktok_gmv_max_ad_fee: (() => {
-            const gmvFee = o.gmv_max_ad_fee
+            const gmvFee = o.estimated_settlement_breakdown?.gmv_max_ad_fee
+              ?? o.statement_breakdown?.gmv_max_ad_fee
+              ?? o.gmv_max_ad_fee
               ?? o.gmv_max_ads_fee
               ?? o.gm_max_ads_fee
               ?? o.ad_spend
