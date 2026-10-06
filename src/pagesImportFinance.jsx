@@ -861,17 +861,18 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEs
     ? Number(o.tiktokAffiliateAdsFee)
     : (typeof affiliateAdsEstimate === "number" ? +affiliateAdsEstimate.toFixed(2) : 0);
 
-  // GMV Max ad fee (2026-10-04) — MUST use real value from TikTok settlement API.
+  // GMV Max ad fee (2026-10-04, UPDATED 2026-10-06) — prefer real value from TikTok settlement API.
   // tiktok-settlement-sync extracts gmv_max_ad_fee_amount from statement_transactions.
-  // Do NOT fall back to percentage calculation — if TikTok settlement data is not yet
-  // synced (tiktokGmvMaxAdFee is null/0), display 0, never estimate from revenue percentage.
-  // This ensures ERP always shows authoritative TikTok settlement data, never guesses.
-  const gmvMaxAdFeeAmt = Number(o.tiktokGmvMaxAdFee ?? 0);
-  // GMV Max awaiting settlement (2026-10-04) — when gmvMaxAdFeeAmt is 0, it could mean either:
-  // (1) No GMV Max ad spend for this order, or (2) Settlement data not yet synced.
-  // We mark it as "awaiting" only for TikTok orders not in final settlement state,
-  // so UI can show a neutral status instead of treating it as an error/missing data.
-  const gmvMaxAwaitingSettlement = gmvMaxAdFeeAmt === 0;
+  // For unsettled orders where TikTok has not yet returned real data, use fallback estimate:
+  // GMV Max Ad Fee = Subtotal * 5%. Once TikTok completes settlement, real value automatically overrides.
+  const hasRealGmvMaxAdFee = o.tiktokGmvMaxAdFee != null && o.tiktokGmvMaxAdFee !== 0;
+  const gmvMaxAdFeeAmt = hasRealGmvMaxAdFee
+    ? Number(o.tiktokGmvMaxAdFee)
+    : +(revenue * 0.05).toFixed(2);
+  // GMV Max awaiting settlement (2026-10-04, UPDATED 2026-10-06) — marks when we're showing
+  // estimated GMV Max fee (using Subtotal * 5% fallback) rather than real settlement data.
+  // UI displays neutral message indicating estimate will be replaced with real data once synced.
+  const gmvMaxAwaitingSettlement = !hasRealGmvMaxAdFee;
   const fees = [
     { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
     // pct here is the effective rate vs merchandise revenue (matches how
