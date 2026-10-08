@@ -316,7 +316,9 @@ export function mapDbOrder(order, items) {
     tiktokAffiliateFee: Number(order.tiktok_affiliate_commission ?? 0),
     tiktokAffiliateAdsFee: Number(order.tiktok_affiliate_ads_commission ?? 0),
     tiktokSellerShippingFee: Number(order.tiktok_seller_shipping_fee ?? 0),
-    tiktokGmvMaxAdFee: Number(order.tiktok_gmv_max_ad_fee ?? 0),
+    // GMV Max Ad Fee (2026-10-08) — estimated from TikTok Order Search API
+    // Preserve null when not synced; frontend displays "pending" in this case
+    tiktokGmvMaxAdFee: order.tiktok_gmv_max_ad_fee != null ? Number(order.tiktok_gmv_max_ad_fee) : null,
     tiktokPlatformSupportFee: Number(order.tiktok_platform_support_fee ?? 0),
     tiktokVoucherXtraDiscount: Number(order.tiktok_voucher_xtra_discount ?? 0),
     tiktokBxpAmount: Number(order.tiktok_bxp_amount ?? 0),

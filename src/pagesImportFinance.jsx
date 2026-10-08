@@ -861,13 +861,13 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEs
     ? Number(o.tiktokAffiliateAdsFee)
     : (typeof affiliateAdsEstimate === "number" ? +affiliateAdsEstimate.toFixed(2) : 0);
 
-  // GMV Max ad fee (2026-10-04, UPDATED 2026-10-06) — use real value from TikTok Order Details API only.
-  // tiktok-sync-orders extracts gmv_max_ad_fee from TikTok API and syncs to orders.tiktok_gmv_max_ad_fee.
-  // Backend distinguishes: value (0, 0.79, etc.) = real data | null = not yet synced.
-  // Only show "awaiting settlement" when field is truly null/undefined (not synced yet).
+  // GMV Max ad fee (2026-10-08) — from TikTok Order Search API (estimated_settlement_breakdown.gmv_max_ad_fee)
+  // This is ESTIMATED fee available immediately after order creation, not from settlement.
+  // Backend: value (0, 0.79, etc.) = real estimated data | null = not yet synced from TikTok API.
   const hasRealGmvMaxData = o.tiktokGmvMaxAdFee != null;
   const gmvMaxAdFeeAmt = hasRealGmvMaxData ? Number(o.tiktokGmvMaxAdFee) : 0;
   const gmvMaxAwaitingSettlement = !hasRealGmvMaxData;
+
   // Build fees array with GMV Max handled specially (always show if we have real data)
   const baseFees = [
     { label: t("TikTok 平台佣金", "TikTok Shop Commission Fee"), amount: commissionAmt, pct: revenue > 0 ? (commissionAmt / revenue) * 100 : 0 },
@@ -883,14 +883,14 @@ export function tiktokEstimatedBreakdown(o, t, affiliateEstimate, affiliateAdsEs
     { label: t("预估达人佣金", "Est. Affiliate Commission"), amount: affiliateAmt, pct: revenue > 0 ? (affiliateAmt / revenue) * 100 : 0 },
     { label: t("达人/商城广告佣金 (Affiliate Shop Ads Commission)", "Affiliate Shop Ads Commission"), amount: affiliateAdsAmt, pct: revenue > 0 ? (affiliateAdsAmt / revenue) * 100 : 0 },
   ].filter((f) => f.amount !== 0);
-  // GMV Max Ad Fee (2026-10-XX) — show only if we have real data from TikTok API.
-  // Real data means amount is a number (even if 0), meaning order has been synced.
-  // If amount is 0, it means order has no GMV Max ad spend (valid real data, show it).
-  // If data awaiting settlement, this line is not added to the array.
+
+  // GMV Max Ad Fee (2026-10-08) — show if we have real estimated data from TikTok API.
+  // Label includes "(预估)" to indicate this is estimated, not final settlement.
+  // Only include if we have real data (even if 0).
   const fees = hasRealGmvMaxData
     ? [
         ...baseFees,
-        { label: t("GMV Max 广告费", "GMV Max Ad Fee"), amount: gmvMaxAdFeeAmt, pct: revenue > 0 ? (gmvMaxAdFeeAmt / revenue) * 100 : 0 },
+        { label: t("GMV Max 广告费（预估）", "GMV Max Ad Fee (Est.)"), amount: gmvMaxAdFeeAmt, pct: revenue > 0 ? (gmvMaxAdFeeAmt / revenue) * 100 : 0 },
       ]
     : baseFees;
   const totalFees = +fees.reduce((sum, f) => sum + f.amount, 0).toFixed(2);

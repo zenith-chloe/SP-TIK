@@ -396,6 +396,23 @@ async function upsertOrderPage(
   let syncedItems = 0;
 
   for (const o of pageOrders) {
+    // Extract GMV Max Ad Fee from TikTok API response
+    // 2026-10-08: Primary source is estimated_settlement_breakdown.gmv_max_ad_fee
+    // This is the ESTIMATED fee available immediately after order creation
+    const gmvFee = o.estimated_settlement_breakdown?.gmv_max_ad_fee
+      ?? o.statement_breakdown?.gmv_max_ad_fee
+      ?? o.gmv_max_ad_fee
+      ?? o.gmv_max_ads_fee
+      ?? o.gm_max_ads_fee
+      ?? o.ad_spend
+      ?? o.paid_ads_fee
+      ?? o.promotion_fee
+      ?? o.ads_fee
+      ?? o.gmv_max_fee
+      ?? (o.ads?.gmv_max_ad_fee)
+      ?? (o.ads?.ad_spend);
+    const gmvMaxAdFee = gmvFee != null ? Number(gmvFee) : null;
+
     const { data: orderRow, error: orderErr } = await supabase
       .from("orders")
       .upsert(
@@ -430,31 +447,9 @@ async function upsertOrderPage(
           // TikTok Seller Centre order showing "Delivery option: Instant"
           // (order 584451043333343056, 2026-08-09).
           delivery_option: o.delivery_option_name ?? null,
-          // GMV Max Ad Fee (2026-10-06, UPDATED 2026-10-XX) — real paid ad fee
-          // from TikTok Order Details API for GMV Max / auto-bidding campaigns.
-          // TikTok's API returns settlement data in nested objects:
-          // estimated_settlement_breakdown.gmv_max_ad_fee (primary source)
-          // OR statement_breakdown.gmv_max_ad_fee (alternate structure)
-          // Tries multiple extraction paths per TikTok's API structure:
-          // 1. Nested: estimated_settlement_breakdown.gmv_max_ad_fee (PRIMARY)
-          // 2. Nested: statement_breakdown.gmv_max_ad_fee (SECONDARY)
-          // 3. Root level: gmv_max_ad_fee, gmv_max_ads_fee, etc. (legacy)
-          // Only display when TikTok API returns real value; do not estimate.
-          tiktok_gmv_max_ad_fee: (() => {
-            const gmvFee = o.estimated_settlement_breakdown?.gmv_max_ad_fee
-              ?? o.statement_breakdown?.gmv_max_ad_fee
-              ?? o.gmv_max_ad_fee
-              ?? o.gmv_max_ads_fee
-              ?? o.gm_max_ads_fee
-              ?? o.ad_spend
-              ?? o.paid_ads_fee
-              ?? o.promotion_fee
-              ?? o.ads_fee
-              ?? o.gmv_max_fee
-              ?? (o.ads?.gmv_max_ad_fee)
-              ?? (o.ads?.ad_spend);
-            return gmvFee != null ? Number(gmvFee) : null;
-          })(),
+          // GMV Max Ad Fee (2026-10-08) — estimated from TikTok Order Search API
+          // Only update when API returns a value; preserve existing value if null
+          ...(gmvMaxAdFee !== null && { tiktok_gmv_max_ad_fee: gmvMaxAdFee }),
           updated_at: new Date().toISOString(),
         },
         { onConflict: "platform,order_no" },
